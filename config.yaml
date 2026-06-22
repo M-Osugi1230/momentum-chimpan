@@ -1,0 +1,24 @@
+market:
+  include_markets:
+    - Prime
+    - Standard
+    - Growth
+  exclude_etf: true
+  exclude_reit: true
+  min_trading_value: 100000000
+  min_price: 100
+
+ranking:
+  buy_candidate_limit: 30
+  email_top_n: 10
+
+signals:
+  sell_ma_break_days: 20
+  drawdown_threshold: 0.10
+  big_drop_threshold: 0.05
+  volume_spike_threshold: 2.0
+
+data:
+  lookback_days: 400
+  history_path: data/momentum_history.csv
+  output_path: output/daily_report.xlsx
