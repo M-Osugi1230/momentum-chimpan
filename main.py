@@ -111,10 +111,10 @@ def load_holdings() -> pd.DataFrame:
     return df[cols].dropna(subset=["code"])
 
 
-def fetch_price(code: str, lookback_days: int) -> pd.DataFrame:
+def fetch_price(code: str, lookback_days: int, timeout_seconds: int = 20) -> pd.DataFrame:
     ticker = f"{code}.T"
     start = datetime.utcnow().date() - timedelta(days=int(lookback_days * 1.8))
-    df = yf.download(ticker, start=start.isoformat(), progress=False, auto_adjust=False, threads=False)
+    df = yf.download(ticker, start=start.isoformat(), progress=False, auto_adjust=False, threads=False, timeout=timeout_seconds)
     if df.empty:
         raise ValueError("yfinance returned empty data")
     if isinstance(df.columns, pd.MultiIndex):
@@ -198,11 +198,11 @@ def write_history(rows: list[dict[str, Any]], path: str) -> None:
 
 def excel_report(path: str, summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, rank: pd.DataFrame, errors: list[dict[str, Any]]) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
-        pd.DataFrame([summary]).to_excel(w, "Summary", index=False)
-        buy.to_excel(w, "Buy Candidates", index=False)
-        sell.to_excel(w, "Sell Candidates", index=False)
-        rank.to_excel(w, "YTD High Ranking", index=False)
-        pd.DataFrame(errors).to_excel(w, "Errors", index=False)
+        pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
+        buy.to_excel(w, sheet_name="Buy Candidates", index=False)
+        sell.to_excel(w, sheet_name="Sell Candidates", index=False)
+        rank.to_excel(w, sheet_name="YTD High Ranking", index=False)
+        pd.DataFrame(errors).to_excel(w, sheet_name="Errors", index=False)
         for ws in w.book.worksheets:
             ws.freeze_panes = "A2"
             for col in ws.columns:
@@ -244,9 +244,13 @@ def main() -> None:
     holding_map = {normalize_code(r.code): r for r in holdings.itertuples()}
     rows = []; sell_rows = []; history_rows = []; success = 0
     today = datetime.now().date().isoformat()
-    for st in stocks:
+    timeout_seconds = int(cfg["data"].get("request_timeout_seconds", 20))
+    progress_interval = int(cfg["data"].get("progress_log_interval", 100))
+    for idx, st in enumerate(stocks, start=1):
+        if progress_interval > 0 and (idx == 1 or idx % progress_interval == 0 or idx == len(stocks)):
+            logger.info("Progress: %s/%s symbols processed", idx, len(stocks))
         try:
-            df = fetch_price(st.code, cfg["data"]["lookback_days"])
+            df = fetch_price(st.code, cfg["data"]["lookback_days"], timeout_seconds)
             m = metrics(df)
             if m["date"] != today:
                 logger.info("%s latest price date is %s (not today %s)", st.code, m["date"], today)
