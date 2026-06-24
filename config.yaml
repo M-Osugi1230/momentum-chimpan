@@ -22,3 +22,6 @@ data:
   lookback_days: 400
   history_path: data/momentum_history.csv
   output_path: output/daily_report.xlsx
+  request_timeout_seconds: 20
+  progress_log_interval: 100
+  error_backup_dir: data/error_backups
