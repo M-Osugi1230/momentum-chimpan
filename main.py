@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 import shutil
@@ -14,6 +15,7 @@ import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from time import perf_counter
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
@@ -23,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-06-23-email-score-breakdown-v1"
+APP_VERSION = "2026-06-24-mobile-email-ui-v1"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -287,15 +289,232 @@ def fmt_num(value: Any, digits: int = 1) -> str:
     return f"{float(value):,.{digits}f}"
 
 
+def fmt_int(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{int(float(value)):,}"
+
+
+def fmt_seconds(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    seconds = float(value)
+    if seconds >= 60:
+        return f"{seconds / 60:.1f}分"
+    return f"{seconds:.1f}秒"
+
+
+def score_breakdown_items(r: pd.Series) -> list[tuple[str, int, int]]:
+    return [
+        ("年初来", int(r.get("score_ytd_high", 0)), 30),
+        ("連続", int(r.get("score_ytd_streak", 0)), 20),
+        ("20日", int(r.get("score_return_20d", 0)), 20),
+        ("出来高", int(r.get("score_volume_ratio", 0)), 15),
+        ("MA", int(r.get("score_ma", 0)), 10),
+        ("代金", int(r.get("score_trading_value", 0)), 5),
+    ]
+
+
 def score_breakdown_text(r: pd.Series) -> str:
-    return (
-        f"年初来高値 {int(r.get('score_ytd_high', 0))}/30、"
-        f"連続更新 {int(r.get('score_ytd_streak', 0))}/20、"
-        f"20日騰落率 {int(r.get('score_return_20d', 0))}/20、"
-        f"出来高 {int(r.get('score_volume_ratio', 0))}/15、"
-        f"移動平均 {int(r.get('score_ma', 0))}/10、"
-        f"売買代金 {int(r.get('score_trading_value', 0))}/5"
-    )
+    return " / ".join(f"{label}{points}/{max_points}" for label, points, max_points in score_breakdown_items(r))
+
+
+def compact_reason(reason: Any) -> str:
+    text = str(reason or "条件該当なし")
+    return text.replace("、", " / ")
+
+
+def html_text(value: Any) -> str:
+    return html.escape(str(value or ""))
+
+
+def score_color(score: Any) -> str:
+    value = int(score or 0)
+    if value >= 85:
+        return "#dc2626"
+    if value >= 75:
+        return "#ea580c"
+    if value >= 60:
+        return "#2563eb"
+    return "#475569"
+
+
+def build_plain_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, cfg: dict[str, Any]) -> str:
+    top_n = cfg["ranking"]["email_top_n"]
+    errors_count = int(summary.get("取得失敗", 0) or 0)
+    sell_count = int(summary.get("売り候補", 0) or 0)
+    ytd_count = int(summary.get("年初来高値更新", 0) or 0)
+    success_count = int(summary.get("取得成功", 0) or 0)
+    target_count = int(summary.get("実スキャン対象銘柄数", summary.get("通常株ユニバース数", 0)) or 0)
+    success_rate = success_count / target_count if target_count else 0
+    top = None if buy.empty else buy.iloc[0]
+
+    lines = [
+        "本日のモメンタムチンパン戦法レポートです。",
+        "",
+        "【結論】",
+        f"買い候補：{summary.get('買い候補', 0)}件" + (f" / 最高：{top['code']} {top['name']} {int(top['score'])}点" if top is not None else ""),
+        f"売り候補：{sell_count}件 / 年初来高値更新：{ytd_count}件 / 取得失敗：{errors_count}件",
+        "※売買指示ではありません。確認対象の抽出結果です。",
+        "",
+        "【実行状況】",
+        f"{summary.get('実行日', '')} / 対象 {target_count:,}銘柄 / 成功率 {success_rate:.1%} / 処理 {fmt_seconds(summary.get('処理時間秒'))}",
+        f"JPX {fmt_int(summary.get('JPX上場銘柄数'))} / 通常株 {fmt_int(summary.get('通常株ユニバース数'))} / 除外 {fmt_int(summary.get('除外銘柄数'))} / 検証 {summary.get('検証モード', '')}",
+        "",
+        "【スコア配点】年初来30 / 連続20 / 20日20 / 出来高15 / MA10 / 代金5 = 100点",
+        "",
+        f"【買い候補 上位{top_n}件】",
+    ]
+
+    if buy.empty:
+        lines.append("該当なし")
+    for _, r in buy.head(top_n).iterrows():
+        lines += [
+            f"{int(r['rank'])}. {r['code']} {r['name']}  {int(r['score'])}点",
+            f"   20日 {fmt_pct(r.get('return_20d'))} / 出来高 {fmt_num(r.get('volume_ratio'))}倍 / 連続 {int(r.get('ytd_high_streak', 0))}日",
+            f"   内訳 {score_breakdown_text(r)}",
+            f"   理由 {compact_reason(r.get('reason'))}",
+            "",
+        ]
+
+    lines += ["【売り候補（保有銘柄の確認対象）】"]
+    if sell.empty:
+        lines.append("該当なし")
+    for _, r in sell.iterrows():
+        lines += [
+            f"・{r['code']} {r['name']} / {r['sell_signal']}",
+            f"  終値 {fmt_num(r.get('close'), 0)} / 含み損益率 {fmt_pct(r.get('unrealized_pnl_rate'))} / 5日 {fmt_pct(r.get('return_5d'))}",
+            "  ※即売りではなく、手動確認対象です。",
+        ]
+
+    lines += [
+        "",
+        "【エラー】" + (f"取得失敗 {errors_count}件。Errorsシートを確認してください。" if errors_count else "取得失敗なし。"),
+        "【詳細】GitHub Actions artifact の daily_report.xlsx を確認してください。",
+        "",
+        DISCLAIMER,
+    ]
+    return "\n".join(lines)
+
+
+def build_html_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, cfg: dict[str, Any]) -> str:
+    top_n = cfg["ranking"]["email_top_n"]
+    errors_count = int(summary.get("取得失敗", 0) or 0)
+    sell_count = int(summary.get("売り候補", 0) or 0)
+    ytd_count = int(summary.get("年初来高値更新", 0) or 0)
+    success_count = int(summary.get("取得成功", 0) or 0)
+    target_count = int(summary.get("実スキャン対象銘柄数", summary.get("通常株ユニバース数", 0)) or 0)
+    success_rate = success_count / target_count if target_count else 0
+    top = None if buy.empty else buy.iloc[0]
+
+    def metric_card(label: str, value: str, color: str = "#111827") -> str:
+        return f"""
+        <td style="width:50%;padding:6px;vertical-align:top;">
+          <div style="border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#ffffff;">
+            <div style="font-size:12px;color:#64748b;line-height:1.3;">{html_text(label)}</div>
+            <div style="font-size:22px;font-weight:800;color:{color};line-height:1.25;">{html_text(value)}</div>
+          </div>
+        </td>
+        """
+
+    buy_cards = []
+    if buy.empty:
+        buy_cards.append('<div style="color:#64748b;">該当なし</div>')
+    for _, r in buy.head(top_n).iterrows():
+        chips = "".join(
+            f'<span style="display:inline-block;margin:2px 4px 2px 0;padding:4px 8px;border-radius:999px;background:#f1f5f9;color:#334155;font-size:12px;">{html_text(label)} {points}/{max_points}</span>'
+            for label, points, max_points in score_breakdown_items(r)
+        )
+        buy_cards.append(f"""
+        <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:10px 0;background:#ffffff;">
+          <div style="display:block;margin-bottom:8px;">
+            <span style="font-size:13px;color:#64748b;font-weight:700;">#{int(r['rank'])}</span>
+            <span style="font-size:18px;font-weight:800;color:#111827;"> {html_text(r['code'])} {html_text(r['name'])}</span>
+            <span style="float:right;background:{score_color(r['score'])};color:#ffffff;border-radius:999px;padding:4px 10px;font-size:14px;font-weight:800;">{int(r['score'])}点</span>
+          </div>
+          <div style="clear:both;font-size:13px;color:#334155;line-height:1.7;">
+            20日 <b>{fmt_pct(r.get('return_20d'))}</b> ・ 出来高 <b>{fmt_num(r.get('volume_ratio'))}倍</b> ・ 連続 <b>{int(r.get('ytd_high_streak', 0))}日</b>
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:#64748b;font-weight:800;">スコア内訳</div>
+          <div style="margin-top:4px;line-height:1.6;">{chips}</div>
+          <div style="margin-top:10px;font-size:12px;color:#64748b;font-weight:800;">理由</div>
+          <div style="margin-top:4px;font-size:13px;color:#475569;line-height:1.6;">{html_text(compact_reason(r.get('reason')))}</div>
+        </div>
+        """)
+
+    sell_html = '<div style="color:#64748b;">該当なし</div>'
+    if not sell.empty:
+        items = []
+        for _, r in sell.iterrows():
+            items.append(f"""
+            <div style="border-left:4px solid #f59e0b;padding:10px 12px;margin:8px 0;background:#fffbeb;border-radius:10px;">
+              <div style="font-weight:800;color:#92400e;">{html_text(r['code'])} {html_text(r['name'])}</div>
+              <div style="font-size:13px;color:#78350f;line-height:1.6;">{html_text(r['sell_signal'])}</div>
+              <div style="font-size:13px;color:#475569;line-height:1.6;">終値 {fmt_num(r.get('close'), 0)} / 含み損益率 {fmt_pct(r.get('unrealized_pnl_rate'))} / 5日 {fmt_pct(r.get('return_5d'))}</div>
+            </div>
+            """)
+        sell_html = "".join(items) + '<div style="font-size:12px;color:#64748b;margin-top:6px;">※即売りではなく、手動でチャート・材料・保有方針を確認する対象です。</div>'
+
+    top_text = "買い候補はありません"
+    if top is not None:
+        top_text = f"最高 {top['code']} {top['name']} {int(top['score'])}点"
+
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827;">
+    <div style="max-width:640px;margin:0 auto;padding:16px;">
+      <div style="background:#0f172a;color:#ffffff;border-radius:20px;padding:20px;margin-bottom:14px;">
+        <div style="font-size:13px;color:#cbd5e1;margin-bottom:6px;">モメンタムチンパン 引け後レポート</div>
+        <div style="font-size:24px;font-weight:900;line-height:1.25;">{html_text(summary.get('実行日', ''))}</div>
+        <div style="font-size:14px;line-height:1.6;color:#e2e8f0;margin-top:10px;">{html_text(top_text)}</div>
+      </div>
+
+      <div style="background:#ffffff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #e5e7eb;">
+        <div style="font-size:18px;font-weight:900;margin-bottom:10px;">まず見るポイント</div>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+          <tr>
+            {metric_card('買い候補', f"{summary.get('買い候補', 0)}件", '#dc2626')}
+            {metric_card('売り候補', f"{sell_count}件", '#ea580c' if sell_count else '#16a34a')}
+          </tr>
+          <tr>
+            {metric_card('年初来高値更新', f"{ytd_count}件", '#2563eb')}
+            {metric_card('取得失敗', f"{errors_count}件", '#dc2626' if errors_count else '#16a34a')}
+          </tr>
+        </table>
+        <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:8px;">売買指示ではありません。確認すべき銘柄を絞るためのスクリーニング結果です。</div>
+      </div>
+
+      <div style="background:#ffffff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #e5e7eb;">
+        <div style="font-size:18px;font-weight:900;margin-bottom:10px;">実行状況</div>
+        <div style="font-size:14px;line-height:1.9;color:#334155;">
+          対象 <b>{target_count:,}</b>銘柄 / 取得成功 <b>{success_count:,}</b> / 成功率 <b>{success_rate:.1%}</b><br>
+          JPX {fmt_int(summary.get('JPX上場銘柄数'))} / 通常株 {fmt_int(summary.get('通常株ユニバース数'))} / 除外 {fmt_int(summary.get('除外銘柄数'))}<br>
+          検証モード <b>{html_text(summary.get('検証モード', ''))}</b> / 処理 <b>{fmt_seconds(summary.get('処理時間秒'))}</b>
+        </div>
+      </div>
+
+      <div style="background:#eff6ff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #bfdbfe;">
+        <div style="font-size:18px;font-weight:900;margin-bottom:8px;color:#1e3a8a;">スコアの見方</div>
+        <div style="font-size:13px;line-height:1.7;color:#1e40af;">100点満点：年初来30 / 連続20 / 20日20 / 出来高15 / MA10 / 代金5。点数が高いほど、直近の値動き・出来高・トレンド条件がそろっています。</div>
+      </div>
+
+      <div style="font-size:20px;font-weight:900;margin:18px 0 8px;">買い候補 上位{top_n}件</div>
+      {''.join(buy_cards)}
+
+      <div style="background:#ffffff;border-radius:18px;padding:16px;margin:16px 0 14px;border:1px solid #e5e7eb;">
+        <div style="font-size:18px;font-weight:900;margin-bottom:10px;">売り候補（保有銘柄の確認対象）</div>
+        {sell_html}
+      </div>
+
+      <div style="background:#ffffff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #e5e7eb;">
+        <div style="font-size:18px;font-weight:900;margin-bottom:8px;">エラー・詳細</div>
+        <div style="font-size:14px;line-height:1.8;color:#334155;">取得失敗：<b>{errors_count}件</b><br>{'Errorsシートと data/error_backups を確認してください。' if errors_count else '本日の取得失敗はありません。'}<br>詳細は GitHub Actions artifact の <b>daily_report.xlsx</b> を確認してください。</div>
+      </div>
+
+      <div style="font-size:12px;line-height:1.7;color:#64748b;padding:8px 2px 20px;">{html_text(DISCLAIMER)}</div>
+    </div>
+  </body>
+</html>"""
 
 
 def send_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, cfg: dict[str, Any]) -> None:
@@ -305,84 +524,14 @@ def send_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, c
         logger.info("Email secrets are not set; skip email")
         return
 
-    top_n = cfg["ranking"]["email_top_n"]
-    errors_count = int(summary.get("取得失敗", 0) or 0)
-    sell_count = int(summary.get("売り候補", 0) or 0)
-    ytd_count = int(summary.get("年初来高値更新", 0) or 0)
-    success_count = int(summary.get("取得成功", 0) or 0)
-    target_count = int(summary.get("実スキャン対象銘柄数", summary.get("通常株ユニバース数", 0)) or 0)
-    success_rate = success_count / target_count if target_count else 0
-
-    lines = [
-        "本日のモメンタムチンパン戦法レポートです。",
-        "",
-        "【まず見るポイント】",
-        f"・買い候補は上位{summary.get('買い候補', 0)}件です。最上位は「{buy.iloc[0]['code']} {buy.iloc[0]['name']} score {int(buy.iloc[0]['score'])}」です。" if not buy.empty else "・買い候補はありませんでした。",
-        f"・売り候補は{sell_count}件です。" + ("保有銘柄の確認が必要です。" if sell_count else "本日は該当なしです。"),
-        f"・年初来高値更新は{ytd_count}件、取得失敗は{errors_count}件です。",
-        "・これは売買指示ではなく、確認すべき銘柄を絞るためのスクリーニング結果です。",
-        "",
-        "【サマリー】",
-        f"実行日：{summary.get('実行日', '')}",
-        f"スキャン対象：{target_count}銘柄（取得成功 {success_count} / 取得失敗 {errors_count} / 成功率 {success_rate:.1%}）",
-        f"JPX上場銘柄数：{summary.get('JPX上場銘柄数', '')}",
-        f"通常株ユニバース数：{summary.get('通常株ユニバース数', '')}",
-        f"除外銘柄数：{summary.get('除外銘柄数', '')}",
-        f"年初来高値更新：{ytd_count}",
-        f"買い候補：{summary.get('買い候補', 0)}",
-        f"売り候補：{sell_count}",
-        f"検証モード：{summary.get('検証モード', '')}",
-        f"処理時間：{summary.get('処理時間秒', '')}秒",
-        "",
-        "【スコアの見方】",
-        "100点満点です。内訳は、年初来高値更新30点、連続更新20点、20日騰落率20点、出来高倍率15点、20日線・60日線上10点、売買代金5点です。",
-        "点数が高いほど『直近で強い値動き・出来高・トレンド条件がそろっている』ことを表します。",
-        "",
-        f"【買い候補 上位{top_n}件】",
-    ]
-
-    if buy.empty:
-        lines.append("該当なし")
-    for _, r in buy.head(top_n).iterrows():
-        lines.append(
-            f"{int(r['rank'])}. {r['code']} {r['name']} score {int(r['score'])} "
-            f"｜20日騰落率 {fmt_pct(r.get('return_20d'))} "
-            f"｜出来高 {fmt_num(r.get('volume_ratio'))}倍 "
-            f"｜連続更新 {int(r.get('ytd_high_streak', 0))}日"
-        )
-        lines.append(f"   理由：{r.get('reason') or '条件該当なし'}")
-        lines.append(f"   スコア内訳：{score_breakdown_text(r)}")
-
-    lines += ["", "【売り候補（保有銘柄の確認対象）】"]
-    if sell.empty:
-        lines.append("該当なし")
-    for _, r in sell.iterrows():
-        lines.append(
-            f"・{r['code']} {r['name']}：{r['sell_signal']} "
-            f"｜終値 {fmt_num(r.get('close'), 0)} "
-            f"｜含み損益率 {fmt_pct(r.get('unrealized_pnl_rate'))} "
-            f"｜5日騰落率 {fmt_pct(r.get('return_5d'))}"
-        )
-        lines.append("   ※即売りではなく、手動でチャート・材料・保有方針を確認する対象です。")
-
-    lines += [
-        "",
-        "【エラー・注意】",
-        f"取得失敗：{errors_count}件",
-        "取得失敗がある場合は、Excelの Errors シートと data/error_backups のバックアップを確認してください。" if errors_count else "本日の取得失敗はありません。",
-        "",
-        "【詳細確認】",
-        "詳細な指標、全ランキング、エラー一覧は GitHub Actions artifact の daily_report.xlsx を確認してください。",
-        "",
-        DISCLAIMER,
-    ]
-    msg = MIMEText("\n".join(lines), "plain", "utf-8")
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
+    msg.attach(MIMEText(build_plain_email(summary, buy, sell, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, buy, sell, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
-
 
 def main() -> None:
     started_at = perf_counter()
