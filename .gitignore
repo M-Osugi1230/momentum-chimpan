@@ -1,0 +1,9 @@
+# Generated reports and runtime data
+output/*.xlsx
+data/error_backups/
+data/jpx_list_cache.csv
+
+# Local environment
+.env
+__pycache__/
+*.py[cod]
