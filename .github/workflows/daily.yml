@@ -1,0 +1,48 @@
+name: Daily Momentum Report
+
+on:
+  schedule:
+    # 16:45 JST = 07:45 UTC, Monday-Friday. If Japan is on holiday,
+    # main.py logs stale market data and still keeps the run non-fatal.
+    - cron: '45 7 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run report
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python main.py
+      - name: Upload Excel report
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily_report
+          path: output/daily_report.xlsx
+          if-no-files-found: error
+      - name: Commit momentum history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/momentum_history.csv
+          test ! -f data/momentum_daily_ranking.csv || git add data/momentum_daily_ranking.csv
+          test ! -f data/market_temperature.csv || git add data/market_temperature.csv
+          test ! -f data/jpx_list_cache.csv || git add -f data/jpx_list_cache.csv
+          if git diff --cached --quiet; then
+            echo "No history changes to commit"
+          else
+            git commit -m "Update daily momentum history"
+            git push
+          fi
