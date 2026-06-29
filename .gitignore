@@ -2,6 +2,7 @@
 output/*.xlsx
 data/error_backups/
 data/jpx_list_cache.csv
+data/momentum_history.csv
 
 # Local environment
 .env
