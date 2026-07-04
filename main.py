@@ -229,8 +229,14 @@ def enrich_ranking_features(today_ranked: pd.DataFrame, history: pd.DataFrame, t
     if today_ranked.empty:
         return today_ranked
     ranked = today_ranked.copy()
+    if "rank" in ranked.columns:
+        ranked = ranked.drop(columns=["rank"])
     ranked.insert(0, "rank", range(1, len(ranked) + 1))
-    ranked.insert(0, "date", today)
+    if "date" in ranked.columns:
+        ranked["date"] = today
+        ranked = ranked[["date"] + [c for c in ranked.columns if c != "date"]]
+    else:
+        ranked.insert(0, "date", today)
     ranked["code"] = ranked["code"].map(normalize_code)
 
     prior = history[history["date"] != today].copy() if not history.empty and "date" in history.columns else history.copy()
