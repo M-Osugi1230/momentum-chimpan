@@ -32,15 +32,14 @@ jobs:
           name: daily_report
           path: output/daily_report.xlsx
           if-no-files-found: error
-      - name: Commit momentum history
+      - name: Commit dashboard history
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/momentum_history.csv
-          test ! -f data/jpx_list_cache.csv || git add data/jpx_list_cache.csv
+          git add data/momentum_daily_ranking.csv data/market_temperature.csv
           if git diff --cached --quiet; then
-            echo "No history changes to commit"
+            echo "No dashboard history changes to commit"
           else
-            git commit -m "Update daily momentum history"
+            git commit -m "Update daily momentum dashboard history"
             git push
           fi

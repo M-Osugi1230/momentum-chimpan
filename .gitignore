@@ -7,3 +7,5 @@ data/jpx_list_cache.csv
 .env
 __pycache__/
 *.py[cod]
+data/momentum_history.csv
+output/daily_report.xlsx

@@ -9,18 +9,13 @@ market:
   min_price: 100
 
 ranking:
-  buy_candidate_limit: 30
+  buy_candidate_limit: 100
   email_top_n: 10
-
-signals:
-  sell_ma_break_days: 20
-  drawdown_threshold: 0.10
-  big_drop_threshold: 0.05
-  volume_spike_threshold: 2.0
 
 data:
   lookback_days: 400
-  history_path: data/momentum_history.csv
+  ranking_history_path: data/momentum_daily_ranking.csv
+  market_temperature_path: data/market_temperature.csv
   output_path: output/daily_report.xlsx
   request_timeout_seconds: 20
   progress_log_interval: 100
