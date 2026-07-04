@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-06-24-mobile-email-ui-v1"
+APP_VERSION = "2026-07-04-dashboard-ranking-v1"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -66,7 +66,7 @@ def load_config() -> dict[str, Any]:
 
 
 def ensure_dirs(config: dict[str, Any]) -> None:
-    for p in ["data/price_cache", Path(config["data"]["history_path"]).parent, Path(config["data"]["output_path"]).parent]:
+    for p in ["data/price_cache", Path(config["data"]["ranking_history_path"]).parent, Path(config["data"]["market_temperature_path"]).parent, Path(config["data"]["output_path"]).parent]:
         Path(p).mkdir(parents=True, exist_ok=True)
 
 
@@ -101,10 +101,7 @@ def load_universe(config: dict[str, Any]) -> tuple[list[Stock], list[dict[str, A
         if cache.exists():
             df = pd.read_csv(cache)
         else:
-            holdings = load_holdings()
-            fallback = [Stock(normalize_code(r.code), getattr(r, "name", "")) for r in holdings.itertuples()]
-            stats["universe_count"] = len(fallback)
-            return fallback, errors, stats
+            return [], errors, stats
 
     code_col = next((c for c in df.columns if "コード" in str(c) or str(c).lower() == "code"), df.columns[0])
     name_col = next((c for c in df.columns if "銘柄名" in str(c) or "name" in str(c).lower()), df.columns[1])
@@ -131,19 +128,6 @@ def load_universe(config: dict[str, Any]) -> tuple[list[Stock], list[dict[str, A
     stats["universe_count"] = len(stocks)
     stats["excluded_count"] = max(valid_codes - len(stocks), 0)
     return stocks, errors, stats
-
-
-def load_holdings() -> pd.DataFrame:
-    path = Path("holdings.csv")
-    cols = ["code", "name", "buy_price", "quantity", "memo"]
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame(columns=cols)
-    df = pd.read_csv(path, dtype={"code": str})
-    for c in cols:
-        if c not in df.columns:
-            df[c] = "" if c in ["code", "name", "memo"] else 0
-    df["code"] = df["code"].map(normalize_code)
-    return df[cols].dropna(subset=["code"])
 
 
 def fetch_price(code: str, lookback_days: int, timeout_seconds: int = 20) -> pd.DataFrame:
@@ -230,32 +214,81 @@ def score(m: dict[str, Any], min_trading_value: int) -> tuple[int, str, dict[str
     return s, "、".join(reasons), breakdown
 
 
-def sell_signals(m: dict[str, Any], cfg: dict[str, Any]) -> list[str]:
-    sig = []
-    if m.get("ma20") and m["close"] < m["ma20"]: sig.append("20日線割れ")
-    if m.get("recent_high") and (m["close"] / m["recent_high"] - 1) <= -cfg["signals"]["drawdown_threshold"]: sig.append("高値から10%以上下落")
-    if (m.get("return_5d") or 0) < 0: sig.append("短期モメンタム低下")
-    if m.get("prev_close") and (m["close"] / m["prev_close"] - 1) <= -cfg["signals"]["big_drop_threshold"] and (m.get("volume_ratio") or 0) >= cfg["signals"]["volume_spike_threshold"]: sig.append("出来高を伴う急落")
-    if m.get("ma60") and m["close"] < m["ma60"]: sig.append("60日線割れ")
-    return sig
+def load_ranking_history(path: str) -> pd.DataFrame:
+    cols = [
+        "date", "rank", "code", "name", "score", "close", "return_5d", "return_20d", "return_60d",
+        "volume_ratio", "trading_value", "ytd_high_flag", "ytd_high_streak", "ytd_high_count",
+        "is_new_entry", "rank_change", "is_rising_fast", "is_best_rank", "top30_streak_days",
+    ]
+    if Path(path).exists():
+        return pd.read_csv(path, dtype={"code": str})
+    return pd.DataFrame(columns=cols)
 
 
-def write_history(rows: list[dict[str, Any]], path: str) -> None:
-    cols = ["code","name","date","ytd_high_flag","ytd_high_streak","ytd_high_count","close","high","volume","score"]
-    new = pd.DataFrame(rows, columns=cols)
-    old = pd.read_csv(path, dtype={"code": str}) if Path(path).exists() else pd.DataFrame(columns=cols)
-    frames = [df for df in (old, new) if not df.empty]
-    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=cols)
-    out = out.drop_duplicates(["code", "date"], keep="last")
+def enrich_ranking_features(today_ranked: pd.DataFrame, history: pd.DataFrame, today: str) -> pd.DataFrame:
+    if today_ranked.empty:
+        return today_ranked
+    ranked = today_ranked.copy()
+    ranked.insert(0, "rank", range(1, len(ranked) + 1))
+    ranked.insert(0, "date", today)
+    prior = history[history["date"] != today].copy() if not history.empty and "date" in history.columns else history.copy()
+    latest_rank = {}
+    best_rank = {}
+    top30_streak = {}
+    if not prior.empty:
+        prior["date_sort"] = pd.to_datetime(prior["date"], errors="coerce")
+        latest = prior.sort_values(["code", "date_sort"]).dropna(subset=["code"]).groupby("code", as_index=False).tail(1)
+        latest_rank = dict(zip(latest["code"].astype(str).map(normalize_code), latest["rank"]))
+        best_rank = prior.groupby(prior["code"].astype(str).map(normalize_code))["rank"].min().to_dict()
+        top30_prior = prior[prior["rank"] <= 30].sort_values(["code", "date_sort"])
+        for code, group in top30_prior.groupby(top30_prior["code"].astype(str).map(normalize_code)):
+            streak = 0
+            for _, row in group.sort_values("date_sort", ascending=False).iterrows():
+                if int(row.get("rank", 9999)) <= 30:
+                    streak += 1
+                else:
+                    break
+            top30_streak[code] = streak
+    ranked["is_new_entry"] = ~ranked["code"].isin(latest_rank.keys())
+    ranked["rank_change"] = ranked.apply(lambda r: (int(latest_rank.get(r["code"])) - int(r["rank"])) if r["code"] in latest_rank else None, axis=1)
+    ranked["is_rising_fast"] = ranked["rank_change"].fillna(0) >= 20
+    ranked["is_best_rank"] = ranked.apply(lambda r: True if r["code"] not in best_rank else int(r["rank"]) < int(best_rank[r["code"]]), axis=1)
+    ranked["top30_streak_days"] = ranked.apply(lambda r: (int(top30_streak.get(r["code"], 0)) + 1) if int(r["rank"]) <= 30 else 0, axis=1)
+    return ranked
+
+
+def write_ranking_history(today_ranked: pd.DataFrame, path: str) -> None:
+    old = load_ranking_history(path)
+    frames = [df for df in (old, today_ranked) if not df.empty]
+    out = pd.concat(frames, ignore_index=True) if frames else today_ranked
+    if not out.empty:
+        out["code"] = out["code"].map(normalize_code)
+        out = out.drop_duplicates(["code", "date"], keep="last").sort_values(["date", "rank"])
     out.to_csv(path, index=False)
 
 
-def excel_report(path: str, summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, rank: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
+def market_temperature(today: str, all_df: pd.DataFrame, success: int) -> pd.DataFrame:
+    if all_df.empty:
+        values = {"date": today, "scanned_count": success, "avg_score": 0, "top30_avg_score": 0, "ytd_high_count": 0, "above_ma20_rate": 0, "above_ma60_rate": 0, "positive_20d_rate": 0, "hot_score_count": 0, "temperature": "Cold"}
+        return pd.DataFrame([values])
+    above20 = float(all_df.get("above_ma20", pd.Series(dtype=bool)).fillna(False).mean())
+    above60 = float(all_df.get("above_ma60", pd.Series(dtype=bool)).fillna(False).mean())
+    pos20 = float((all_df.get("return_20d", pd.Series(dtype=float)).fillna(0) > 0).mean())
+    ytd_count = int(all_df.get("ytd_high_flag", pd.Series(dtype=bool)).sum())
+    hot_count = int((all_df["score"] >= 80).sum())
+    heat = (above20 * 30) + (above60 * 25) + (pos20 * 20) + min(ytd_count / max(success, 1), 0.2) * 100 + min(hot_count / max(success, 1), 0.1) * 50
+    label = "Hot" if heat >= 70 else "Warm" if heat >= 50 else "Neutral" if heat >= 30 else "Cold"
+    return pd.DataFrame([{"date": today, "scanned_count": success, "avg_score": round(float(all_df["score"].mean()), 2), "top30_avg_score": round(float(all_df.nlargest(min(30, len(all_df)), "score")["score"].mean()), 2), "ytd_high_count": ytd_count, "above_ma20_rate": above20, "above_ma60_rate": above60, "positive_20d_rate": pos20, "hot_score_count": hot_count, "heat_index": round(heat, 2), "temperature": label}])
+
+def excel_report(path: str, summary: dict[str, Any], momentum: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_best: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
-        buy.to_excel(w, sheet_name="Buy Candidates", index=False)
-        sell.to_excel(w, sheet_name="Sell Candidates", index=False)
-        rank.to_excel(w, sheet_name="YTD High Ranking", index=False)
+        momentum.to_excel(w, sheet_name="Momentum Top100", index=False)
+        new_entries.to_excel(w, sheet_name="New Entries", index=False)
+        rising_fast.to_excel(w, sheet_name="Rising Fast", index=False)
+        top30_streak.to_excel(w, sheet_name="Top30 Streak", index=False)
+        ytd_best.to_excel(w, sheet_name="YTD High Ranking", index=False)
+        temperature.to_excel(w, sheet_name="Market Temperature", index=False)
         universe.to_excel(w, sheet_name="Scanned Universe", index=False)
         pd.DataFrame(errors).to_excel(w, sheet_name="Errors", index=False)
         for ws in w.book.worksheets:
@@ -272,7 +305,7 @@ def backup_error_artifacts(errors: list[dict[str, Any]], cfg: dict[str, Any], re
     backup_dir = backup_root / datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(errors).to_csv(backup_dir / "errors.csv", index=False)
-    for src in [report_path, cfg["data"].get("history_path"), "data/jpx_list_cache.csv"]:
+    for src in [report_path, cfg["data"].get("ranking_history_path"), "data/jpx_list_cache.csv"]:
         if src and Path(src).exists():
             shutil.copy2(src, backup_dir / Path(src).name)
     logger.warning("Backed up error artifacts to %s", backup_dir)
@@ -339,185 +372,59 @@ def score_color(score: Any) -> str:
     return "#475569"
 
 
-def build_plain_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], momentum: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
-    errors_count = int(summary.get("取得失敗", 0) or 0)
-    sell_count = int(summary.get("売り候補", 0) or 0)
-    ytd_count = int(summary.get("年初来高値更新", 0) or 0)
-    success_count = int(summary.get("取得成功", 0) or 0)
-    target_count = int(summary.get("実スキャン対象銘柄数", summary.get("通常株ユニバース数", 0)) or 0)
-    success_rate = success_count / target_count if target_count else 0
-    top = None if buy.empty else buy.iloc[0]
-
+    temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     lines = [
-        "本日のモメンタムチンパン戦法レポートです。",
-        "",
-        "【結論】",
-        f"買い候補：{summary.get('買い候補', 0)}件" + (f" / 最高：{top['code']} {top['name']} {int(top['score'])}点" if top is not None else ""),
-        f"売り候補：{sell_count}件 / 年初来高値更新：{ytd_count}件 / 取得失敗：{errors_count}件",
-        "※売買指示ではありません。確認対象の抽出結果です。",
-        "",
-        "【実行状況】",
-        f"{summary.get('実行日', '')} / 対象 {target_count:,}銘柄 / 成功率 {success_rate:.1%} / 処理 {fmt_seconds(summary.get('処理時間秒'))}",
-        f"JPX {fmt_int(summary.get('JPX上場銘柄数'))} / 通常株 {fmt_int(summary.get('通常株ユニバース数'))} / 除外 {fmt_int(summary.get('除外銘柄数'))} / 検証 {summary.get('検証モード', '')}",
-        "",
-        "【スコア配点】年初来30 / 連続20 / 20日20 / 出来高15 / MA10 / 代金5 = 100点",
-        "",
-        f"【買い候補 上位{top_n}件】",
+        "本日のモメンタム・ダッシュボードです。", "", "【Dashboard】",
+        f"Market Temperature: {temp.get('temperature', '-')} / Heat Index {fmt_num(temp.get('heat_index'), 1)}",
+        f"Momentum Top100: {len(momentum)}件",
+        f"新規ランクイン: {summary.get('新規ランクイン', 0)}件 / 急上昇: {summary.get('急上昇', 0)}件 / 過去最高順位更新: {summary.get('過去最高順位更新', 0)}件",
+        f"TOP30継続: {summary.get('TOP30継続銘柄', 0)}件 / 年初来高値更新: {summary.get('年初来高値更新', 0)}件 / 取得失敗: {summary.get('取得失敗', 0)}件",
+        "※売買指示ではありません。確認対象の抽出結果です。", "", f"【Momentum Top{top_n}】",
     ]
-
-    if buy.empty:
+    if momentum.empty:
         lines.append("該当なし")
-    for _, r in buy.head(top_n).iterrows():
+    for _, r in momentum.head(top_n).iterrows():
+        badges = []
+        if bool(r.get("is_new_entry")): badges.append("NEW")
+        if bool(r.get("is_rising_fast")): badges.append(f"急上昇+{fmt_int(r.get('rank_change'))}")
+        if bool(r.get("is_best_rank")): badges.append("最高順位")
+        if int(r.get("top30_streak_days", 0) or 0): badges.append(f"TOP30 {int(r.get('top30_streak_days'))}日")
         lines += [
-            f"{int(r['rank'])}. {r['code']} {r['name']}  {int(r['score'])}点",
+            f"{int(r['rank'])}. {r['code']} {r['name']} {int(r['score'])}点 {' / '.join(badges)}",
             f"   20日 {fmt_pct(r.get('return_20d'))} / 出来高 {fmt_num(r.get('volume_ratio'))}倍 / 連続 {int(r.get('ytd_high_streak', 0))}日",
-            f"   内訳 {score_breakdown_text(r)}",
-            f"   理由 {compact_reason(r.get('reason'))}",
-            "",
+            f"   理由 {compact_reason(r.get('reason'))}", "",
         ]
-
-    lines += ["【売り候補（保有銘柄の確認対象）】"]
-    if sell.empty:
-        lines.append("該当なし")
-    for _, r in sell.iterrows():
-        lines += [
-            f"・{r['code']} {r['name']} / {r['sell_signal']}",
-            f"  終値 {fmt_num(r.get('close'), 0)} / 含み損益率 {fmt_pct(r.get('unrealized_pnl_rate'))} / 5日 {fmt_pct(r.get('return_5d'))}",
-            "  ※即売りではなく、手動確認対象です。",
-        ]
-
-    lines += [
-        "",
-        "【エラー】" + (f"取得失敗 {errors_count}件。Errorsシートを確認してください。" if errors_count else "取得失敗なし。"),
-        "【詳細】GitHub Actions artifact の daily_report.xlsx を確認してください。",
-        "",
-        DISCLAIMER,
-    ]
+    lines += ["【詳細】GitHub Actions artifact の daily_report.xlsx を確認してください。", "", DISCLAIMER]
     return "\n".join(lines)
 
 
-def build_html_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, cfg: dict[str, Any]) -> str:
+def build_html_email(summary: dict[str, Any], momentum: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
-    errors_count = int(summary.get("取得失敗", 0) or 0)
-    sell_count = int(summary.get("売り候補", 0) or 0)
-    ytd_count = int(summary.get("年初来高値更新", 0) or 0)
-    success_count = int(summary.get("取得成功", 0) or 0)
-    target_count = int(summary.get("実スキャン対象銘柄数", summary.get("通常株ユニバース数", 0)) or 0)
-    success_rate = success_count / target_count if target_count else 0
-    top = None if buy.empty else buy.iloc[0]
+    temp = {} if temperature.empty else temperature.iloc[0].to_dict()
+    card_data = [
+        ("Market Temperature", str(temp.get("temperature", "-")), "#2563eb"),
+        ("Momentum Top100", f"{len(momentum)}件", "#111827"),
+        ("新規ランクイン", f"{summary.get('新規ランクイン', 0)}件", "#16a34a"),
+        ("急上昇", f"{summary.get('急上昇', 0)}件", "#ea580c"),
+        ("過去最高順位更新", f"{summary.get('過去最高順位更新', 0)}件", "#7c3aed"),
+        ("取得失敗", f"{summary.get('取得失敗', 0)}件", "#dc2626" if summary.get('取得失敗', 0) else "#16a34a"),
+    ]
+    cards = [f'<td style="width:50%;padding:6px"><div style="border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#fff"><div style="font-size:12px;color:#64748b">{html_text(label)}</div><div style="font-size:22px;font-weight:800;color:{color}">{html_text(value)}</div></div></td>' for label, value, color in card_data]
+    items = []
+    for _, r in momentum.head(top_n).iterrows():
+        badges = []
+        if bool(r.get("is_new_entry")): badges.append("NEW")
+        if bool(r.get("is_rising_fast")): badges.append(f"急上昇 +{fmt_int(r.get('rank_change'))}")
+        if bool(r.get("is_best_rank")): badges.append("最高順位")
+        if int(r.get("top30_streak_days", 0) or 0): badges.append(f"TOP30 {int(r.get('top30_streak_days'))}日")
+        badge_html = "".join(f'<span style="display:inline-block;margin:2px;padding:3px 8px;border-radius:999px;background:#e0f2fe;color:#075985;font-size:12px;font-weight:700">{html_text(b)}</span>' for b in badges)
+        items.append(f'<div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:10px 0;background:#fff"><div><b>#{int(r["rank"])} {html_text(r["code"])} {html_text(r["name"])}</b><span style="float:right;background:{score_color(r["score"])};color:#fff;border-radius:999px;padding:4px 10px;font-weight:800">{int(r["score"])}点</span></div><div style="clear:both;margin-top:8px">{badge_html}</div><div style="font-size:13px;color:#334155;line-height:1.7;margin-top:8px">20日 <b>{fmt_pct(r.get("return_20d"))}</b> ・ 出来高 <b>{fmt_num(r.get("volume_ratio"))}倍</b> ・ 連続 <b>{int(r.get("ytd_high_streak", 0))}日</b></div><div style="font-size:13px;color:#64748b;margin-top:6px">{html_text(compact_reason(r.get("reason")))}</div></div>')
+    top_html = "".join(items) if items else "<div>該当なし</div>"
+    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:680px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">Heat Index {fmt_num(temp.get('heat_index'), 1)} / 20日プラス率 {fmt_pct(temp.get('positive_20d_rate'))} / 20日線上 {fmt_pct(temp.get('above_ma20_rate'))} / 60日線上 {fmt_pct(temp.get('above_ma60_rate'))}</div></div><h2>Momentum Top{top_n}</h2>{top_html}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">{html_text(DISCLAIMER)}</div></div></body></html>'''
 
-    def metric_card(label: str, value: str, color: str = "#111827") -> str:
-        return f"""
-        <td style="width:50%;padding:6px;vertical-align:top;">
-          <div style="border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#ffffff;">
-            <div style="font-size:12px;color:#64748b;line-height:1.3;">{html_text(label)}</div>
-            <div style="font-size:22px;font-weight:800;color:{color};line-height:1.25;">{html_text(value)}</div>
-          </div>
-        </td>
-        """
-
-    buy_cards = []
-    if buy.empty:
-        buy_cards.append('<div style="color:#64748b;">該当なし</div>')
-    for _, r in buy.head(top_n).iterrows():
-        chips = "".join(
-            f'<span style="display:inline-block;margin:2px 4px 2px 0;padding:4px 8px;border-radius:999px;background:#f1f5f9;color:#334155;font-size:12px;">{html_text(label)} {points}/{max_points}</span>'
-            for label, points, max_points in score_breakdown_items(r)
-        )
-        buy_cards.append(f"""
-        <div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:10px 0;background:#ffffff;">
-          <div style="display:block;margin-bottom:8px;">
-            <span style="font-size:13px;color:#64748b;font-weight:700;">#{int(r['rank'])}</span>
-            <span style="font-size:18px;font-weight:800;color:#111827;"> {html_text(r['code'])} {html_text(r['name'])}</span>
-            <span style="float:right;background:{score_color(r['score'])};color:#ffffff;border-radius:999px;padding:4px 10px;font-size:14px;font-weight:800;">{int(r['score'])}点</span>
-          </div>
-          <div style="clear:both;font-size:13px;color:#334155;line-height:1.7;">
-            20日 <b>{fmt_pct(r.get('return_20d'))}</b> ・ 出来高 <b>{fmt_num(r.get('volume_ratio'))}倍</b> ・ 連続 <b>{int(r.get('ytd_high_streak', 0))}日</b>
-          </div>
-          <div style="margin-top:10px;font-size:12px;color:#64748b;font-weight:800;">スコア内訳</div>
-          <div style="margin-top:4px;line-height:1.6;">{chips}</div>
-          <div style="margin-top:10px;font-size:12px;color:#64748b;font-weight:800;">理由</div>
-          <div style="margin-top:4px;font-size:13px;color:#475569;line-height:1.6;">{html_text(compact_reason(r.get('reason')))}</div>
-        </div>
-        """)
-
-    sell_html = '<div style="color:#64748b;">該当なし</div>'
-    if not sell.empty:
-        items = []
-        for _, r in sell.iterrows():
-            items.append(f"""
-            <div style="border-left:4px solid #f59e0b;padding:10px 12px;margin:8px 0;background:#fffbeb;border-radius:10px;">
-              <div style="font-weight:800;color:#92400e;">{html_text(r['code'])} {html_text(r['name'])}</div>
-              <div style="font-size:13px;color:#78350f;line-height:1.6;">{html_text(r['sell_signal'])}</div>
-              <div style="font-size:13px;color:#475569;line-height:1.6;">終値 {fmt_num(r.get('close'), 0)} / 含み損益率 {fmt_pct(r.get('unrealized_pnl_rate'))} / 5日 {fmt_pct(r.get('return_5d'))}</div>
-            </div>
-            """)
-        sell_html = "".join(items) + '<div style="font-size:12px;color:#64748b;margin-top:6px;">※即売りではなく、手動でチャート・材料・保有方針を確認する対象です。</div>'
-
-    top_text = "買い候補はありません"
-    if top is not None:
-        top_text = f"最高 {top['code']} {top['name']} {int(top['score'])}点"
-
-    return f"""<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827;">
-    <div style="max-width:640px;margin:0 auto;padding:16px;">
-      <div style="background:#0f172a;color:#ffffff;border-radius:20px;padding:20px;margin-bottom:14px;">
-        <div style="font-size:13px;color:#cbd5e1;margin-bottom:6px;">モメンタムチンパン 引け後レポート</div>
-        <div style="font-size:24px;font-weight:900;line-height:1.25;">{html_text(summary.get('実行日', ''))}</div>
-        <div style="font-size:14px;line-height:1.6;color:#e2e8f0;margin-top:10px;">{html_text(top_text)}</div>
-      </div>
-
-      <div style="background:#ffffff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #e5e7eb;">
-        <div style="font-size:18px;font-weight:900;margin-bottom:10px;">まず見るポイント</div>
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-          <tr>
-            {metric_card('買い候補', f"{summary.get('買い候補', 0)}件", '#dc2626')}
-            {metric_card('売り候補', f"{sell_count}件", '#ea580c' if sell_count else '#16a34a')}
-          </tr>
-          <tr>
-            {metric_card('年初来高値更新', f"{ytd_count}件", '#2563eb')}
-            {metric_card('取得失敗', f"{errors_count}件", '#dc2626' if errors_count else '#16a34a')}
-          </tr>
-        </table>
-        <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:8px;">売買指示ではありません。確認すべき銘柄を絞るためのスクリーニング結果です。</div>
-      </div>
-
-      <div style="background:#ffffff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #e5e7eb;">
-        <div style="font-size:18px;font-weight:900;margin-bottom:10px;">実行状況</div>
-        <div style="font-size:14px;line-height:1.9;color:#334155;">
-          対象 <b>{target_count:,}</b>銘柄 / 取得成功 <b>{success_count:,}</b> / 成功率 <b>{success_rate:.1%}</b><br>
-          JPX {fmt_int(summary.get('JPX上場銘柄数'))} / 通常株 {fmt_int(summary.get('通常株ユニバース数'))} / 除外 {fmt_int(summary.get('除外銘柄数'))}<br>
-          検証モード <b>{html_text(summary.get('検証モード', ''))}</b> / 処理 <b>{fmt_seconds(summary.get('処理時間秒'))}</b>
-        </div>
-      </div>
-
-      <div style="background:#eff6ff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #bfdbfe;">
-        <div style="font-size:18px;font-weight:900;margin-bottom:8px;color:#1e3a8a;">スコアの見方</div>
-        <div style="font-size:13px;line-height:1.7;color:#1e40af;">100点満点：年初来30 / 連続20 / 20日20 / 出来高15 / MA10 / 代金5。点数が高いほど、直近の値動き・出来高・トレンド条件がそろっています。</div>
-      </div>
-
-      <div style="font-size:20px;font-weight:900;margin:18px 0 8px;">買い候補 上位{top_n}件</div>
-      {''.join(buy_cards)}
-
-      <div style="background:#ffffff;border-radius:18px;padding:16px;margin:16px 0 14px;border:1px solid #e5e7eb;">
-        <div style="font-size:18px;font-weight:900;margin-bottom:10px;">売り候補（保有銘柄の確認対象）</div>
-        {sell_html}
-      </div>
-
-      <div style="background:#ffffff;border-radius:18px;padding:16px;margin-bottom:14px;border:1px solid #e5e7eb;">
-        <div style="font-size:18px;font-weight:900;margin-bottom:8px;">エラー・詳細</div>
-        <div style="font-size:14px;line-height:1.8;color:#334155;">取得失敗：<b>{errors_count}件</b><br>{'Errorsシートと data/error_backups を確認してください。' if errors_count else '本日の取得失敗はありません。'}<br>詳細は GitHub Actions artifact の <b>daily_report.xlsx</b> を確認してください。</div>
-      </div>
-
-      <div style="font-size:12px;line-height:1.7;color:#64748b;padding:8px 2px 20px;">{html_text(DISCLAIMER)}</div>
-    </div>
-  </body>
-</html>"""
-
-
-def send_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], momentum: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -527,8 +434,8 @@ def send_email(summary: dict[str, Any], buy: pd.DataFrame, sell: pd.DataFrame, c
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, buy, sell, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, buy, sell, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, momentum, temperature, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, momentum, temperature, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -542,9 +449,8 @@ def main() -> None:
     if max_symbols > 0:
         logger.warning("VERIFICATION MODE: limiting universe from %s to first %s symbols", full_universe_count, max_symbols)
         stocks = stocks[:max_symbols]
-    holdings = load_holdings()
-    holding_map = {normalize_code(r.code): r for r in holdings.itertuples()}
-    rows = []; sell_rows = []; history_rows = []; success = 0
+    rows = []
+    success = 0
     today = datetime.now().date().isoformat()
     timeout_seconds = int(cfg["data"].get("request_timeout_seconds", 20))
     progress_interval = int(cfg["data"].get("progress_log_interval", 100))
@@ -563,16 +469,6 @@ def main() -> None:
             success += 1
             row = {"code": st.code, "name": st.name, "score": sc, "reason": reason, **score_breakdown, **m}
             if m["close"] >= cfg["market"].get("min_price", 0): rows.append(row)
-            history_rows.append({k: row.get(k) for k in ["code","name","date","ytd_high_flag","ytd_high_streak","ytd_high_count","close","high","volume","score"]})
-            if st.code in holding_map:
-                sig = sell_signals(m, cfg)
-                if sig:
-                    h = holding_map[st.code]
-                    buy_price, qty = float(h.buy_price or 0), float(h.quantity or 0)
-                    sell_rows.append({"code": st.code, "name": h.name or st.name, "close": m["close"], "buy_price": buy_price, "quantity": qty,
-                        "unrealized_pnl": (m["close"] - buy_price) * qty, "unrealized_pnl_rate": (m["close"] / buy_price - 1) if buy_price else None,
-                        "sell_signal": " / ".join(sig), "reason": "確認対象（即売りではありません）", "return_5d": m["return_5d"],
-                        "drawdown_from_recent_high": m["close"] / m["recent_high"] - 1 if m.get("recent_high") else None, "volume_ratio": m["volume_ratio"], "ma20": m["ma20"], "ma60": m["ma60"]})
         except Exception as exc:
             if STOP_REQUESTED:
                 logger.warning("Scan interrupted while processing %s; stopping", st.code)
@@ -581,20 +477,28 @@ def main() -> None:
             logger.exception("Failed processing %s", st.code)
             errors.append(error_entry(st.code, st.name, str(exc), "fetch_price", recoverable=True))
     all_df = pd.DataFrame(rows)
-    buy_cols = ["rank","code","name","close","score","reason","score_ytd_high","score_ytd_streak","score_return_20d","score_volume_ratio","score_ma","score_trading_value","ytd_high_flag","ytd_high_streak","ytd_high_count","return_5d","return_20d","return_60d","volume_ratio","trading_value","ma20","ma60","above_ma20","above_ma60"]
-    buy = all_df.sort_values("score", ascending=False).head(cfg["ranking"]["buy_candidate_limit"]).copy() if not all_df.empty else pd.DataFrame(columns=buy_cols)
-    if not buy.empty: buy.insert(0, "rank", range(1, len(buy)+1)); buy = buy[buy_cols]
-    rank_cols = ["code","name","close","ytd_high_streak","ytd_high_count","score","return_20d","volume_ratio"]
-    ranking = all_df.sort_values(["ytd_high_streak","ytd_high_count","score"], ascending=False)[rank_cols] if not all_df.empty else pd.DataFrame(columns=rank_cols)
-    sell = pd.DataFrame(sell_rows)
-    write_history(history_rows, cfg["data"]["history_path"])
+    momentum_cols = ["date","rank","code","name","close","score","reason","score_ytd_high","score_ytd_streak","score_return_20d","score_volume_ratio","score_ma","score_trading_value","ytd_high_flag","ytd_high_streak","ytd_high_count","return_5d","return_20d","return_60d","volume_ratio","trading_value","ma20","ma60","above_ma20","above_ma60","is_new_entry","rank_change","is_rising_fast","is_best_rank","top30_streak_days"]
+    base = all_df.sort_values(["score", "return_20d", "volume_ratio"], ascending=[False, False, False]).head(cfg["ranking"]["buy_candidate_limit"]).copy() if not all_df.empty else pd.DataFrame(columns=momentum_cols)
+    history = load_ranking_history(cfg["data"]["ranking_history_path"])
+    momentum = enrich_ranking_features(base, history, today) if not base.empty else pd.DataFrame(columns=momentum_cols)
+    if not momentum.empty:
+        momentum = momentum[[c for c in momentum_cols if c in momentum.columns]]
+    write_ranking_history(momentum, cfg["data"]["ranking_history_path"])
+    temperature = market_temperature(today, all_df, success)
+    temp_path = cfg["data"]["market_temperature_path"]
+    old_temp = pd.read_csv(temp_path) if Path(temp_path).exists() else pd.DataFrame(columns=temperature.columns)
+    pd.concat([old_temp, temperature], ignore_index=True).drop_duplicates(["date"], keep="last").to_csv(temp_path, index=False)
+    new_entries = momentum[momentum["is_new_entry"] == True].copy() if not momentum.empty else momentum.copy()
+    rising_fast = momentum[momentum["is_rising_fast"] == True].copy() if not momentum.empty else momentum.copy()
+    top30_streak = momentum[momentum["top30_streak_days"] > 0].sort_values(["top30_streak_days", "rank"], ascending=[False, True]).copy() if not momentum.empty else momentum.copy()
+    ytd_best = momentum[momentum["is_best_rank"] == True].copy() if not momentum.empty else momentum.copy()
     elapsed = round(perf_counter() - started_at, 1)
     limited_mode = max_symbols > 0 and max_symbols < full_universe_count
     universe_df = pd.DataFrame([{"code": st.code, "name": st.name, "market": st.market, "scan_mode": "verification_limited" if limited_mode else "full"} for st in stocks])
-    summary = {"実行日": today, "アプリ版": APP_VERSION, "レポート形式": "full_universe_summary_v2", "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0), "通常株ユニバース数": full_universe_count, "除外銘柄数": universe_stats.get("excluded_count", 0), "実スキャン対象銘柄数": len(stocks), "取得成功": success, "取得失敗": len(errors), "年初来高値更新": int(all_df.get("ytd_high_flag", pd.Series(dtype=bool)).sum()), "買い候補": len(buy), "売り候補": len(sell), "検証モード": "YES" if limited_mode else "NO", "銘柄数制限": max_symbols if max_symbols > 0 else "なし", "処理時間秒": elapsed, "注意事項": DISCLAIMER}
-    excel_report(cfg["data"]["output_path"], summary, buy, sell, ranking, errors, universe_df)
+    summary = {"実行日": today, "アプリ版": APP_VERSION, "レポート形式": "dashboard_top100_v1", "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0), "通常株ユニバース数": full_universe_count, "除外銘柄数": universe_stats.get("excluded_count", 0), "実スキャン対象銘柄数": len(stocks), "取得成功": success, "取得失敗": len(errors), "年初来高値更新": int(all_df.get("ytd_high_flag", pd.Series(dtype=bool)).sum()), "Momentum Top100": len(momentum), "新規ランクイン": len(new_entries), "急上昇": len(rising_fast), "過去最高順位更新": len(ytd_best), "TOP30継続銘柄": len(top30_streak), "検証モード": "YES" if limited_mode else "NO", "銘柄数制限": max_symbols if max_symbols > 0 else "なし", "処理時間秒": elapsed, "注意事項": DISCLAIMER}
+    excel_report(cfg["data"]["output_path"], summary, momentum, new_entries, rising_fast, top30_streak, ytd_best, temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
-    try: send_email(summary, buy, sell, cfg)
+    try: send_email(summary, momentum, temperature, cfg)
     except Exception as exc: logger.exception("Email sending failed: %s", exc)
 
 if __name__ == "__main__":
