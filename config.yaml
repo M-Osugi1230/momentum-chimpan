@@ -10,7 +10,7 @@ market:
 
 ranking:
   buy_candidate_limit: 100
-  email_top_n: 10
+  email_top_n: 30
 
 data:
   lookback_days: 400
