@@ -231,31 +231,38 @@ def enrich_ranking_features(today_ranked: pd.DataFrame, history: pd.DataFrame, t
     ranked = today_ranked.copy()
     ranked.insert(0, "rank", range(1, len(ranked) + 1))
     ranked.insert(0, "date", today)
+    ranked["code"] = ranked["code"].map(normalize_code)
+
     prior = history[history["date"] != today].copy() if not history.empty and "date" in history.columns else history.copy()
     latest_rank = {}
+    previous_top100: set[str] = set()
+    previous_top30_streak = {}
+    previous_top30_codes: set[str] = set()
     best_rank = {}
-    top30_streak = {}
+
     if not prior.empty:
+        prior["code"] = prior["code"].map(normalize_code)
         prior["date_sort"] = pd.to_datetime(prior["date"], errors="coerce")
-        latest = prior.sort_values(["code", "date_sort"]).dropna(subset=["code"]).groupby("code", as_index=False).tail(1)
-        latest_rank = dict(zip(latest["code"].astype(str).map(normalize_code), latest["rank"]))
-        best_rank = prior.groupby(prior["code"].astype(str).map(normalize_code))["rank"].min().to_dict()
-        top30_prior = prior[prior["rank"] <= 30].sort_values(["code", "date_sort"])
-        for code, group in top30_prior.groupby(top30_prior["code"].astype(str).map(normalize_code)):
-            streak = 0
-            for _, row in group.sort_values("date_sort", ascending=False).iterrows():
-                if int(row.get("rank", 9999)) <= 30:
-                    streak += 1
-                else:
-                    break
-            top30_streak[code] = streak
-    ranked["is_new_entry"] = ~ranked["code"].isin(latest_rank.keys())
+        prior = prior.dropna(subset=["date_sort", "code"])
+    if not prior.empty:
+        previous_date = prior["date_sort"].max()
+        previous = prior[prior["date_sort"] == previous_date].copy()
+        previous_top100 = set(previous["code"])
+        previous_top30 = previous[previous["rank"] <= 30].copy()
+        previous_top30_codes = set(previous_top30["code"])
+        latest_rank = dict(zip(previous["code"], previous["rank"]))
+        previous_top30_streak = dict(zip(previous_top30["code"], previous_top30.get("top30_streak_days", pd.Series(1, index=previous_top30.index)).fillna(1)))
+        best_rank = prior.groupby("code")["rank"].min().to_dict()
+
+    ranked["is_new_entry"] = ~ranked["code"].isin(previous_top100)
     ranked["rank_change"] = ranked.apply(lambda r: (int(latest_rank.get(r["code"])) - int(r["rank"])) if r["code"] in latest_rank else None, axis=1)
     ranked["is_rising_fast"] = ranked["rank_change"].fillna(0) >= 20
     ranked["is_best_rank"] = ranked.apply(lambda r: True if r["code"] not in best_rank else int(r["rank"]) < int(best_rank[r["code"]]), axis=1)
-    ranked["top30_streak_days"] = ranked.apply(lambda r: (int(top30_streak.get(r["code"], 0)) + 1) if int(r["rank"]) <= 30 else 0, axis=1)
+    ranked["top30_streak_days"] = ranked.apply(
+        lambda r: (int(previous_top30_streak.get(r["code"], 0)) + 1) if int(r["rank"]) <= 30 and r["code"] in previous_top30_codes else (1 if int(r["rank"]) <= 30 else 0),
+        axis=1,
+    )
     return ranked
-
 
 def write_ranking_history(today_ranked: pd.DataFrame, path: str) -> None:
     old = load_ranking_history(path)
@@ -267,18 +274,50 @@ def write_ranking_history(today_ranked: pd.DataFrame, path: str) -> None:
     out.to_csv(path, index=False)
 
 
-def market_temperature(today: str, all_df: pd.DataFrame, success: int) -> pd.DataFrame:
-    if all_df.empty:
-        values = {"date": today, "scanned_count": success, "avg_score": 0, "top30_avg_score": 0, "ytd_high_count": 0, "above_ma20_rate": 0, "above_ma60_rate": 0, "positive_20d_rate": 0, "hot_score_count": 0, "temperature": "Cold"}
-        return pd.DataFrame([values])
-    above20 = float(all_df.get("above_ma20", pd.Series(dtype=bool)).fillna(False).mean())
-    above60 = float(all_df.get("above_ma60", pd.Series(dtype=bool)).fillna(False).mean())
-    pos20 = float((all_df.get("return_20d", pd.Series(dtype=float)).fillna(0) > 0).mean())
-    ytd_count = int(all_df.get("ytd_high_flag", pd.Series(dtype=bool)).sum())
-    hot_count = int((all_df["score"] >= 80).sum())
-    heat = (above20 * 30) + (above60 * 25) + (pos20 * 20) + min(ytd_count / max(success, 1), 0.2) * 100 + min(hot_count / max(success, 1), 0.1) * 50
-    label = "Hot" if heat >= 70 else "Warm" if heat >= 50 else "Neutral" if heat >= 30 else "Cold"
-    return pd.DataFrame([{"date": today, "scanned_count": success, "avg_score": round(float(all_df["score"].mean()), 2), "top30_avg_score": round(float(all_df.nlargest(min(30, len(all_df)), "score")["score"].mean()), 2), "ytd_high_count": ytd_count, "above_ma20_rate": above20, "above_ma60_rate": above60, "positive_20d_rate": pos20, "hot_score_count": hot_count, "heat_index": round(heat, 2), "temperature": label}])
+def market_temperature(today: str, momentum: pd.DataFrame, previous_temperature: pd.DataFrame) -> pd.DataFrame:
+    cols = [
+        "date",
+        "ytd_high_count",
+        "top100_avg_score",
+        "top100_avg_return_20d",
+        "top100_avg_volume_ratio",
+        "delta_ytd_high_count",
+        "delta_top100_avg_score",
+        "delta_top100_avg_return_20d",
+        "delta_top100_avg_volume_ratio",
+    ]
+    if momentum.empty:
+        current = {"date": today, "ytd_high_count": 0, "top100_avg_score": 0.0, "top100_avg_return_20d": 0.0, "top100_avg_volume_ratio": 0.0}
+    else:
+        current = {
+            "date": today,
+            "ytd_high_count": int(momentum.get("ytd_high_flag", pd.Series(dtype=bool)).fillna(False).sum()),
+            "top100_avg_score": round(float(momentum["score"].mean()), 4),
+            "top100_avg_return_20d": round(float(momentum["return_20d"].dropna().mean()), 6) if momentum["return_20d"].notna().any() else 0.0,
+            "top100_avg_volume_ratio": round(float(momentum["volume_ratio"].dropna().mean()), 4) if momentum["volume_ratio"].notna().any() else 0.0,
+        }
+
+    prior = previous_temperature.copy() if previous_temperature is not None else pd.DataFrame(columns=cols)
+    if not prior.empty and "date" in prior.columns:
+        prior = prior[prior["date"] != today].copy()
+        prior["date_sort"] = pd.to_datetime(prior["date"], errors="coerce")
+        prior = prior.dropna(subset=["date_sort"]).sort_values("date_sort")
+    if prior.empty:
+        deltas = {
+            "delta_ytd_high_count": 0,
+            "delta_top100_avg_score": 0.0,
+            "delta_top100_avg_return_20d": 0.0,
+            "delta_top100_avg_volume_ratio": 0.0,
+        }
+    else:
+        prev = prior.iloc[-1]
+        deltas = {
+            "delta_ytd_high_count": current["ytd_high_count"] - int(float(prev.get("ytd_high_count", 0) or 0)),
+            "delta_top100_avg_score": round(current["top100_avg_score"] - float(prev.get("top100_avg_score", 0) or 0), 4),
+            "delta_top100_avg_return_20d": round(current["top100_avg_return_20d"] - float(prev.get("top100_avg_return_20d", 0) or 0), 6),
+            "delta_top100_avg_volume_ratio": round(current["top100_avg_volume_ratio"] - float(prev.get("top100_avg_volume_ratio", 0) or 0), 4),
+        }
+    return pd.DataFrame([{**current, **deltas}], columns=cols)
 
 def excel_report(path: str, summary: dict[str, Any], momentum: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_best: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
@@ -326,6 +365,16 @@ def fmt_int(value: Any) -> str:
     if value is None or pd.isna(value):
         return "-"
     return f"{int(float(value)):,}"
+
+
+def fmt_delta(value: Any, digits: int = 2) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    number = float(value)
+    sign = "+" if number > 0 else ""
+    if digits == 0:
+        return f"{sign}{int(number):,}"
+    return f"{sign}{number:,.{digits}f}"
 
 
 def fmt_seconds(value: Any) -> str:
@@ -377,7 +426,7 @@ def build_plain_email(summary: dict[str, Any], momentum: pd.DataFrame, temperatu
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     lines = [
         "本日のモメンタム・ダッシュボードです。", "", "【Dashboard】",
-        f"Market Temperature: {temp.get('temperature', '-')} / Heat Index {fmt_num(temp.get('heat_index'), 1)}",
+        f"Market Temperature: YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})",
         f"Momentum Top100: {len(momentum)}件",
         f"新規ランクイン: {summary.get('新規ランクイン', 0)}件 / 急上昇: {summary.get('急上昇', 0)}件 / 過去最高順位更新: {summary.get('過去最高順位更新', 0)}件",
         f"TOP30継続: {summary.get('TOP30継続銘柄', 0)}件 / 年初来高値更新: {summary.get('年初来高値更新', 0)}件 / 取得失敗: {summary.get('取得失敗', 0)}件",
@@ -404,8 +453,8 @@ def build_html_email(summary: dict[str, Any], momentum: pd.DataFrame, temperatur
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     card_data = [
-        ("Market Temperature", str(temp.get("temperature", "-")), "#2563eb"),
-        ("Momentum Top100", f"{len(momentum)}件", "#111827"),
+        ("YTD高値", f"{fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)})", "#2563eb"),
+        ("Top100平均スコア", f"{fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})", "#111827"),
         ("新規ランクイン", f"{summary.get('新規ランクイン', 0)}件", "#16a34a"),
         ("急上昇", f"{summary.get('急上昇', 0)}件", "#ea580c"),
         ("過去最高順位更新", f"{summary.get('過去最高順位更新', 0)}件", "#7c3aed"),
@@ -422,7 +471,7 @@ def build_html_email(summary: dict[str, Any], momentum: pd.DataFrame, temperatur
         badge_html = "".join(f'<span style="display:inline-block;margin:2px;padding:3px 8px;border-radius:999px;background:#e0f2fe;color:#075985;font-size:12px;font-weight:700">{html_text(b)}</span>' for b in badges)
         items.append(f'<div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:10px 0;background:#fff"><div><b>#{int(r["rank"])} {html_text(r["code"])} {html_text(r["name"])}</b><span style="float:right;background:{score_color(r["score"])};color:#fff;border-radius:999px;padding:4px 10px;font-weight:800">{int(r["score"])}点</span></div><div style="clear:both;margin-top:8px">{badge_html}</div><div style="font-size:13px;color:#334155;line-height:1.7;margin-top:8px">20日 <b>{fmt_pct(r.get("return_20d"))}</b> ・ 出来高 <b>{fmt_num(r.get("volume_ratio"))}倍</b> ・ 連続 <b>{int(r.get("ytd_high_streak", 0))}日</b></div><div style="font-size:13px;color:#64748b;margin-top:6px">{html_text(compact_reason(r.get("reason")))}</div></div>')
     top_html = "".join(items) if items else "<div>該当なし</div>"
-    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:680px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">Heat Index {fmt_num(temp.get('heat_index'), 1)} / 20日プラス率 {fmt_pct(temp.get('positive_20d_rate'))} / 20日線上 {fmt_pct(temp.get('above_ma20_rate'))} / 60日線上 {fmt_pct(temp.get('above_ma60_rate'))}</div></div><h2>Momentum Top{top_n}</h2>{top_html}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">{html_text(DISCLAIMER)}</div></div></body></html>'''
+    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:680px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} ({fmt_delta(temp.get('delta_top100_avg_return_20d'), 4)}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div><h2>Momentum Top{top_n}</h2>{top_html}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 def send_email(summary: dict[str, Any], momentum: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> None:
     load_dotenv()
@@ -484,9 +533,9 @@ def main() -> None:
     if not momentum.empty:
         momentum = momentum[[c for c in momentum_cols if c in momentum.columns]]
     write_ranking_history(momentum, cfg["data"]["ranking_history_path"])
-    temperature = market_temperature(today, all_df, success)
     temp_path = cfg["data"]["market_temperature_path"]
-    old_temp = pd.read_csv(temp_path) if Path(temp_path).exists() else pd.DataFrame(columns=temperature.columns)
+    old_temp = pd.read_csv(temp_path) if Path(temp_path).exists() else pd.DataFrame()
+    temperature = market_temperature(today, momentum, old_temp)
     pd.concat([old_temp, temperature], ignore_index=True).drop_duplicates(["date"], keep="last").to_csv(temp_path, index=False)
     new_entries = momentum[momentum["is_new_entry"] == True].copy() if not momentum.empty else momentum.copy()
     rising_fast = momentum[momentum["is_rising_fast"] == True].copy() if not momentum.empty else momentum.copy()

@@ -12,7 +12,7 @@
 - `yfinance` から Yahoo Finance 形式（例: `7203.T`）で株価を取得します。
 - 年初来高値、騰落率、移動平均線、出来高倍率、売買代金から 100 点満点のモメンタムスコアを計算します。
 - Momentum Top100 銘柄を出力します。
-- `data/momentum_daily_ranking.csv` にランキング履歴を、`data/market_temperature.csv` に Market Temperature を蓄積します。
+- `data/momentum_daily_ranking.csv` にランキング履歴を、`data/market_temperature.csv` に年初来高値数、Top100平均スコア、Top100平均20日騰落率、Top100平均出来高倍率と前回比を蓄積します。
 - `output/daily_report.xlsx` を作成し、GitHub Actions artifact に保存します。
 - Gmail アプリパスワードで通知メールを送信します。
 
@@ -232,7 +232,7 @@ Errorsシートに1件以上のエラーがある場合、`data.error_backup_dir
 表示順は以下です。
 
 1. **Dashboard**: Market Temperature、Momentum Top100、新規ランクイン、急上昇、過去最高順位更新、取得失敗をカード形式で表示します。
-2. **Market Temperature**: 市場全体の温度感、20日プラス率、移動平均線上の割合を表示します。
+2. **Market Temperature**: 年初来高値数、Top100平均スコア、Top100平均20日騰落率、Top100平均出来高倍率と、それぞれの前回比を表示します。
 3. **Momentum TopN**: 各銘柄をカード形式で表示し、新規ランクイン、急上昇、最高順位、TOP30継続日数のバッジを表示します。
 4. **詳細**: Excel artifact の確認先を表示します。
 
