@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-05-dashboard-full-history-v1"
+APP_VERSION = "2026-07-05-dashboard-rich-email-v1"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -405,6 +405,34 @@ def fmt_delta(value: Any, digits: int = 2) -> str:
     return f"{sign}{number:,.{digits}f}"
 
 
+def fmt_price(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):,.0f}円"
+
+
+def fmt_trading_value(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    number = float(value)
+    if number >= 100_000_000:
+        return f"{number / 100_000_000:.1f}億円"
+    if number >= 10_000:
+        return f"{number / 10_000:.0f}万円"
+    return f"{number:,.0f}円"
+
+
+def fmt_rank_change(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "前回なし"
+    number = int(float(value))
+    if number > 0:
+        return f"前回比 +{number}位"
+    if number < 0:
+        return f"前回比 {number}位"
+    return "前回比 0位"
+
+
 def compact_reason(reason: Any) -> str:
     return str(reason or "条件該当なし").replace("、", " / ")
 
@@ -424,6 +452,46 @@ def score_color(score: Any) -> str:
     return "#475569"
 
 
+def score_breakdown_text(r: pd.Series) -> str:
+    parts = [
+        f"高値{fmt_int(r.get('score_ytd_high'))}",
+        f"連続{fmt_int(r.get('score_ytd_streak'))}",
+        f"20日{fmt_int(r.get('score_return_20d'))}",
+        f"出来高{fmt_int(r.get('score_volume_ratio'))}",
+        f"MA{fmt_int(r.get('score_ma'))}",
+        f"売買{fmt_int(r.get('score_trading_value'))}",
+    ]
+    return " / ".join(parts)
+
+
+def latest_price_date(df: pd.DataFrame) -> str:
+    if df.empty or "price_date" not in df.columns:
+        return "-"
+    dates = pd.to_datetime(df["price_date"], errors="coerce").dropna()
+    if dates.empty:
+        return "-"
+    return dates.max().date().isoformat()
+
+
+def reading_summary(summary: dict[str, Any]) -> str:
+    new_count = int(summary.get("新規ランクイン", 0) or 0)
+    rising_count = int(summary.get("急上昇", 0) or 0)
+    streak10 = int(summary.get("TOP30継続10日以上", 0) or 0)
+    ytd_count = int(summary.get("年初来高値更新", 0) or 0)
+    notes = []
+    if new_count:
+        notes.append(f"新規Top100入りが{new_count}件あり、資金流入の新しい候補を確認する日です。")
+    if rising_count:
+        notes.append(f"20位以上の急上昇が{rising_count}件あり、短期加速銘柄を優先確認します。")
+    if streak10:
+        notes.append(f"TOP30を10日以上維持する銘柄が{streak10}件あり、継続トレンドが残っています。")
+    if ytd_count >= 100:
+        notes.append(f"年初来高値更新が{ytd_count}件あり、市場全体のモメンタムは強めです。")
+    if not notes:
+        notes.append("新規・急上昇よりも既存上位銘柄の継続確認が中心です。")
+    return " ".join(notes)
+
+
 def ranking_badges(r: pd.Series) -> list[str]:
     badges = []
     if bool(r.get("is_new_entry")):
@@ -437,7 +505,9 @@ def ranking_badges(r: pd.Series) -> list[str]:
     return badges
 
 
-def plain_ranking_section(title: str, df: pd.DataFrame, limit: int = 5) -> list[str]:
+def plain_ranking_section(title: str, df: pd.DataFrame, limit: int = 5, show_empty: bool = False) -> list[str]:
+    if df.empty and not show_empty:
+        return []
     lines = [f"【{title}】"]
     if df.empty:
         return lines + ["該当なし", ""]
@@ -445,47 +515,65 @@ def plain_ranking_section(title: str, df: pd.DataFrame, limit: int = 5) -> list[
         badges = " / ".join(ranking_badges(r))
         lines += [
             f"{int(r['rank'])}. {r['code']} {r['name']} {int(r['score'])}点" + (f" {badges}" if badges else ""),
-            f"   20日 {fmt_pct(r.get('return_20d'))} / 出来高 {fmt_num(r.get('volume_ratio'))}倍 / 連続 {int(r.get('ytd_high_streak', 0))}日",
+            f"   終値 {fmt_price(r.get('close'))} / {fmt_rank_change(r.get('rank_change'))} / 売買代金 {fmt_trading_value(r.get('trading_value'))}",
+            f"   5日 {fmt_pct(r.get('return_5d'))} / 20日 {fmt_pct(r.get('return_20d'))} / 60日 {fmt_pct(r.get('return_60d'))} / 出来高 {fmt_num(r.get('volume_ratio'))}倍",
+            f"   YTD更新 {fmt_int(r.get('ytd_high_count'))}回 / 連続 {fmt_int(r.get('ytd_high_streak'))}日 / スコア内訳 {score_breakdown_text(r)}",
             f"   理由 {compact_reason(r.get('reason'))}",
             "",
         ]
     return lines
 
 
-def html_ranking_cards(df: pd.DataFrame, limit: int = 5) -> str:
+def html_ranking_cards(df: pd.DataFrame, limit: int = 5, show_empty: bool = False) -> str:
+    if df.empty and not show_empty:
+        return ""
     if df.empty:
         return '<div style="color:#64748b">該当なし</div>'
     items = []
     for _, r in df.head(limit).iterrows():
         badge_html = "".join(f'<span style="display:inline-block;margin:2px;padding:3px 8px;border-radius:999px;background:#e0f2fe;color:#075985;font-size:12px;font-weight:700">{html_text(b)}</span>' for b in ranking_badges(r))
-        items.append(f'<div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:10px 0;background:#fff"><div><b>#{int(r["rank"])} {html_text(r["code"])} {html_text(r["name"])}</b><span style="float:right;background:{score_color(r["score"])};color:#fff;border-radius:999px;padding:4px 10px;font-weight:800">{int(r["score"])}点</span></div><div style="clear:both;margin-top:8px">{badge_html}</div><div style="font-size:13px;color:#334155;line-height:1.7;margin-top:8px">20日 <b>{fmt_pct(r.get("return_20d"))}</b> ・ 出来高 <b>{fmt_num(r.get("volume_ratio"))}倍</b> ・ 連続 <b>{int(r.get("ytd_high_streak", 0))}日</b></div><div style="font-size:13px;color:#64748b;margin-top:6px">{html_text(compact_reason(r.get("reason")))}</div></div>')
+        items.append(f'''<div style="border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin:10px 0;background:#fff">
+<div><b>#{int(r["rank"])} {html_text(r["code"])} {html_text(r["name"])}</b><span style="float:right;background:{score_color(r["score"])};color:#fff;border-radius:999px;padding:4px 10px;font-weight:800">{int(r["score"])}点</span></div>
+<div style="clear:both;margin-top:8px">{badge_html}</div>
+<div style="font-size:13px;color:#334155;line-height:1.7;margin-top:8px">終値 <b>{fmt_price(r.get("close"))}</b> ・ {html_text(fmt_rank_change(r.get("rank_change")))} ・ 売買代金 <b>{fmt_trading_value(r.get("trading_value"))}</b></div>
+<div style="font-size:13px;color:#334155;line-height:1.7">5日 <b>{fmt_pct(r.get("return_5d"))}</b> ・ 20日 <b>{fmt_pct(r.get("return_20d"))}</b> ・ 60日 <b>{fmt_pct(r.get("return_60d"))}</b> ・ 出来高 <b>{fmt_num(r.get("volume_ratio"))}倍</b></div>
+<div style="font-size:13px;color:#334155;line-height:1.7">YTD更新 <b>{fmt_int(r.get("ytd_high_count"))}回</b> ・ 連続 <b>{fmt_int(r.get("ytd_high_streak"))}日</b> ・ {html_text(score_breakdown_text(r))}</div>
+<div style="font-size:13px;color:#64748b;margin-top:6px">{html_text(compact_reason(r.get("reason")))}</div>
+</div>''')
     return "".join(items)
 
 
-def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
+    long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
+    price_date = latest_price_date(top100)
     lines = [
         "本日のモメンタム・ダッシュボードです。",
         "",
         "【まず見るポイント】",
+        f"レポート日: {summary.get('実行日', '-')}",
+        f"株価データ日: {price_date}",
         f"買い候補TOP100: {len(top100)}件",
         f"新規ランクイン: {summary.get('新規ランクイン', 0)}件",
         f"急上昇: {summary.get('急上昇', 0)}件",
         f"TOP30継続10日以上: {summary.get('TOP30継続10日以上', 0)}件",
         f"年初来高値更新: {summary.get('年初来高値更新', 0)}件",
         f"取得失敗: {summary.get('取得失敗', 0)}件",
-        "※売買指示ではありません。確認対象の抽出結果です。",
+        "",
+        "【今日の読み方】",
+        reading_summary(summary),
         "",
         "【Market Temperature】",
         f"YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})",
         f"Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} ({fmt_delta(temp.get('delta_top100_avg_return_20d'), 4)}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})",
         "",
     ]
-    lines += plain_ranking_section(f"Momentum Top{top_n}", top100, top_n)
-    lines += plain_ranking_section("新規ランクイン 上位5件", new_entries, 5)
-    lines += plain_ranking_section("急上昇 上位5件", rising_fast, 5)
-    lines += plain_ranking_section("TOP30継続ランキング 上位5件", top30_streak, 5)
+    lines += plain_ranking_section("新規ランクイン 上位10件", new_entries, 10)
+    lines += plain_ranking_section("急上昇 上位10件", rising_fast, 10)
+    lines += plain_ranking_section("TOP30継続10日以上 上位10件", long_streak, 10)
+    lines += plain_ranking_section(f"Momentum Top{top_n}", top100, top_n, show_empty=True)
+    lines += plain_ranking_section("年初来高値更新ランキング 上位10件", ytd_high_ranking, 10)
     lines += ["【詳細】GitHub Actions artifact の daily_report.xlsx を確認してください。", "", DISCLAIMER]
     return "\n".join(lines)
 
@@ -494,9 +582,18 @@ def metric_card(label: str, value: str, color: str = "#111827") -> str:
     return f'<td style="width:50%;padding:6px"><div style="border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#fff"><div style="font-size:12px;color:#64748b">{html_text(label)}</div><div style="font-size:22px;font-weight:800;color:{color}">{html_text(value)}</div></div></td>'
 
 
-def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
+def html_section(title: str, df: pd.DataFrame, limit: int, show_empty: bool = False) -> str:
+    cards = html_ranking_cards(df, limit, show_empty=show_empty)
+    if not cards:
+        return ""
+    return f"<h2>{html_text(title)}</h2>{cards}"
+
+
+def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
+    long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
+    price_date = latest_price_date(top100)
     cards = [
         metric_card("買い候補TOP100", f"{len(top100)}件", "#111827"),
         metric_card("新規ランクイン", f"{summary.get('新規ランクイン', 0)}件", "#16a34a"),
@@ -505,10 +602,17 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
         metric_card("年初来高値更新", f"{summary.get('年初来高値更新', 0)}件", "#2563eb"),
         metric_card("取得失敗", f"{summary.get('取得失敗', 0)}件", "#dc2626" if summary.get('取得失敗', 0) else "#16a34a"),
     ]
-    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} ({fmt_delta(temp.get('delta_top100_avg_return_20d'), 4)}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div><h2>Momentum Top{top_n}</h2>{html_ranking_cards(top100, top_n)}<h2>新規ランクイン 上位5件</h2>{html_ranking_cards(new_entries, 5)}<h2>急上昇 上位5件</h2>{html_ranking_cards(rising_fast, 5)}<h2>TOP30継続ランキング 上位5件</h2>{html_ranking_cards(top30_streak, 5)}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">{html_text(DISCLAIMER)}</div></div></body></html>'''
+    sections = "".join([
+        html_section("新規ランクイン 上位10件", new_entries, 10),
+        html_section("急上昇 上位10件", rising_fast, 10),
+        html_section("TOP30継続10日以上 上位10件", long_streak, 10),
+        html_section(f"Momentum Top{top_n}", top100, top_n, show_empty=True),
+        html_section("年初来高値更新ランキング 上位10件", ytd_high_ranking, 10),
+    ])
+    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} ({fmt_delta(temp.get('delta_top100_avg_return_20d'), 4)}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
-def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -518,8 +622,8 @@ def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.Da
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, temperature, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, temperature, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -596,7 +700,8 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_full_history_v1",
+        "レポート形式": "dashboard_rich_email_v1",
+        "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
         "除外銘柄数": universe_stats.get("excluded_count", 0),
@@ -618,7 +723,7 @@ def main() -> None:
     excel_report(cfg["data"]["output_path"], summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
     try:
-        send_email(summary, top100, new_entries, rising_fast, top30_streak, temperature, cfg)
+        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, cfg)
     except Exception as exc:
         logger.exception("Email sending failed: %s", exc)
 
