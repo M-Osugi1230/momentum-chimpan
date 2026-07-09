@@ -1,0 +1,199 @@
+name: Apply priority candidate change tracking
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feature/priority-candidate-changes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Normalize repeated patch marker
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/apply_priority_candidate_changes.py')
+          text = path.read_text(encoding='utf-8')
+          block = '''replace_once(
+              '    priority = select_priority_candidates(top100, 10)\\n',
+              '    priority = priority_changes.get("current", select_priority_candidates(top100, 10)).head(10)\\n',
+          )
+          '''
+          if text.count(block) != 2:
+              raise RuntimeError(f'Expected two repeated priority patch blocks, found {text.count(block)}')
+          combined = '''priority_marker = '    priority = select_priority_candidates(top100, 10)\\n'
+          priority_replacement = '    priority = priority_changes.get("current", select_priority_candidates(top100, 10)).head(10)\\n'
+          if text.count(priority_marker) != 2:
+              raise RuntimeError(f"Expected two priority markers, found {text.count(priority_marker)}")
+          text = text.replace(priority_marker, priority_replacement, 2)
+          '''
+          text = text.replace(block, combined, 1).replace(block, '', 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Apply focused patch
+        run: python scripts/apply_priority_candidate_changes.py
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m py_compile main.py
+      - name: Priority change smoke test
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from main import (
+              compare_priority_candidates,
+              build_plain_email,
+              build_html_email,
+              excel_report,
+          )
+
+          def row(code, rank, *, score=75, ytd=True, new=False, rising=False, top30=0, volume=2.0, trading=1_000_000_000, above=True, date=None):
+              data = {
+                  'rank': rank,
+                  'code': code,
+                  'name': f'Test{code}',
+                  'score': score,
+                  'close': 1000,
+                  'return_5d': 0.05,
+                  'return_20d': 0.20,
+                  'return_60d': 0.30,
+                  'volume_ratio': volume,
+                  'trading_value': trading,
+                  'ytd_high_count': 10,
+                  'ytd_high_streak': 3,
+                  'score_ytd_high': 30,
+                  'score_ytd_streak': 12,
+                  'score_return_20d': 15,
+                  'score_volume_ratio': 10,
+                  'score_ma': 10,
+                  'score_trading_value': 5,
+                  'reason': '年初来高値更新、20日線上、60日線上、売買代金1億円以上',
+                  'is_new_entry': new,
+                  'is_rising_fast': rising,
+                  'is_best_rank': False,
+                  'rank_change': 5,
+                  'top30_streak': top30,
+                  'top30_streak_days': top30,
+                  'price_date': '2026-07-10',
+                  'ytd_high_flag': ytd,
+                  'ma20_deviation': 0.10,
+                  'above_ma20': above,
+                  'above_ma60': above,
+              }
+              if date is not None:
+                  data['date'] = date
+              return data
+
+          current = pd.DataFrame([
+              row('1001', 5, top30=5, trading=6_000_000_000),
+              row('1002', 40, ytd=False, top30=0, volume=1.0, trading=500_000_000, above=False),
+              row('1003', 15, new=True, ytd=True, volume=2.0, trading=1_000_000_000),
+              row('1004', 20, rising=False, top30=4, ytd=True, volume=2.0, trading=1_000_000_000),
+          ])
+          previous_rows = [
+              row('1001', 6, top30=4, trading=6_000_000_000, date='2026-07-09'),
+              row('1002', 10, top30=4, trading=1_000_000_000, date='2026-07-09'),
+              row('1004', 45, rising=True, top30=0, ytd=False, trading=1_000_000_000, date='2026-07-09'),
+              row('1005', 1, top30=5, trading=6_000_000_000, date='2026-07-10'),
+          ]
+          history = pd.DataFrame(previous_rows)
+          for col in ['is_new_entry', 'is_rising_fast', 'is_best_rank', 'ytd_high_flag', 'above_ma20', 'above_ma60']:
+              history[col] = history[col].map(lambda value: 'True' if value else 'False')
+
+          changes = compare_priority_candidates(current, history, '2026-07-10', 100)
+          assert changes['previous_date'] == '2026-07-09', changes['previous_date']
+          assert len(changes['new']) == 1, changes['table']
+          assert len(changes['continued']) == 2, changes['table']
+          assert len(changes['dropped']) == 1, changes['table']
+          assert len(changes['label_changed']) == 1, changes['table']
+          assert changes['new'].iloc[0]['code'] == '1003'
+          assert changes['dropped'].iloc[0]['code'] == '1002'
+          changed = changes['label_changed'].iloc[0]
+          assert changed['code'] == '1004'
+          assert '加速' in changed['previous_labels']
+          assert '継続' in changed['current_labels']
+
+          temperature = pd.DataFrame([{
+              'date': '2026-07-10',
+              'ytd_high_count': 50,
+              'delta_ytd_high_count': 1,
+              'top100_avg_score': 70,
+              'delta_top100_avg_score': 1,
+              'top100_avg_return_20d': 0.15,
+              'delta_top100_avg_return_20d': 0.01,
+              'top100_avg_volume_ratio': 2.0,
+              'delta_top100_avg_volume_ratio': 0.1,
+              'market_regime': '強気',
+              'market_regime_score': 80,
+              'previous_market_regime': 'やや強気',
+              'previous_market_regime_score': 70,
+              'previous_market_regime_date': '2026-07-09',
+              'regime_changed': True,
+              'regime_transition': 'やや強気 → 強気',
+              'regime_transition_type': '改善',
+              'regime_score_delta': 10,
+              'regime_streak': 1,
+          }])
+          summary = {
+              '実行日': '2026-07-10',
+              '新規ランクイン': 1,
+              '急上昇': 1,
+              'TOP30継続10日以上': 0,
+              '年初来高値更新': 3,
+              '取得失敗': 0,
+          }
+          cfg = {'ranking': {'email_top_n': 10}}
+          empty = current.iloc[0:0].copy()
+          plain = build_plain_email(summary, current, empty, empty, current, current, temperature, changes, cfg)
+          html = build_html_email(summary, current, empty, empty, current, current, temperature, changes, cfg)
+          assert '【重点候補の変化】' in plain
+          assert '新規 1件 / 継続 2件 / 脱落 1件 / タグ変化 1件' in plain
+          assert '1003' in plain and '1002' in plain
+          assert '加速 → 継続' in plain
+          assert '重点候補の変化' in html
+          assert '今日から重点候補' in html
+          assert '重点候補から脱落' in html
+
+          report_path = '/tmp/priority_changes_test.xlsx'
+          excel_report(
+              report_path,
+              summary,
+              current,
+              empty,
+              empty,
+              current,
+              current,
+              changes['table'],
+              temperature,
+              [],
+              pd.DataFrame([{'code': '1001'}]),
+          )
+          assert 'Priority Changes' in pd.ExcelFile(report_path).sheet_names
+          print('priority candidate change tracking smoke ok')
+          PY
+      - name: Commit main.py when changed
+        run: |
+          if git diff --quiet -- main.py; then
+            echo "main.py already updated"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.py
+          git commit -m "Track priority candidate changes"
+          git push origin HEAD:${{ github.head_ref }}
