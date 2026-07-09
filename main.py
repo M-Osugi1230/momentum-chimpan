@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-09-dashboard-metric-highlights-v1"
+APP_VERSION = "2026-07-09-dashboard-signal-quality-v2"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -289,7 +289,7 @@ def enrich_ranking_features(all_ranked: pd.DataFrame, history: pd.DataFrame, tod
 
     ranked["is_new_entry"] = ranked["is_top100"] & ~ranked["code"].isin(previous_top100)
     ranked["rank_change"] = ranked.apply(lambda r: (int(latest_rank.get(r["code"])) - int(r["rank"])) if r["code"] in latest_rank else None, axis=1)
-    ranked["is_rising_fast"] = ranked["is_top100"] & (ranked["rank_change"].fillna(0) >= 20)
+    ranked["is_rising_fast"] = ranked["is_top100"] & ~ranked["is_new_entry"] & (ranked["rank_change"].fillna(0) >= 20)
     ranked["is_best_rank"] = ranked.apply(lambda r: True if r["code"] not in best_rank else int(r["rank"]) < int(best_rank[r["code"]]), axis=1)
     ranked["top30_streak"] = ranked.apply(
         lambda r: (int(previous_top30_streak.get(r["code"], 0)) + 1) if int(r["rank"]) <= 30 and r["code"] in previous_top30_codes else (1 if int(r["rank"]) <= 30 else 0),
@@ -405,6 +405,15 @@ def fmt_delta(value: Any, digits: int = 2) -> str:
     return f"{sign}{number:,.{digits}f}"
 
 
+def fmt_pct_point(value: Any) -> str:
+    """Format a decimal return difference as percentage points."""
+    if value is None or pd.isna(value):
+        return "-"
+    number = float(value) * 100
+    sign = "+" if number > 0 else ""
+    return f"{sign}{number:.2f}pt"
+
+
 def fmt_price(value: Any) -> str:
     if value is None or pd.isna(value):
         return "-"
@@ -490,7 +499,7 @@ def reading_summary(summary: dict[str, Any]) -> str:
     if new_count:
         notes.append(f"新規Top100入りが{new_count}件あり、資金流入の新しい候補を確認する日です。")
     if rising_count:
-        notes.append(f"20位以上の急上昇が{rising_count}件あり、短期加速銘柄を優先確認します。")
+        notes.append(f"前回もTop100だった銘柄のうち、20位以上の急上昇が{rising_count}件あります。")
     if streak10:
         notes.append(f"TOP30を10日以上維持する銘柄が{streak10}件あり、継続トレンドが残っています。")
     if ytd_count >= 100:
@@ -545,6 +554,18 @@ def format_metric_value(column: str, value: Any) -> str:
     return fmt_num(value)
 
 
+def metric_detail_parts(r: pd.Series, target_column: str) -> list[str]:
+    """Return common highlight metrics without repeating the target metric."""
+    parts: list[str] = []
+    if target_column != "return_20d":
+        parts.append(f"20日 {fmt_pct(r.get('return_20d'))}")
+    if target_column != "volume_ratio":
+        parts.append(f"出来高 {fmt_num(r.get('volume_ratio'))}倍")
+    if target_column != "trading_value":
+        parts.append(f"売買代金 {fmt_trading_value(r.get('trading_value'))}")
+    return parts
+
+
 def plain_metric_highlights(top100: pd.DataFrame) -> list[str]:
     lines = ["【指標別ハイライト】"]
     for title, column, label in metric_highlight_specs():
@@ -553,11 +574,11 @@ def plain_metric_highlights(top100: pd.DataFrame) -> list[str]:
             continue
         lines.append(f"■ {title}")
         for _, r in ranked.iterrows():
+            details = "｜".join(metric_detail_parts(r, column))
+            suffix = f"｜{details}" if details else ""
             lines.append(
                 f"#{int(r['rank'])} {r['code']} {r['name']}｜{int(r['score'])}点｜"
-                f"{label} {format_metric_value(column, r.get(column))}｜"
-                f"20日 {fmt_pct(r.get('return_20d'))}｜出来高 {fmt_num(r.get('volume_ratio'))}倍｜"
-                f"売買代金 {fmt_trading_value(r.get('trading_value'))}"
+                f"{label} {format_metric_value(column, r.get(column))}{suffix}"
             )
         lines.append("")
     return lines
@@ -571,10 +592,12 @@ def html_metric_highlights(top100: pd.DataFrame) -> str:
             continue
         rows = []
         for _, r in ranked.iterrows():
+            details = " ・ ".join(metric_detail_parts(r, column))
+            suffix = f" ・ {html_text(details)}" if details else ""
             rows.append(
                 f'''<div style="border-top:1px solid #e5e7eb;padding:10px 0">
 <div style="font-size:14px;font-weight:800;color:#0f172a">#{int(r["rank"])} {html_text(r["code"])} {html_text(r["name"])} <span style="color:{score_color(r["score"])}">{int(r["score"])}点</span></div>
-<div style="font-size:12px;line-height:1.7;color:#475569">{html_text(label)} <b>{html_text(format_metric_value(column, r.get(column)))}</b> ・ 20日 {fmt_pct(r.get("return_20d"))} ・ 出来高 {fmt_num(r.get("volume_ratio"))}倍 ・ 売買代金 {fmt_trading_value(r.get("trading_value"))}</div>
+<div style="font-size:12px;line-height:1.7;color:#475569">{html_text(label)} <b>{html_text(format_metric_value(column, r.get(column)))}</b>{suffix}</div>
 </div>'''
             )
         groups.append(
@@ -663,7 +686,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
         "",
         "【Market Temperature】",
         f"YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})",
-        f"Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} ({fmt_delta(temp.get('delta_top100_avg_return_20d'), 4)}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})",
+        f"Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} (前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})",
         "",
     ]
     lines += plain_metric_highlights(top100)
@@ -708,7 +731,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
         html_section("TOP30継続10日以上 上位10件", long_streak, 10),
         html_section(f"Momentum Top{top_n}", top100, top_n, show_empty=True),
     ])
-    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} ({fmt_delta(temp.get('delta_top100_avg_return_20d'), 4)}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
+    return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))}（前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}） / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
 def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> None:
@@ -799,7 +822,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_metric_highlights_v1",
+        "レポート形式": "dashboard_signal_quality_v2",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
