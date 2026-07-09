@@ -33,7 +33,7 @@ jobs:
       - name: Priority change smoke test
         id: smoke
         continue-on-error: true
-        run: python scripts/test_priority_candidate_changes.py > priority_test_result.txt 2>&1
+        run: PYTHONPATH=. python scripts/test_priority_candidate_changes.py > priority_test_result.txt 2>&1
       - name: Save failure diagnostics
         if: steps.smoke.outcome == 'failure'
         run: |
