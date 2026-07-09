@@ -132,17 +132,17 @@ def html_priority_section(priority: pd.DataFrame) -> str:
         rank_change = fmt_rank_change(r.get("rank_change"))
         movement = f" ・ {html_text(rank_change)}" if rank_change else ""
         items.append(
-            f'''<div style="border-top:1px solid #e5e7eb;padding:11px 0">
+            f"""<div style="border-top:1px solid #e5e7eb;padding:11px 0">
 <div style="font-size:14px;font-weight:900;color:#0f172a">#{int(r["rank"])} {html_text(r["code"])} {html_text(r["name"])} <span style="color:{score_color(r["score"])}">{int(r["score"])}点</span></div>
 <div style="margin:5px 0">{"".join(tag_html)}</div>
 <div style="font-size:12px;line-height:1.7;color:#475569">20日 {fmt_pct(r.get("return_20d"))} ・ 出来高 {fmt_num(r.get("volume_ratio"))}倍 ・ 売買代金 {fmt_trading_value(r.get("trading_value"))}{movement}</div>
-</div>'''
+</div>"""
         )
-    return f'''<div style="background:#fff;border:2px solid #0f172a;border-radius:18px;padding:16px;margin-top:18px">
+    return f"""<div style="background:#fff;border:2px solid #0f172a;border-radius:18px;padding:16px;margin-top:18px">
 <div style="font-size:18px;font-weight:900;color:#0f172a">今日の重点候補</div>
 <div style="font-size:12px;line-height:1.7;color:#64748b;margin-top:4px">複数のモメンタム条件が重なった銘柄です。過熱注意は売買指示ではなく、値動き確認の注意タグです。</div>
 {"".join(items)}
-</div>'''
+</div>"""
 '''
 
 replace_once(
