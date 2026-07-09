@@ -63,6 +63,9 @@ for col in ["is_new_entry", "is_rising_fast", "is_best_rank", "ytd_high_flag", "
     history[col] = history[col].map(lambda value: "True" if value else "False")
 
 changes = compare_priority_candidates(current, history, "2026-07-10", 100)
+print("comparison date:", changes["previous_date"])
+print("counts:", {key: len(changes[key]) for key in ["new", "continued", "dropped", "label_changed"]})
+print(changes["table"].to_string(index=False))
 assert changes["previous_date"] == "2026-07-09", changes["previous_date"]
 assert len(changes["new"]) == 1, changes["table"]
 assert len(changes["continued"]) == 2, changes["table"]
@@ -108,6 +111,9 @@ cfg = {"ranking": {"email_top_n": 10}}
 empty = current.iloc[0:0].copy()
 plain = build_plain_email(summary, current, empty, empty, current, current, temperature, changes, cfg)
 html = build_html_email(summary, current, empty, empty, current, current, temperature, changes, cfg)
+print("plain has change section:", "【重点候補の変化】" in plain)
+print("plain summary line present:", "新規 1件 / 継続 2件 / 脱落 1件 / タグ変化 1件" in plain)
+print("plain tag change present:", "加速 → 継続" in plain)
 assert "【重点候補の変化】" in plain
 assert "新規 1件 / 継続 2件 / 脱落 1件 / タグ変化 1件" in plain
 assert "1003" in plain and "1002" in plain
@@ -130,5 +136,6 @@ excel_report(
     [],
     pd.DataFrame([{"code": "1001"}]),
 )
+print("excel sheets:", pd.ExcelFile(report_path).sheet_names)
 assert "Priority Changes" in pd.ExcelFile(report_path).sheet_names
 print("priority candidate change tracking smoke ok")
