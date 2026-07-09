@@ -27,7 +27,7 @@ jobs:
       - name: Apply focused patch
         run: python scripts/apply_priority_candidate_changes.py
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -q -r requirements.txt
       - name: Syntax check
         run: python -m py_compile main.py
       - name: Priority change smoke test
