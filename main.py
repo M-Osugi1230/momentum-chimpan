@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-10-dashboard-regime-history-v6"
+APP_VERSION = "2026-07-10-dashboard-priority-changes-v7"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -347,7 +347,7 @@ def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFram
     return pd.DataFrame([{**current, **deltas}], columns=cols)
 
 
-def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
+def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
         top100.to_excel(w, sheet_name="Momentum Top100", index=False)
@@ -355,6 +355,7 @@ def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, new_e
         rising_fast.to_excel(w, sheet_name="Rising Fast", index=False)
         top30_streak.to_excel(w, sheet_name="Top30 Streak", index=False)
         ytd_high_ranking.to_excel(w, sheet_name="YTD High Ranking", index=False)
+        priority_changes.to_excel(w, sheet_name="Priority Changes", index=False)
         temperature.to_excel(w, sheet_name="Market Temperature", index=False)
         universe.to_excel(w, sheet_name="Scanned Universe", index=False)
         pd.DataFrame(errors).to_excel(w, sheet_name="Errors", index=False)
@@ -621,6 +622,8 @@ def row_flag(r: pd.Series, key: str) -> bool:
     value = r.get(key)
     if value is None or pd.isna(value):
         return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
     return bool(value)
 
 
@@ -679,6 +682,209 @@ def select_priority_candidates(top100: pd.DataFrame, limit: int = 10) -> pd.Data
         ["priority_signal_count", "score", "trading_value", "rank"],
         ascending=[False, False, False, True],
     ).head(limit)
+
+
+def priority_labels_text(labels: Any) -> str:
+    if isinstance(labels, (list, tuple, set)):
+        return " / ".join(str(label) for label in labels if str(label).strip())
+    return optional_text(labels)
+
+
+def latest_previous_top100(history: pd.DataFrame, today: str, top_limit: int) -> tuple[pd.DataFrame, str]:
+    if history is None or history.empty or "date" not in history.columns or "rank" not in history.columns:
+        return pd.DataFrame(), ""
+    work = history.copy()
+    work["date_sort"] = pd.to_datetime(work["date"], errors="coerce")
+    work["rank"] = pd.to_numeric(work["rank"], errors="coerce")
+    work = work.dropna(subset=["date_sort", "rank"])
+    work = work[work["date"].astype(str) != str(today)]
+    if work.empty:
+        return pd.DataFrame(), ""
+    previous_date_value = work["date_sort"].max()
+    previous = work[(work["date_sort"] == previous_date_value) & (work["rank"] <= top_limit)].copy()
+    if previous.empty:
+        return previous, previous_date_value.date().isoformat()
+    previous["code"] = previous["code"].map(normalize_code)
+    return previous.sort_values("rank"), previous_date_value.date().isoformat()
+
+
+def optional_number(value: Any) -> float | None:
+    converted = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return None if pd.isna(converted) else float(converted)
+
+
+def compare_priority_candidates(top100: pd.DataFrame, history: pd.DataFrame, today: str, top_limit: int) -> dict[str, Any]:
+    current_top100 = top100.copy()
+    if not current_top100.empty:
+        current_top100["code"] = current_top100["code"].map(normalize_code)
+    current = select_priority_candidates(current_top100, max(top_limit, len(current_top100))).copy()
+    previous_top100, previous_date = latest_previous_top100(history, today, top_limit)
+    previous = select_priority_candidates(previous_top100, max(top_limit, len(previous_top100))).copy() if not previous_top100.empty else pd.DataFrame()
+
+    current_index = current.set_index("code", drop=False) if not current.empty else pd.DataFrame()
+    previous_index = previous.set_index("code", drop=False) if not previous.empty else pd.DataFrame()
+    top100_index = current_top100.set_index("code", drop=False) if not current_top100.empty else pd.DataFrame()
+    current_codes = set(current["code"]) if not current.empty else set()
+    previous_codes = set(previous["code"]) if not previous.empty else set()
+    records: list[dict[str, Any]] = []
+
+    for _, row in current.iterrows():
+        code = normalize_code(row.get("code"))
+        previous_row = previous_index.loc[code] if code in previous_codes else None
+        current_labels = list(row.get("priority_labels", []))
+        previous_labels = list(previous_row.get("priority_labels", [])) if previous_row is not None else []
+        status = "継続" if previous_row is not None else "新規"
+        records.append({
+            "date": today,
+            "previous_date": previous_date,
+            "status": status,
+            "code": code,
+            "name": row.get("name", ""),
+            "current_rank": optional_number(row.get("rank")),
+            "previous_rank": optional_number(previous_row.get("rank")) if previous_row is not None else None,
+            "current_score": optional_number(row.get("score")),
+            "previous_score": optional_number(previous_row.get("score")) if previous_row is not None else None,
+            "current_labels": priority_labels_text(current_labels),
+            "previous_labels": priority_labels_text(previous_labels),
+            "label_changed": bool(previous_row is not None and set(current_labels) != set(previous_labels)),
+            "exit_reason": "",
+            "return_20d": optional_number(row.get("return_20d")),
+            "volume_ratio": optional_number(row.get("volume_ratio")),
+            "trading_value": optional_number(row.get("trading_value")),
+        })
+
+    for _, row in previous.iterrows():
+        code = normalize_code(row.get("code"))
+        if code in current_codes:
+            continue
+        current_row = top100_index.loc[code] if not top100_index.empty and code in top100_index.index else None
+        records.append({
+            "date": today,
+            "previous_date": previous_date,
+            "status": "脱落",
+            "code": code,
+            "name": row.get("name", ""),
+            "current_rank": optional_number(current_row.get("rank")) if current_row is not None else None,
+            "previous_rank": optional_number(row.get("rank")),
+            "current_score": optional_number(current_row.get("score")) if current_row is not None else None,
+            "previous_score": optional_number(row.get("score")),
+            "current_labels": priority_labels_text(priority_candidate_labels(current_row)) if current_row is not None else "",
+            "previous_labels": priority_labels_text(row.get("priority_labels", [])),
+            "label_changed": False,
+            "exit_reason": "重点条件外" if current_row is not None else "Top100圏外",
+            "return_20d": optional_number(current_row.get("return_20d")) if current_row is not None else optional_number(row.get("return_20d")),
+            "volume_ratio": optional_number(current_row.get("volume_ratio")) if current_row is not None else optional_number(row.get("volume_ratio")),
+            "trading_value": optional_number(current_row.get("trading_value")) if current_row is not None else optional_number(row.get("trading_value")),
+        })
+
+    columns = [
+        "date", "previous_date", "status", "code", "name", "current_rank", "previous_rank",
+        "current_score", "previous_score", "current_labels", "previous_labels", "label_changed",
+        "exit_reason", "return_20d", "volume_ratio", "trading_value",
+    ]
+    table = pd.DataFrame(records, columns=columns)
+    if not table.empty:
+        status_order = pd.Categorical(table["status"], categories=["新規", "継続", "脱落"], ordered=True)
+        table = table.assign(status_order=status_order).sort_values(
+            ["status_order", "current_rank", "previous_rank"], na_position="last"
+        ).drop(columns=["status_order"])
+
+    new_rows = table[table["status"] == "新規"].copy() if not table.empty else table.copy()
+    continued_rows = table[table["status"] == "継続"].copy() if not table.empty else table.copy()
+    dropped_rows = table[table["status"] == "脱落"].copy() if not table.empty else table.copy()
+    changed_rows = continued_rows[continued_rows["label_changed"] == True].copy() if not continued_rows.empty else continued_rows.copy()
+    return {
+        "previous_date": previous_date,
+        "current": current,
+        "table": table,
+        "new": new_rows,
+        "continued": continued_rows,
+        "dropped": dropped_rows,
+        "label_changed": changed_rows,
+    }
+
+
+def priority_change_count(changes: dict[str, Any], key: str) -> int:
+    value = changes.get(key)
+    return len(value) if isinstance(value, pd.DataFrame) else 0
+
+
+def priority_rank_label(value: Any, prefix: str = "#") -> str:
+    number = optional_number(value)
+    return "-" if number is None else f"{prefix}{int(number)}"
+
+
+def plain_priority_changes_section(changes: dict[str, Any]) -> list[str]:
+    previous_date = optional_text(changes.get("previous_date"))
+    if not previous_date:
+        return ["【重点候補の変化】", "前回のランキング履歴がないため、本日から比較を開始します。", ""]
+    new_rows = changes.get("new", pd.DataFrame())
+    continued_rows = changes.get("continued", pd.DataFrame())
+    dropped_rows = changes.get("dropped", pd.DataFrame())
+    changed_rows = changes.get("label_changed", pd.DataFrame())
+    lines = [
+        "【重点候補の変化】",
+        f"比較日 {previous_date} / 新規 {len(new_rows)}件 / 継続 {len(continued_rows)}件 / 脱落 {len(dropped_rows)}件 / タグ変化 {len(changed_rows)}件",
+    ]
+    if not new_rows.empty:
+        lines.append("■ 今日から重点候補")
+        for _, row in new_rows.head(5).iterrows():
+            lines.append(f"{priority_rank_label(row.get('current_rank'))} {row['code']} {row['name']}｜{row['current_labels']}｜{fmt_int(row.get('current_score'))}点")
+    if not changed_rows.empty:
+        lines.append("■ タグ変化")
+        for _, row in changed_rows.head(5).iterrows():
+            lines.append(f"{priority_rank_label(row.get('current_rank'))} {row['code']} {row['name']}｜{row['previous_labels']} → {row['current_labels']}")
+    if not dropped_rows.empty:
+        lines.append("■ 重点候補から脱落")
+        for _, row in dropped_rows.head(5).iterrows():
+            current_rank = priority_rank_label(row.get("current_rank"))
+            current_text = f"現在{current_rank}" if current_rank != "-" else "現在Top100圏外"
+            lines.append(f"前回{priority_rank_label(row.get('previous_rank'))} {row['code']} {row['name']}｜{row['previous_labels']}｜{row['exit_reason']}（{current_text}）")
+    lines.append("")
+    return lines
+
+
+def html_priority_changes_section(changes: dict[str, Any]) -> str:
+    previous_date = optional_text(changes.get("previous_date"))
+    if not previous_date:
+        return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin-top:14px"><b>重点候補の変化</b><div style="font-size:12px;color:#64748b;margin-top:5px">前回履歴がないため、本日から比較を開始します。</div></div>'
+    new_rows = changes.get("new", pd.DataFrame())
+    continued_rows = changes.get("continued", pd.DataFrame())
+    dropped_rows = changes.get("dropped", pd.DataFrame())
+    changed_rows = changes.get("label_changed", pd.DataFrame())
+
+    def rows_html(df: pd.DataFrame, kind: str) -> str:
+        parts = []
+        for _, row in df.head(5).iterrows():
+            if kind == "new":
+                title = f"{priority_rank_label(row.get('current_rank'))} {row['code']} {row['name']}"
+                detail = f"{row['current_labels']} ・ {fmt_int(row.get('current_score'))}点"
+                color = "#15803d"
+            elif kind == "changed":
+                title = f"{priority_rank_label(row.get('current_rank'))} {row['code']} {row['name']}"
+                detail = f"{row['previous_labels']} → {row['current_labels']}"
+                color = "#2563eb"
+            else:
+                title = f"前回{priority_rank_label(row.get('previous_rank'))} {row['code']} {row['name']}"
+                current_rank = priority_rank_label(row.get("current_rank"))
+                current_text = f"現在{current_rank}" if current_rank != "-" else "現在Top100圏外"
+                detail = f"{row['previous_labels']} ・ {row['exit_reason']}（{current_text}）"
+                color = "#b91c1c"
+            parts.append(f'<div style="border-top:1px solid #e5e7eb;padding:8px 0"><div style="font-size:13px;font-weight:800;color:{color}">{html_text(title)}</div><div style="font-size:11px;line-height:1.6;color:#475569">{html_text(detail)}</div></div>')
+        return "".join(parts)
+
+    groups = []
+    if not new_rows.empty:
+        groups.append(f'<div style="font-size:12px;font-weight:900;color:#15803d;margin-top:10px">今日から重点候補</div>{rows_html(new_rows, "new")}')
+    if not changed_rows.empty:
+        groups.append(f'<div style="font-size:12px;font-weight:900;color:#2563eb;margin-top:10px">タグ変化</div>{rows_html(changed_rows, "changed")}')
+    if not dropped_rows.empty:
+        groups.append(f'<div style="font-size:12px;font-weight:900;color:#b91c1c;margin-top:10px">重点候補から脱落</div>{rows_html(dropped_rows, "dropped")}')
+    return f'''<div style="background:#fff;border:1px solid #cbd5e1;border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:17px;font-weight:900;color:#0f172a">重点候補の変化</div>
+<div style="font-size:12px;color:#64748b;margin-top:4px">比較日 {html_text(previous_date)} ・ 新規 {len(new_rows)}件 ・ 継続 {len(continued_rows)}件 ・ 脱落 {len(dropped_rows)}件 ・ タグ変化 {len(changed_rows)}件</div>
+{"".join(groups)}
+</div>'''
 
 
 def plain_priority_section(priority: pd.DataFrame) -> list[str]:
@@ -1094,12 +1300,12 @@ def html_market_regime(regime: dict[str, Any]) -> str:
 </div>"""
 
 
-def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
     price_date = latest_price_date(top100)
-    priority = select_priority_candidates(top100, 10)
+    priority = priority_changes.get("current", select_priority_candidates(top100, 10)).head(10)
     compact_ranked = compact_rank_slice(top100, top_n + 1, 30)
     regime = enrich_regime_from_temperature(calculate_market_regime(top100, temperature), temperature)
     lines = [
@@ -1109,7 +1315,8 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
         f"レポート日: {summary.get('実行日', '-')}",
         f"株価データ日: {price_date}",
         f"買い候補TOP100: {len(top100)}件",
-        f"今日の重点候補: {len(priority)}件",
+        f"今日の重点候補: {priority_change_count(priority_changes, 'current')}件",
+        f"重点候補変化: 新規 {priority_change_count(priority_changes, 'new')} / 継続 {priority_change_count(priority_changes, 'continued')} / 脱落 {priority_change_count(priority_changes, 'dropped')}",
         f"新規ランクイン: {summary.get('新規ランクイン', 0)}件",
         f"急上昇: {summary.get('急上昇', 0)}件",
         f"TOP30継続10日以上: {summary.get('TOP30継続10日以上', 0)}件",
@@ -1126,6 +1333,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
     ]
     lines += plain_market_regime(regime)
     lines += plain_priority_section(priority)
+    lines += plain_priority_changes_section(priority_changes)
     lines += plain_metric_highlights(top100)
     lines += plain_ranking_section("年初来高値更新ランキング 上位10件", ytd_high_ranking, 10)
     lines += plain_ranking_section("新規ランクイン 上位10件", new_entries, 10)
@@ -1148,12 +1356,12 @@ def html_section(title: str, df: pd.DataFrame, limit: int, show_empty: bool = Fa
     return f"<h2>{html_text(title)}</h2>{cards}"
 
 
-def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
+def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
     price_date = latest_price_date(top100)
-    priority = select_priority_candidates(top100, 10)
+    priority = priority_changes.get("current", select_priority_candidates(top100, 10)).head(10)
     compact_ranked = compact_rank_slice(top100, top_n + 1, 30)
     regime = enrich_regime_from_temperature(calculate_market_regime(top100, temperature), temperature)
     cards = [
@@ -1167,6 +1375,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     sections = "".join([
         html_market_regime(regime),
         html_priority_section(priority),
+        html_priority_changes_section(priority_changes),
         html_metric_highlights(top100),
         html_section("年初来高値更新ランキング 上位10件", ytd_high_ranking, 10),
         html_section("新規ランクイン 上位10件", new_entries, 10),
@@ -1178,7 +1387,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))}（前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}） / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
-def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -1188,8 +1397,8 @@ def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.Da
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, priority_changes, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, priority_changes, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -1254,6 +1463,7 @@ def main() -> None:
     top30_streak = top100[top100["top30_streak"] > 0].sort_values(["top30_streak", "rank"], ascending=[False, True]).copy() if not top100.empty else top100.copy()
     top30_streak_10 = top100[top100["top30_streak"] >= 10].copy() if not top100.empty else top100.copy()
     ytd_high_ranking = all_ranked[all_ranked["ytd_high_flag"] == True].sort_values(["ytd_high_streak", "ytd_high_count", "score"], ascending=[False, False, False]).copy() if not all_ranked.empty else all_ranked.copy()
+    priority_changes = compare_priority_candidates(top100, history, today, top_limit)
 
     temp_path = cfg["data"]["market_temperature_path"]
     old_temp = pd.read_csv(temp_path) if Path(temp_path).exists() else pd.DataFrame()
@@ -1269,7 +1479,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_regime_history_v6",
+        "レポート形式": "dashboard_priority_changes_v7",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
@@ -1279,6 +1489,12 @@ def main() -> None:
         "取得失敗": len(errors),
         "年初来高値更新": int(all_ranked.get("ytd_high_flag", pd.Series(dtype=bool)).fillna(False).sum()) if not all_ranked.empty else 0,
         "Momentum Top100": len(top100),
+        "重点候補数": priority_change_count(priority_changes, "current"),
+        "重点候補新規": priority_change_count(priority_changes, "new"),
+        "重点候補継続": priority_change_count(priority_changes, "continued"),
+        "重点候補脱落": priority_change_count(priority_changes, "dropped"),
+        "重点候補タグ変化": priority_change_count(priority_changes, "label_changed"),
+        "重点候補比較日": priority_changes.get("previous_date", ""),
         "Market Regime": regime["label"],
         "Market Regime Score": regime["score"],
         "前回Market Regime": regime.get("previous_label", ""),
@@ -1301,10 +1517,10 @@ def main() -> None:
         "処理時間秒": elapsed,
         "注意事項": DISCLAIMER,
     }
-    excel_report(cfg["data"]["output_path"], summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, errors, universe_df)
+    excel_report(cfg["data"]["output_path"], summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
     try:
-        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, cfg)
+        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, priority_changes, cfg)
     except Exception as exc:
         logger.exception("Email sending failed: %s", exc)
 
