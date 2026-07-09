@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-10-dashboard-top30-compact-v4"
+APP_VERSION = "2026-07-10-dashboard-market-regime-v5"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -850,6 +850,113 @@ def html_compact_ranking_section(title: str, df: pd.DataFrame) -> str:
 <div style="background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:6px 14px">{"".join(rows)}</div>"""
 
 
+def series_ratio(df: pd.DataFrame, column: str) -> float:
+    if df.empty or column not in df.columns:
+        return 0.0
+    values = df[column].fillna(False).astype(bool)
+    return float(values.mean()) if len(values) else 0.0
+
+
+def calculate_market_regime(top100: pd.DataFrame, temperature: pd.DataFrame) -> dict[str, Any]:
+    """Classify the market environment from breadth, momentum, volume and heat."""
+    temp = {} if temperature.empty else temperature.iloc[0].to_dict()
+    avg_score = float(temp.get("top100_avg_score", 0) or 0)
+    avg_return_20d = float(temp.get("top100_avg_return_20d", 0) or 0)
+    avg_volume_ratio = float(temp.get("top100_avg_volume_ratio", 0) or 0)
+    ytd_high_count = int(float(temp.get("ytd_high_count", 0) or 0))
+    ma20_ratio = series_ratio(top100, "above_ma20")
+    ma60_ratio = series_ratio(top100, "above_ma60")
+
+    if top100.empty:
+        overheat_count = 0
+        overheat_ratio = 0.0
+    else:
+        return20 = pd.to_numeric(top100.get("return_20d", pd.Series(index=top100.index, dtype=float)), errors="coerce").fillna(0)
+        ma20_deviation = pd.to_numeric(top100.get("ma20_deviation", pd.Series(index=top100.index, dtype=float)), errors="coerce").fillna(0)
+        volume_ratio = pd.to_numeric(top100.get("volume_ratio", pd.Series(index=top100.index, dtype=float)), errors="coerce").fillna(0)
+        overheat_mask = (return20 >= 0.50) | (ma20_deviation >= 0.25) | (volume_ratio >= 8.0)
+        overheat_count = int(overheat_mask.sum())
+        overheat_ratio = float(overheat_mask.mean())
+
+    score = 0
+    score += 25 if avg_score >= 70 else 18 if avg_score >= 60 else 10 if avg_score >= 50 else 3
+    score += 20 if avg_return_20d >= 0.15 else 14 if avg_return_20d >= 0.05 else 8 if avg_return_20d >= 0 else 0
+    score += 15 if avg_volume_ratio >= 2.0 else 10 if avg_volume_ratio >= 1.5 else 5 if avg_volume_ratio >= 1.0 else 0
+    score += 15 if ma20_ratio >= 0.80 else 10 if ma20_ratio >= 0.65 else 5 if ma20_ratio >= 0.50 else 0
+    score += 15 if ma60_ratio >= 0.80 else 10 if ma60_ratio >= 0.65 else 5 if ma60_ratio >= 0.50 else 0
+    score += 10 if ytd_high_count >= 100 else 6 if ytd_high_count >= 50 else 3 if ytd_high_count >= 20 else 0
+    score = min(int(score), 100)
+
+    if score >= 75:
+        base_label = "強気"
+    elif score >= 60:
+        base_label = "やや強気"
+    elif score >= 45:
+        base_label = "中立"
+    else:
+        base_label = "弱気"
+
+    overheated = score >= 60 and (overheat_ratio >= 0.20 or (avg_return_20d >= 0.25 and overheat_ratio >= 0.15))
+    label = "過熱警戒" if overheated else base_label
+
+    if label == "過熱警戒":
+        guidance = "上昇基調は強い一方、飛びつきを避け、押し目・出来高減速・20日線乖離を確認してください。"
+        color = "#b91c1c"
+        background = "#fef2f2"
+    elif label == "強気":
+        guidance = "重点候補と継続銘柄を優先し、出来高と流動性を確認しながら順張り候補を精査する局面です。"
+        color = "#15803d"
+        background = "#f0fdf4"
+    elif label == "やや強気":
+        guidance = "初動・加速候補を中心に選別し、複数シグナルが重なる銘柄を優先してください。"
+        color = "#2563eb"
+        background = "#eff6ff"
+    elif label == "中立":
+        guidance = "ランキング変化を観察し、単独シグナルではなく複数条件が重なる銘柄に絞る局面です。"
+        color = "#a16207"
+        background = "#fefce8"
+    else:
+        guidance = "新規候補を絞り、流動性・損切り水準・移動平均線の回復を重視する局面です。"
+        color = "#475569"
+        background = "#f8fafc"
+
+    return {
+        "label": label,
+        "base_label": base_label,
+        "score": score,
+        "guidance": guidance,
+        "color": color,
+        "background": background,
+        "ma20_ratio": ma20_ratio,
+        "ma60_ratio": ma60_ratio,
+        "overheat_count": overheat_count,
+        "overheat_ratio": overheat_ratio,
+        "avg_score": avg_score,
+        "avg_return_20d": avg_return_20d,
+        "avg_volume_ratio": avg_volume_ratio,
+        "ytd_high_count": ytd_high_count,
+    }
+
+
+def plain_market_regime(regime: dict[str, Any]) -> list[str]:
+    return [
+        "【Market Regime】",
+        f"判定: {regime['label']} / 市場環境スコア {regime['score']}点",
+        f"20日線上 {regime['ma20_ratio']:.1%} / 60日線上 {regime['ma60_ratio']:.1%} / 過熱銘柄 {regime['overheat_count']}件 ({regime['overheat_ratio']:.1%})",
+        f"方針: {regime['guidance']}",
+        "",
+    ]
+
+
+def html_market_regime(regime: dict[str, Any]) -> str:
+    return f"""<div style="background:{regime['background']};border:2px solid {regime['color']};border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:12px;font-weight:800;color:{regime['color']}">MARKET REGIME</div>
+<div style="font-size:24px;font-weight:900;color:{regime['color']};margin-top:2px">{html_text(regime['label'])} <span style="font-size:16px">{regime['score']}点</span></div>
+<div style="font-size:12px;line-height:1.8;color:#334155;margin-top:8px">20日線上 <b>{regime['ma20_ratio']:.1%}</b> ・ 60日線上 <b>{regime['ma60_ratio']:.1%}</b> ・ 過熱銘柄 <b>{regime['overheat_count']}件 ({regime['overheat_ratio']:.1%})</b></div>
+<div style="font-size:13px;line-height:1.8;color:#334155;margin-top:6px"><b>本日の方針:</b> {html_text(regime['guidance'])}</div>
+</div>"""
+
+
 def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
@@ -857,6 +964,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
     price_date = latest_price_date(top100)
     priority = select_priority_candidates(top100, 10)
     compact_ranked = compact_rank_slice(top100, top_n + 1, 30)
+    regime = calculate_market_regime(top100, temperature)
     lines = [
         "本日のモメンタム・ダッシュボードです。",
         "",
@@ -879,6 +987,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
         f"Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))} (前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}) / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})",
         "",
     ]
+    lines += plain_market_regime(regime)
     lines += plain_priority_section(priority)
     lines += plain_metric_highlights(top100)
     lines += plain_ranking_section("年初来高値更新ランキング 上位10件", ytd_high_ranking, 10)
@@ -909,6 +1018,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     price_date = latest_price_date(top100)
     priority = select_priority_candidates(top100, 10)
     compact_ranked = compact_rank_slice(top100, top_n + 1, 30)
+    regime = calculate_market_regime(top100, temperature)
     cards = [
         metric_card("買い候補TOP100", f"{len(top100)}件", "#111827"),
         metric_card("新規ランクイン", f"{summary.get('新規ランクイン', 0)}件", "#16a34a"),
@@ -918,6 +1028,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
         metric_card("取得失敗", f"{summary.get('取得失敗', 0)}件", "#dc2626" if summary.get('取得失敗', 0) else "#16a34a"),
     ]
     sections = "".join([
+        html_market_regime(regime),
         html_priority_section(priority),
         html_metric_highlights(top100),
         html_section("年初来高値更新ランキング 上位10件", ytd_high_ranking, 10),
@@ -1010,6 +1121,7 @@ def main() -> None:
     temp_path = cfg["data"]["market_temperature_path"]
     old_temp = pd.read_csv(temp_path) if Path(temp_path).exists() else pd.DataFrame()
     temperature = market_temperature(today, all_ranked, top100, old_temp)
+    regime = calculate_market_regime(top100, temperature)
     pd.concat([old_temp, temperature], ignore_index=True).drop_duplicates(["date"], keep="last").to_csv(temp_path, index=False)
 
     elapsed = round(perf_counter() - started_at, 1)
@@ -1018,7 +1130,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_top30_compact_v4",
+        "レポート形式": "dashboard_market_regime_v5",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
@@ -1028,6 +1140,12 @@ def main() -> None:
         "取得失敗": len(errors),
         "年初来高値更新": int(all_ranked.get("ytd_high_flag", pd.Series(dtype=bool)).fillna(False).sum()) if not all_ranked.empty else 0,
         "Momentum Top100": len(top100),
+        "Market Regime": regime["label"],
+        "Market Regime Score": regime["score"],
+        "Top100 20日線上比率": regime["ma20_ratio"],
+        "Top100 60日線上比率": regime["ma60_ratio"],
+        "Top100 過熱銘柄数": regime["overheat_count"],
+        "Top100 過熱銘柄比率": regime["overheat_ratio"],
         "新規ランクイン": len(new_entries),
         "急上昇": len(rising_fast),
         "過去最高順位更新": int(top100.get("is_best_rank", pd.Series(dtype=bool)).fillna(False).sum()) if not top100.empty else 0,
