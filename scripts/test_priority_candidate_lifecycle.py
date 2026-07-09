@@ -66,9 +66,9 @@ for day in range(1, 10):
     history_rows.append(row("9000", 99, date=report_date, score=40, ytd=False, volume=0.8, trading=100_000_000, above=False))
     history_rows.append(row("1005", 5, date=report_date, trading=6_000_000_000))
     if day >= 5:
-        history_rows.append(row("1004", 10, date=report_date, top30=day - 3))
+        history_rows.append(row("1004", 10, date=report_date, top30=day - 2))
     if day >= 7:
-        history_rows.append(row("1001", 15, date=report_date, top30=day - 5))
+        history_rows.append(row("1001", 15, date=report_date, top30=day - 4))
     if day == 1:
         history_rows.append(row("1002", 20, date=report_date, trading=6_000_000_000))
 
