@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-10-dashboard-market-regime-v5"
+APP_VERSION = "2026-07-10-dashboard-regime-history-v6"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -938,10 +938,145 @@ def calculate_market_regime(top100: pd.DataFrame, temperature: pd.DataFrame) -> 
     }
 
 
+def optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text_value = str(value).strip()
+    return "" if text_value.lower() in {"", "nan", "none"} else text_value
+
+
+def latest_previous_regime(history: pd.DataFrame, today: str) -> dict[str, Any]:
+    if history is None or history.empty or "date" not in history.columns or "market_regime" not in history.columns:
+        return {}
+    work = history.copy()
+    work["date_sort"] = pd.to_datetime(work["date"], errors="coerce")
+    work = work.dropna(subset=["date_sort"])
+    work = work[work["date"].astype(str) != str(today)]
+    work["regime_text"] = work["market_regime"].map(optional_text)
+    work = work[work["regime_text"] != ""].sort_values("date_sort")
+    if work.empty:
+        return {}
+    row = work.iloc[-1]
+    score_value = pd.to_numeric(pd.Series([row.get("market_regime_score")]), errors="coerce").iloc[0]
+    return {
+        "date": str(row.get("date", "")),
+        "label": optional_text(row.get("market_regime")),
+        "score": None if pd.isna(score_value) else int(float(score_value)),
+    }
+
+
+def market_regime_transition_type(previous_label: str, current_label: str) -> str:
+    if not previous_label:
+        return "履歴開始"
+    if previous_label == current_label:
+        return "維持"
+    if current_label == "過熱警戒":
+        return "警戒強化"
+    if previous_label == "過熱警戒" and current_label != "過熱警戒":
+        return "過熱緩和"
+    order = {"弱気": 0, "中立": 1, "やや強気": 2, "強気": 3}
+    previous_rank = order.get(previous_label)
+    current_rank = order.get(current_label)
+    if previous_rank is None or current_rank is None:
+        return "転換"
+    if current_rank > previous_rank:
+        return "改善"
+    if current_rank < previous_rank:
+        return "悪化"
+    return "転換"
+
+
+def market_regime_streak(history: pd.DataFrame, today: str, current_label: str) -> int:
+    if history is None or history.empty or "date" not in history.columns or "market_regime" not in history.columns:
+        return 1
+    work = history.copy()
+    work["date_sort"] = pd.to_datetime(work["date"], errors="coerce")
+    work = work.dropna(subset=["date_sort"])
+    work = work[work["date"].astype(str) != str(today)].sort_values("date_sort", ascending=False)
+    streak = 1
+    for _, row in work.iterrows():
+        label = optional_text(row.get("market_regime"))
+        if not label:
+            continue
+        if label != current_label:
+            break
+        streak += 1
+    return streak
+
+
+def attach_market_regime_history(today: str, temperature: pd.DataFrame, regime: dict[str, Any], history: pd.DataFrame) -> pd.DataFrame:
+    current = temperature.copy()
+    previous = latest_previous_regime(history, today)
+    previous_label = previous.get("label", "")
+    previous_score = previous.get("score")
+    current_label = regime["label"]
+    current_score = int(regime["score"])
+    changed = bool(previous_label and previous_label != current_label)
+    transition_type = market_regime_transition_type(previous_label, current_label)
+    transition = f"{previous_label} → {current_label}" if previous_label else f"履歴開始 → {current_label}"
+    score_delta = None if previous_score is None else current_score - int(previous_score)
+    streak = market_regime_streak(history, today, current_label)
+
+    current["market_regime"] = current_label
+    current["market_regime_base"] = regime.get("base_label", current_label)
+    current["market_regime_score"] = current_score
+    current["market_regime_ma20_ratio"] = regime.get("ma20_ratio", 0.0)
+    current["market_regime_ma60_ratio"] = regime.get("ma60_ratio", 0.0)
+    current["market_regime_overheat_count"] = regime.get("overheat_count", 0)
+    current["market_regime_overheat_ratio"] = regime.get("overheat_ratio", 0.0)
+    current["previous_market_regime"] = previous_label
+    current["previous_market_regime_score"] = previous_score
+    current["previous_market_regime_date"] = previous.get("date", "")
+    current["regime_changed"] = changed
+    current["regime_transition"] = transition
+    current["regime_transition_type"] = transition_type
+    current["regime_score_delta"] = score_delta
+    current["regime_streak"] = streak
+    return current
+
+
+def enrich_regime_from_temperature(regime: dict[str, Any], temperature: pd.DataFrame) -> dict[str, Any]:
+    enriched = dict(regime)
+    if temperature is None or temperature.empty:
+        return enriched
+    row = temperature.iloc[0]
+    previous_score_value = pd.to_numeric(pd.Series([row.get("previous_market_regime_score")]), errors="coerce").iloc[0]
+    score_delta_value = pd.to_numeric(pd.Series([row.get("regime_score_delta")]), errors="coerce").iloc[0]
+    streak_value = pd.to_numeric(pd.Series([row.get("regime_streak")]), errors="coerce").iloc[0]
+    enriched.update({
+        "previous_label": optional_text(row.get("previous_market_regime")),
+        "previous_score": None if pd.isna(previous_score_value) else int(float(previous_score_value)),
+        "previous_date": optional_text(row.get("previous_market_regime_date")),
+        "changed": str(row.get("regime_changed", "")).lower() in {"true", "1"} if not isinstance(row.get("regime_changed"), bool) else bool(row.get("regime_changed")),
+        "transition": optional_text(row.get("regime_transition")),
+        "transition_type": optional_text(row.get("regime_transition_type")),
+        "score_delta": None if pd.isna(score_delta_value) else int(float(score_delta_value)),
+        "streak": 1 if pd.isna(streak_value) else int(float(streak_value)),
+    })
+    return enriched
+
+
+def regime_history_text(regime: dict[str, Any]) -> str:
+    previous_label = regime.get("previous_label", "")
+    score_delta = regime.get("score_delta")
+    delta_text = "" if score_delta is None else f" / スコア前回比 {score_delta:+d}点"
+    if not previous_label:
+        return f"履歴: 本日から判定履歴を開始（{regime['label']}）"
+    if regime.get("changed"):
+        return f"転換: {regime.get('transition', '')}（{regime.get('transition_type', '転換')}）{delta_text}"
+    return f"継続: {regime['label']}を{regime.get('streak', 1)}営業日維持{delta_text}"
+
+
 def plain_market_regime(regime: dict[str, Any]) -> list[str]:
     return [
         "【Market Regime】",
         f"判定: {regime['label']} / 市場環境スコア {regime['score']}点",
+        regime_history_text(regime),
         f"20日線上 {regime['ma20_ratio']:.1%} / 60日線上 {regime['ma60_ratio']:.1%} / 過熱銘柄 {regime['overheat_count']}件 ({regime['overheat_ratio']:.1%})",
         f"方針: {regime['guidance']}",
         "",
@@ -949,9 +1084,11 @@ def plain_market_regime(regime: dict[str, Any]) -> list[str]:
 
 
 def html_market_regime(regime: dict[str, Any]) -> str:
+    transition_color = "#b91c1c" if regime.get("transition_type") in {"悪化", "警戒強化"} else "#15803d" if regime.get("transition_type") in {"改善", "過熱緩和"} else "#475569"
     return f"""<div style="background:{regime['background']};border:2px solid {regime['color']};border-radius:18px;padding:16px;margin-top:14px">
 <div style="font-size:12px;font-weight:800;color:{regime['color']}">MARKET REGIME</div>
 <div style="font-size:24px;font-weight:900;color:{regime['color']};margin-top:2px">{html_text(regime['label'])} <span style="font-size:16px">{regime['score']}点</span></div>
+<div style="font-size:12px;font-weight:800;color:{transition_color};margin-top:6px">{html_text(regime_history_text(regime))}</div>
 <div style="font-size:12px;line-height:1.8;color:#334155;margin-top:8px">20日線上 <b>{regime['ma20_ratio']:.1%}</b> ・ 60日線上 <b>{regime['ma60_ratio']:.1%}</b> ・ 過熱銘柄 <b>{regime['overheat_count']}件 ({regime['overheat_ratio']:.1%})</b></div>
 <div style="font-size:13px;line-height:1.8;color:#334155;margin-top:6px"><b>本日の方針:</b> {html_text(regime['guidance'])}</div>
 </div>"""
@@ -964,7 +1101,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
     price_date = latest_price_date(top100)
     priority = select_priority_candidates(top100, 10)
     compact_ranked = compact_rank_slice(top100, top_n + 1, 30)
-    regime = calculate_market_regime(top100, temperature)
+    regime = enrich_regime_from_temperature(calculate_market_regime(top100, temperature), temperature)
     lines = [
         "本日のモメンタム・ダッシュボードです。",
         "",
@@ -1018,7 +1155,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     price_date = latest_price_date(top100)
     priority = select_priority_candidates(top100, 10)
     compact_ranked = compact_rank_slice(top100, top_n + 1, 30)
-    regime = calculate_market_regime(top100, temperature)
+    regime = enrich_regime_from_temperature(calculate_market_regime(top100, temperature), temperature)
     cards = [
         metric_card("買い候補TOP100", f"{len(top100)}件", "#111827"),
         metric_card("新規ランクイン", f"{summary.get('新規ランクイン', 0)}件", "#16a34a"),
@@ -1122,6 +1259,8 @@ def main() -> None:
     old_temp = pd.read_csv(temp_path) if Path(temp_path).exists() else pd.DataFrame()
     temperature = market_temperature(today, all_ranked, top100, old_temp)
     regime = calculate_market_regime(top100, temperature)
+    temperature = attach_market_regime_history(today, temperature, regime, old_temp)
+    regime = enrich_regime_from_temperature(regime, temperature)
     pd.concat([old_temp, temperature], ignore_index=True).drop_duplicates(["date"], keep="last").to_csv(temp_path, index=False)
 
     elapsed = round(perf_counter() - started_at, 1)
@@ -1130,7 +1269,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_market_regime_v5",
+        "レポート形式": "dashboard_regime_history_v6",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
@@ -1142,6 +1281,12 @@ def main() -> None:
         "Momentum Top100": len(top100),
         "Market Regime": regime["label"],
         "Market Regime Score": regime["score"],
+        "前回Market Regime": regime.get("previous_label", ""),
+        "Market Regime転換": regime.get("transition", ""),
+        "Market Regime転換種別": regime.get("transition_type", ""),
+        "Market Regime転換有無": regime.get("changed", False),
+        "Market Regime継続日数": regime.get("streak", 1),
+        "Market Regime Score前回比": regime.get("score_delta"),
         "Top100 20日線上比率": regime["ma20_ratio"],
         "Top100 60日線上比率": regime["ma60_ratio"],
         "Top100 過熱銘柄数": regime["overheat_count"],
