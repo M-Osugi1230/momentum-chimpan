@@ -1,0 +1,148 @@
+name: Apply Market Regime history patch
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feature/market-regime-history'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply focused patch
+        run: python scripts/apply_market_regime_history.py
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m py_compile main.py
+      - name: Regime history smoke test
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from main import (
+              attach_market_regime_history,
+              calculate_market_regime,
+              enrich_regime_from_temperature,
+              build_plain_email,
+              build_html_email,
+          )
+
+          rows = []
+          for rank in range(1, 101):
+              rows.append({
+                  'rank': rank,
+                  'code': f'{1000 + rank}',
+                  'name': f'Test{rank}',
+                  'score': 78,
+                  'close': 1000 + rank,
+                  'return_5d': 0.05,
+                  'return_20d': 0.22,
+                  'return_60d': 0.35,
+                  'volume_ratio': 2.5,
+                  'trading_value': 8_000_000_000,
+                  'ytd_high_count': 10,
+                  'ytd_high_streak': 3,
+                  'score_ytd_high': 30,
+                  'score_ytd_streak': 12,
+                  'score_return_20d': 15,
+                  'score_volume_ratio': 10,
+                  'score_ma': 10,
+                  'score_trading_value': 5,
+                  'reason': '年初来高値更新、20日線上、60日線上、売買代金1億円以上',
+                  'is_new_entry': False,
+                  'is_rising_fast': False,
+                  'is_best_rank': rank <= 5,
+                  'rank_change': 0,
+                  'top30_streak': 4 if rank <= 30 else 0,
+                  'top30_streak_days': 4 if rank <= 30 else 0,
+                  'price_date': '2026-07-10',
+                  'ytd_high_flag': True,
+                  'ma20_deviation': 0.10,
+                  'above_ma20': True,
+                  'above_ma60': True,
+              })
+          top100 = pd.DataFrame(rows)
+          temp = pd.DataFrame([{
+              'date': '2026-07-10',
+              'ytd_high_count': 120,
+              'delta_ytd_high_count': 10,
+              'top100_avg_score': 78,
+              'delta_top100_avg_score': 3,
+              'top100_avg_return_20d': 0.22,
+              'delta_top100_avg_return_20d': 0.03,
+              'top100_avg_volume_ratio': 2.5,
+              'delta_top100_avg_volume_ratio': 0.4,
+          }])
+          history = pd.DataFrame([
+              {'date': '2026-07-07', 'market_regime': '中立', 'market_regime_score': 55},
+              {'date': '2026-07-08', 'market_regime': '強気', 'market_regime_score': 78},
+              {'date': '2026-07-09', 'market_regime': '強気', 'market_regime_score': 82},
+              {'date': '2026-07-10', 'market_regime': '弱気', 'market_regime_score': 30},
+          ])
+          regime = calculate_market_regime(top100, temp)
+          assert regime['label'] == '強気', regime
+          enriched_temp = attach_market_regime_history('2026-07-10', temp, regime, history)
+          enriched_regime = enrich_regime_from_temperature(regime, enriched_temp)
+          assert enriched_regime['previous_label'] == '強気', enriched_regime
+          assert enriched_regime['changed'] is False, enriched_regime
+          assert enriched_regime['streak'] == 3, enriched_regime
+          assert enriched_regime['score_delta'] == regime['score'] - 82, enriched_regime
+          assert enriched_temp.iloc[0]['regime_transition'] == '強気 → 強気'
+
+          hot_top100 = top100.copy()
+          hot_top100.loc[:24, 'return_20d'] = 0.65
+          hot_top100.loc[:24, 'ma20_deviation'] = 0.35
+          hot_top100.loc[:24, 'volume_ratio'] = 9.0
+          hot_temp = temp.copy()
+          hot_temp['top100_avg_return_20d'] = 0.30
+          hot_temp['top100_avg_volume_ratio'] = 3.0
+          hot_regime = calculate_market_regime(hot_top100, hot_temp)
+          assert hot_regime['label'] == '過熱警戒', hot_regime
+          hot_enriched_temp = attach_market_regime_history('2026-07-10', hot_temp, hot_regime, history)
+          hot_enriched = enrich_regime_from_temperature(hot_regime, hot_enriched_temp)
+          assert hot_enriched['changed'] is True, hot_enriched
+          assert hot_enriched['transition_type'] == '警戒強化', hot_enriched
+          assert hot_enriched['transition'] == '強気 → 過熱警戒', hot_enriched
+          assert hot_enriched['streak'] == 1, hot_enriched
+
+          empty = top100.iloc[0:0].copy()
+          summary = {
+              '実行日': '2026-07-10',
+              '新規ランクイン': 0,
+              '急上昇': 0,
+              'TOP30継続10日以上': 0,
+              '年初来高値更新': 120,
+              '取得失敗': 0,
+          }
+          cfg = {'ranking': {'email_top_n': 10}}
+          plain = build_plain_email(summary, hot_top100, empty, empty, hot_top100.head(30), hot_top100.head(10), hot_enriched_temp, cfg)
+          html = build_html_email(summary, hot_top100, empty, empty, hot_top100.head(30), hot_top100.head(10), hot_enriched_temp, cfg)
+          assert '転換: 強気 → 過熱警戒（警戒強化）' in plain
+          assert '強気 → 過熱警戒' in html
+          assert 'Momentum 11-30（コンパクト）' in plain
+          print('market regime history smoke ok')
+          PY
+      - name: Commit main.py when changed
+        run: |
+          if git diff --quiet -- main.py; then
+            echo "main.py already updated"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.py
+          git commit -m "Add Market Regime history and transition detection"
+          git push origin HEAD:${{ github.head_ref }}
