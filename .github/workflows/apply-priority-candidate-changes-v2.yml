@@ -1,0 +1,45 @@
+name: Apply priority candidate change tracking v2
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feature/priority-candidate-changes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare patch script
+        run: python scripts/prepare_priority_candidate_patch.py
+      - name: Apply focused patch
+        run: python scripts/apply_priority_candidate_changes.py
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m py_compile main.py
+      - name: Priority change smoke test
+        run: python scripts/test_priority_candidate_changes.py
+      - name: Commit main.py when changed
+        run: |
+          if git diff --quiet -- main.py; then
+            echo "main.py already updated"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.py
+          git commit -m "Track priority candidate changes"
+          git push origin HEAD:${{ github.head_ref }}
