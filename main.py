@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-11-dashboard-sector-momentum-v12"
+APP_VERSION = "2026-07-11-dashboard-sector-leaders-v13"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -562,6 +562,351 @@ def html_sector_momentum_section(sector_momentum: pd.DataFrame, limit: int = 5) 
     )
 
 
+SECTOR_ROTATION_ORDER = {
+    "加速": 0,
+    "主導": 1,
+    "改善": 2,
+    "履歴開始": 3,
+    "減速": 4,
+    "底上げ": 5,
+    "低迷": 6,
+}
+
+SECTOR_LEADER_COLUMNS = [
+    "overall_leader_rank", "sector_leader_rank", "sector33", "sector_rank",
+    "sector_momentum_score", "sector_strength", "sector_rotation", "sector_score_delta",
+    "code", "name", "momentum_rank", "momentum_score", "sector_leader_score", "sector_leader_grade",
+    "sector_research_priority", "action_priority", "action_score", "expectancy_score",
+    "expectancy_confidence", "return_20d", "return_60d", "volume_ratio", "trading_value",
+    "ma20_deviation", "leader_reasons", "leader_cautions",
+]
+
+
+def sector_rotation_values(row: pd.Series) -> dict[str, Any]:
+    score = row_number(row, "sector_momentum_score")
+    delta_value = row.get("sector_score_delta")
+    rank_change_value = row.get("sector_rank_change")
+    has_history = delta_value is not None and not pd.isna(delta_value)
+    delta = 0.0 if not has_history else float(delta_value)
+    rank_change = 0 if rank_change_value is None or pd.isna(rank_change_value) else int(float(rank_change_value))
+
+    if not has_history:
+        state = "履歴開始"
+    elif score >= 60 and (delta >= 3 or rank_change >= 3):
+        state = "加速"
+    elif score >= 60 and delta > -3 and rank_change > -3:
+        state = "主導"
+    elif score >= 45 and (delta >= 3 or rank_change >= 3):
+        state = "改善"
+    elif score >= 45 and (delta <= -3 or rank_change <= -3):
+        state = "減速"
+    elif score < 45 and (delta >= 3 or rank_change >= 3):
+        state = "底上げ"
+    else:
+        state = "低迷"
+
+    base = min(max(score, 0.0), 100.0)
+    rotation_score = base
+    rotation_score += min(max(delta, -15.0), 15.0) * 1.3
+    rotation_score += min(max(rank_change, -10), 10) * 1.2
+    rotation_score = round(min(max(rotation_score, 0.0), 100.0), 1)
+
+    if state == "加速":
+        reason = "業種スコアまたは順位が上向き、かつ業種の絶対強度も高い"
+    elif state == "主導":
+        reason = "高い業種強度を維持"
+    elif state == "改善":
+        reason = "中立圏から順位またはスコアが改善"
+    elif state == "減速":
+        reason = "業種強度は残るが順位またはスコアが悪化"
+    elif state == "底上げ":
+        reason = "弱い水準から改善の兆し"
+    elif state == "履歴開始":
+        reason = "比較履歴を開始"
+    else:
+        reason = "業種強度と改善度がともに低い"
+
+    return {
+        "sector_rotation": state,
+        "sector_rotation_score": rotation_score,
+        "sector_rotation_reason": reason,
+    }
+
+
+def attach_sector_rotation(sector_momentum: pd.DataFrame) -> pd.DataFrame:
+    if sector_momentum is None or sector_momentum.empty:
+        columns = list(SECTOR_MOMENTUM_COLUMNS) + ["sector_rotation", "sector_rotation_score", "sector_rotation_reason"]
+        return pd.DataFrame(columns=columns)
+    result = sector_momentum.copy()
+    rotation = result.apply(lambda row: pd.Series(sector_rotation_values(row)), axis=1)
+    for column in rotation.columns:
+        result[column] = rotation[column].values
+    return result.sort_values("sector_rank").reset_index(drop=True)
+
+
+def build_sector_rotation_table(sector_momentum: pd.DataFrame, sector_leaders: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "sector_rank", "sector33", "sector_momentum_score", "sector_strength", "sector_rotation",
+        "sector_rotation_score", "sector_rotation_reason", "previous_sector_rank", "sector_rank_change",
+        "previous_sector_score", "sector_score_delta", "top100_count", "top30_count", "above_ma20_ratio",
+        "above_ma60_ratio", "top_sector_leader", "top_sector_leader_score",
+    ]
+    if sector_momentum is None or sector_momentum.empty:
+        return pd.DataFrame(columns=columns)
+    result = sector_momentum.copy()
+    if sector_leaders is not None and not sector_leaders.empty:
+        first = sector_leaders.sort_values(["sector33", "sector_leader_rank"]).drop_duplicates("sector33")
+        first = first.assign(
+            top_sector_leader=first["code"].astype(str) + " " + first["name"].astype(str),
+            top_sector_leader_score=first["sector_leader_score"],
+        )[["sector33", "top_sector_leader", "top_sector_leader_score"]]
+        result = result.merge(first, on="sector33", how="left")
+    else:
+        result["top_sector_leader"] = ""
+        result["top_sector_leader_score"] = None
+    result["sector_rotation_order"] = result["sector_rotation"].map(SECTOR_ROTATION_ORDER).fillna(99)
+    result = result.sort_values(
+        ["sector_rotation_order", "sector_rotation_score", "sector_rank"],
+        ascending=[True, False, True],
+    ).drop(columns=["sector_rotation_order"])
+    return result[[column for column in columns if column in result.columns]]
+
+
+def leader_action_priority_points(value: Any) -> int:
+    return {"A": 10, "B": 6, "C": 2, "見送り": -8}.get(optional_text(value), 0)
+
+
+def sector_leader_values(row: pd.Series) -> dict[str, Any]:
+    momentum_score = row_number(row, "score")
+    momentum_rank = int(row_number(row, "rank", 999.0))
+    sector_score = row_number(row, "sector_momentum_score")
+    rotation = optional_text(row.get("sector_rotation"))
+    trading_value = row_number(row, "trading_value")
+    volume_ratio = row_number(row, "volume_ratio")
+    return_20d = row_number(row, "return_20d")
+    ma20_deviation = row_number(row, "ma20_deviation")
+    action_priority = optional_text(row.get("action_priority"))
+    expectancy_score = row_number(row, "expectancy_score", 50.0)
+    confidence = optional_text(row.get("expectancy_confidence")) or "蓄積中"
+
+    reasons: list[str] = []
+    cautions: list[str] = []
+    score = momentum_score * 0.38 + sector_score * 0.27
+
+    if momentum_rank <= 10:
+        score += 12
+        reasons.append("Momentum上位10位")
+    elif momentum_rank <= 30:
+        score += 9
+        reasons.append("Momentum上位30位")
+    elif momentum_rank <= 60:
+        score += 6
+    elif momentum_rank <= 100:
+        score += 3
+
+    rotation_points = {"加速": 10, "主導": 7, "改善": 6, "履歴開始": 2, "減速": -3, "底上げ": 1, "低迷": -6}
+    score += rotation_points.get(rotation, 0)
+    if rotation in {"加速", "主導", "改善"}:
+        reasons.append(f"業種{rotation}")
+    elif rotation in {"減速", "低迷"}:
+        cautions.append(f"業種{rotation}")
+
+    score += leader_action_priority_points(action_priority)
+    if action_priority in {"A", "B"}:
+        reasons.append(f"既存調査優先度{action_priority}")
+    elif action_priority == "見送り":
+        cautions.append("既存調査優先度は見送り")
+
+    if expectancy_score >= 70 and confidence in {"高", "中"}:
+        score += 6
+        reasons.append(f"期待値{expectancy_score:.1f}点・信頼度{confidence}")
+    elif expectancy_score < 50:
+        score -= 3
+        cautions.append("期待値50点未満")
+
+    if trading_value >= 5_000_000_000:
+        score += 7
+        reasons.append("売買代金50億円以上")
+    elif trading_value >= 1_000_000_000:
+        score += 5
+        reasons.append("売買代金10億円以上")
+    elif trading_value >= 300_000_000:
+        score += 3
+    elif trading_value < 100_000_000:
+        score -= 15
+        cautions.append("売買代金1億円未満")
+
+    if volume_ratio >= 3:
+        score += 6
+        reasons.append(f"出来高{volume_ratio:.1f}倍")
+    elif volume_ratio >= 2:
+        score += 4
+    elif volume_ratio < 1:
+        cautions.append("出来高倍率1倍未満")
+
+    overheat = ma20_deviation >= 0.25 or return_20d >= 0.50
+    if overheat:
+        score -= 12
+        cautions.append("過熱水準")
+    elif ma20_deviation >= 0.18:
+        score -= 5
+        cautions.append(f"20日線乖離{ma20_deviation:.1%}")
+
+    score = round(min(max(score, 0.0), 100.0), 1)
+    if score >= 84 and trading_value >= 300_000_000 and not overheat and rotation in {"加速", "主導"}:
+        priority = "最優先"
+    elif score >= 72 and trading_value >= 100_000_000 and not overheat:
+        priority = "優先"
+    elif score >= 58 and trading_value >= 100_000_000:
+        priority = "監視"
+    else:
+        priority = "見送り"
+
+    grade = "S" if score >= 88 else "A" if score >= 78 else "B" if score >= 68 else "C"
+    return {
+        "sector_leader_score": score,
+        "sector_leader_grade": grade,
+        "sector_research_priority": priority,
+        "leader_reasons": " / ".join(dict.fromkeys(reasons)),
+        "leader_cautions": " / ".join(dict.fromkeys(cautions)),
+    }
+
+
+def build_sector_leaders(all_ranked: pd.DataFrame, sector_momentum: pd.DataFrame, action_priority: pd.DataFrame, limit_per_sector: int = 3) -> pd.DataFrame:
+    columns = list(SECTOR_LEADER_COLUMNS)
+    if all_ranked is None or all_ranked.empty or sector_momentum is None or sector_momentum.empty:
+        return pd.DataFrame(columns=columns)
+    sector_cols = [
+        "sector33", "sector_rank", "sector_momentum_score", "sector_strength", "sector_rotation", "sector_score_delta",
+    ]
+    candidates = all_ranked.copy()
+    candidates["sector33"] = candidates["sector33"].map(normalize_sector33)
+    candidates = candidates[(candidates["sector33"] != "") & (numeric_series(candidates, "rank") <= 100)].copy()
+    candidates = candidates.merge(sector_momentum[sector_cols].drop_duplicates("sector33"), on="sector33", how="left")
+
+    if action_priority is not None and not action_priority.empty:
+        action_cols = [
+            "code", "action_priority", "action_score", "expectancy_score", "expectancy_confidence",
+            "expectancy_evidence_count", "positive_reasons", "caution_reasons",
+        ]
+        available = [column for column in action_cols if column in action_priority.columns]
+        candidates = candidates.merge(action_priority[available].drop_duplicates("code"), on="code", how="left")
+
+    scored = candidates.apply(lambda row: pd.Series(sector_leader_values(row)), axis=1)
+    for column in scored.columns:
+        candidates[column] = scored[column].values
+    candidates = candidates[numeric_series(candidates, "trading_value") >= 50_000_000].copy()
+    candidates = candidates.sort_values(
+        ["sector33", "sector_leader_score", "rank"],
+        ascending=[True, False, True],
+    )
+    candidates["sector_leader_rank"] = candidates.groupby("sector33").cumcount() + 1
+    candidates = candidates[candidates["sector_leader_rank"] <= limit_per_sector].copy()
+    candidates = candidates.sort_values(
+        ["sector_leader_score", "sector_momentum_score", "rank"],
+        ascending=[False, False, True],
+    ).reset_index(drop=True)
+    candidates.insert(0, "overall_leader_rank", range(1, len(candidates) + 1))
+    candidates = candidates.rename(columns={"rank": "momentum_rank", "score": "momentum_score"})
+    return candidates[[column for column in columns if column in candidates.columns]]
+
+
+def sector_research_priority_count(leaders: pd.DataFrame, priority: str) -> int:
+    if leaders is None or leaders.empty or "sector_research_priority" not in leaders.columns:
+        return 0
+    return int((leaders["sector_research_priority"] == priority).sum())
+
+
+def plain_sector_rotation_section(sector_rotation: pd.DataFrame, limit: int = 8) -> list[str]:
+    if sector_rotation is None or sector_rotation.empty:
+        return ["【業種ローテーション】", "比較可能な業種履歴がありません。", ""]
+    lines = [
+        "【業種ローテーション】",
+        "業種の絶対強度と前回からのスコア・順位変化を組み合わせています。",
+    ]
+    for _, row in sector_rotation.head(limit).iterrows():
+        delta = row.get("sector_score_delta")
+        delta_text = "履歴開始" if delta is None or pd.isna(delta) else f"スコア差 {float(delta):+.1f}"
+        rank_text = sector_rank_change_text(row.get("sector_rank_change"))
+        lines.append(
+            f"#{int(row['sector_rank'])} {row['sector33']}｜{row['sector_rotation']}｜"
+            f"業種{float(row['sector_momentum_score']):.1f}点｜{delta_text}"
+            + (f"｜{rank_text}" if rank_text else "")
+        )
+        leader = optional_text(row.get("top_sector_leader"))
+        if leader:
+            lines.append(f"   リーダー: {leader} / {row_number(row, 'top_sector_leader_score'):.1f}点")
+    lines.append("")
+    return lines
+
+
+def plain_sector_leaders_section(leaders: pd.DataFrame, limit: int = 10) -> list[str]:
+    if leaders is None or leaders.empty:
+        return ["【業種リーダー候補】", "該当候補はありません。", ""]
+    counts = {value: sector_research_priority_count(leaders, value) for value in ["最優先", "優先", "監視", "見送り"]}
+    lines = [
+        "【業種リーダー候補】",
+        "売買推奨ではなく、強い・改善中の業種内で優先的に調査する銘柄です。",
+        f"最優先 {counts['最優先']}件 / 優先 {counts['優先']}件 / 監視 {counts['監視']}件 / 見送り {counts['見送り']}件",
+    ]
+    subset = leaders[leaders["sector_research_priority"].isin(["最優先", "優先", "監視"])].head(limit)
+    for _, row in subset.iterrows():
+        lines.extend([
+            f"#{int(row['overall_leader_rank'])} {row['code']} {row['name']}｜{row['sector33']} #{int(row['sector_rank'])} {row['sector_rotation']}",
+            f"   業種リーダー {row_number(row, 'sector_leader_score'):.1f}点 / 調査 {row['sector_research_priority']} / Momentum #{int(row_number(row, 'momentum_rank'))}",
+            f"   理由：{optional_text(row.get('leader_reasons')) or '-'}",
+            f"   注意：{optional_text(row.get('leader_cautions')) or '特記事項なし'}",
+            "",
+        ])
+    return lines
+
+
+def html_sector_rotation_section(sector_rotation: pd.DataFrame, limit: int = 8) -> str:
+    if sector_rotation is None or sector_rotation.empty:
+        return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>業種ローテーション</b><div style="font-size:12px;color:#64748b;margin-top:5px">比較可能な業種履歴がありません。</div></div>'
+    colors = {"加速": "#15803d", "主導": "#1d4ed8", "改善": "#0f766e", "減速": "#b45309", "底上げ": "#7c3aed", "低迷": "#64748b", "履歴開始": "#475569"}
+    items = []
+    for _, row in sector_rotation.head(limit).iterrows():
+        state = optional_text(row.get("sector_rotation"))
+        color = colors.get(state, "#475569")
+        delta = row.get("sector_score_delta")
+        delta_text = "履歴開始" if delta is None or pd.isna(delta) else f"スコア差 {float(delta):+.1f}"
+        leader = optional_text(row.get("top_sector_leader"))
+        leader_html = f'<div style="font-size:10px;color:#64748b;margin-top:3px">リーダー: {html_text(leader)} / {row_number(row, "top_sector_leader_score"):.1f}点</div>' if leader else ""
+        items.append(f'''<div style="border-top:1px solid #e5e7eb;padding:9px 0">
+<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(row["sector_rank"])} {html_text(row["sector33"])} <span style="float:right;color:{color}">{html_text(state)}</span></div>
+<div style="clear:both;font-size:11px;color:#475569">業種 {row_number(row, "sector_momentum_score"):.1f}点 ・ {html_text(delta_text)} ・ {html_text(sector_rank_change_text(row.get("sector_rank_change")))}</div>
+{leader_html}</div>''')
+    return f'''<div style="background:#fff;border:2px solid #0f766e;border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:#115e59">業種ローテーション</div>
+<div style="font-size:12px;color:#64748b;margin-top:4px">絶対強度と前回からの変化を組み合わせています。</div>
+{"".join(items)}</div>'''
+
+
+def html_sector_leaders_section(leaders: pd.DataFrame, limit: int = 10) -> str:
+    if leaders is None or leaders.empty:
+        return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>業種リーダー候補</b><div style="font-size:12px;color:#64748b;margin-top:5px">該当候補はありません。</div></div>'
+    priority_colors = {"最優先": "#14532d", "優先": "#1d4ed8", "監視": "#a16207", "見送り": "#64748b"}
+    subset = leaders[leaders["sector_research_priority"].isin(["最優先", "優先", "監視"])].head(limit)
+    items = []
+    for _, row in subset.iterrows():
+        priority = optional_text(row.get("sector_research_priority"))
+        color = priority_colors.get(priority, "#475569")
+        caution = optional_text(row.get("leader_cautions")) or "特記事項なし"
+        items.append(f'''<div style="border-top:1px solid #e5e7eb;padding:10px 0">
+<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(row["overall_leader_rank"])} {html_text(row["code"])} {html_text(row["name"])} <span style="float:right;color:{color}">{html_text(priority)} / {row_number(row, "sector_leader_score"):.1f}点</span></div>
+<div style="clear:both;font-size:11px;color:#475569">{html_text(row["sector33"])} #{int(row["sector_rank"])} {html_text(row["sector_rotation"])} ・ Momentum #{int(row_number(row, "momentum_rank"))}</div>
+<div style="font-size:11px;color:#15803d;font-weight:800;margin-top:3px">理由：{html_text(optional_text(row.get("leader_reasons")) or "-")}</div>
+<div style="font-size:11px;color:#b45309;margin-top:3px">注意：{html_text(caution)}</div>
+</div>''')
+    counts = {value: sector_research_priority_count(leaders, value) for value in ["最優先", "優先", "監視", "見送り"]}
+    return f'''<div style="background:#fff;border:2px solid #334155;border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:#0f172a">業種リーダー候補</div>
+<div style="font-size:12px;color:#64748b;margin-top:4px">強い・改善中の業種内で優先的に調査する銘柄です。売買推奨ではありません。</div>
+<div style="font-size:13px;font-weight:800;color:#334155;margin-top:8px">最優先 {counts['最優先']}件 ・ 優先 {counts['優先']}件 ・ 監視 {counts['監視']}件 ・ 見送り {counts['見送り']}件</div>
+{"".join(items)}</div>'''
+
+
 def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFrame, previous_temperature: pd.DataFrame) -> pd.DataFrame:
     cols = [
         "date", "ytd_high_count", "top100_avg_score", "top100_avg_return_20d", "top100_avg_volume_ratio",
@@ -598,11 +943,13 @@ def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFram
     return pd.DataFrame([{**current, **deltas}], columns=cols)
 
 
-def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, sector_momentum: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
+def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
         top100.to_excel(w, sheet_name="Momentum Top100", index=False)
         sector_momentum.to_excel(w, sheet_name="Sector Momentum", index=False)
+        sector_rotation.to_excel(w, sheet_name="Sector Rotation", index=False)
+        sector_leaders.to_excel(w, sheet_name="Sector Leaders", index=False)
         new_entries.to_excel(w, sheet_name="New Entries", index=False)
         rising_fast.to_excel(w, sheet_name="Rising Fast", index=False)
         top30_streak.to_excel(w, sheet_name="Top30 Streak", index=False)
@@ -2344,7 +2691,7 @@ def html_market_regime(regime: dict[str, Any]) -> str:
 </div>"""
 
 
-def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -2377,6 +2724,8 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
     ]
     lines += plain_market_regime(regime)
     lines += plain_sector_momentum_section(sector_momentum)
+    lines += plain_sector_rotation_section(sector_rotation)
+    lines += plain_sector_leaders_section(sector_leaders)
     lines += plain_action_priority_section(priority_changes.get("action_priority", pd.DataFrame()))
     lines += plain_performance_scorecard(summary.get("_signal_performance", pd.DataFrame()))
     lines += plain_priority_section(priority)
@@ -2403,7 +2752,7 @@ def html_section(title: str, df: pd.DataFrame, limit: int, show_empty: bool = Fa
     return f"<h2>{html_text(title)}</h2>{cards}"
 
 
-def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -2422,6 +2771,8 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     sections = "".join([
         html_market_regime(regime),
         html_sector_momentum_section(sector_momentum),
+        html_sector_rotation_section(sector_rotation),
+        html_sector_leaders_section(sector_leaders),
         html_action_priority_section(priority_changes.get("action_priority", pd.DataFrame())),
         html_performance_scorecard(summary.get("_signal_performance", pd.DataFrame())),
         html_priority_section(priority),
@@ -2437,7 +2788,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))}（前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}） / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
-def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -2447,8 +2798,8 @@ def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.Da
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, priority_changes, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, priority_changes, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -2513,7 +2864,7 @@ def main() -> None:
     top30_streak = top100[top100["top30_streak"] > 0].sort_values(["top30_streak", "rank"], ascending=[False, True]).copy() if not top100.empty else top100.copy()
     top30_streak_10 = top100[top100["top30_streak"] >= 10].copy() if not top100.empty else top100.copy()
     ytd_high_ranking = all_ranked[all_ranked["ytd_high_flag"] == True].sort_values(["ytd_high_streak", "ytd_high_count", "score"], ascending=[False, False, False]).copy() if not all_ranked.empty else all_ranked.copy()
-    sector_momentum = calculate_sector_momentum(all_ranked, history, today, top_limit)
+    sector_momentum = attach_sector_rotation(calculate_sector_momentum(all_ranked, history, today, top_limit))
     priority_changes = compare_priority_candidates(top100, history, today, top_limit)
     priority_changes = attach_priority_candidate_lifecycle(priority_changes, history, top100, today, top_limit)
     performance_history = combined_ranking_history(history, all_ranked, today)
@@ -2529,6 +2880,8 @@ def main() -> None:
     regime = enrich_regime_from_temperature(regime, temperature)
     priority_changes = attach_action_priority(priority_changes, regime)
     action_priority = priority_changes.get("action_priority", pd.DataFrame())
+    sector_leaders = build_sector_leaders(all_ranked, sector_momentum, action_priority)
+    sector_rotation = build_sector_rotation_table(sector_momentum, sector_leaders)
     pd.concat([old_temp, temperature], ignore_index=True).drop_duplicates(["date"], keep="last").to_csv(temp_path, index=False)
 
     elapsed = round(perf_counter() - started_at, 1)
@@ -2537,7 +2890,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_sector_momentum_v12",
+        "レポート形式": "dashboard_sector_leaders_v13",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
@@ -2552,6 +2905,14 @@ def main() -> None:
         "やや強い業種数": int((sector_momentum.get("sector_strength", pd.Series(dtype=str)) == "やや強い").sum()) if not sector_momentum.empty else 0,
         "最上位業種": str(sector_momentum.iloc[0]["sector33"]) if not sector_momentum.empty else "",
         "最上位業種スコア": float(sector_momentum.iloc[0]["sector_momentum_score"]) if not sector_momentum.empty else None,
+        "加速業種数": int((sector_momentum.get("sector_rotation", pd.Series(dtype=str)) == "加速").sum()) if not sector_momentum.empty else 0,
+        "主導業種数": int((sector_momentum.get("sector_rotation", pd.Series(dtype=str)) == "主導").sum()) if not sector_momentum.empty else 0,
+        "改善業種数": int((sector_momentum.get("sector_rotation", pd.Series(dtype=str)) == "改善").sum()) if not sector_momentum.empty else 0,
+        "業種リーダー候補数": len(sector_leaders),
+        "業種リーダー最優先": sector_research_priority_count(sector_leaders, "最優先"),
+        "業種リーダー優先": sector_research_priority_count(sector_leaders, "優先"),
+        "最上位業種リーダー": (str(sector_leaders.iloc[0]["code"]) + " " + str(sector_leaders.iloc[0]["name"])) if not sector_leaders.empty else "",
+        "最上位業種リーダースコア": float(sector_leaders.iloc[0]["sector_leader_score"]) if not sector_leaders.empty else None,
         "重点候補数": priority_change_count(priority_changes, "current"),
         "重点候補新規": priority_change_count(priority_changes, "new"),
         "重点候補継続": priority_change_count(priority_changes, "continued"),
@@ -2604,10 +2965,10 @@ def main() -> None:
         "注意事項": DISCLAIMER,
     }
     summary["_signal_performance"] = signal_performance
-    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, sector_momentum, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
+    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, sector_momentum, sector_rotation, sector_leaders, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
     try:
-        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg)
+        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, priority_changes, cfg)
     except Exception as exc:
         logger.exception("Email sending failed: %s", exc)
 
