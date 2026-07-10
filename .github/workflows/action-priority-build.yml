@@ -1,0 +1,146 @@
+name: Build Action Priority
+
+on:
+  push:
+    branches:
+      - feature/action-priority
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/action-priority
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl yfinance pyyaml python-dotenv
+
+      - name: Apply implementation
+        run: python .github/action_priority_patch.py
+
+      - name: Syntax check
+        run: python -m py_compile main.py
+
+      - name: Synthetic smoke tests
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          import pandas as pd
+          import openpyxl
+          import main
+
+          def row(**overrides):
+              base = {
+                  "code": "1234",
+                  "name": "テスト株式会社",
+                  "rank": 5,
+                  "score": 88,
+                  "priority_labels": ["継続", "大型資金"],
+                  "priority_lifecycle_status": "長期定着",
+                  "priority_streak_days": 12,
+                  "expectancy_score": 82.0,
+                  "expectancy_confidence": "高",
+                  "expectancy_evidence_count": 25,
+                  "return_20d": 0.20,
+                  "ma20_deviation": 0.10,
+                  "volume_ratio": 3.2,
+                  "trading_value": 8_000_000_000,
+              }
+              base.update(overrides)
+              return pd.Series(base)
+
+          strong = main.action_priority_values(row(), {"label": "強気"})
+          assert strong["action_priority"] == "A", strong
+          assert "大型資金" in strong["positive_reasons"]
+
+          sparse = main.action_priority_values(row(expectancy_score=90, expectancy_confidence="蓄積中", expectancy_evidence_count=1), {"label": "強気"})
+          assert sparse["action_priority"] != "A", sparse
+
+          hot = main.action_priority_values(row(priority_labels=["継続", "大型資金", "過熱注意"], ma20_deviation=0.28), {"label": "強気"})
+          assert hot["action_priority"] != "A", hot
+          assert "過熱注意" in hot["caution_reasons"]
+          assert "20日線乖離" in hot["caution_reasons"]
+
+          illiquid = main.action_priority_values(row(trading_value=40_000_000), {"label": "強気"})
+          assert illiquid["action_priority"] == "見送り", illiquid
+          assert "流動性不足" in illiquid["liquidity_check"]
+
+          defensive = main.action_priority_values(row(priority_labels=["継続"], priority_lifecycle_status="長期定着", expectancy_score=68, expectancy_confidence="中", expectancy_evidence_count=10, score=75, rank=20, trading_value=1_500_000_000, volume_ratio=1.8), {"label": "弱気"})
+          assert defensive["action_priority"] in {"A", "B", "C"}, defensive
+          assert "継続" in defensive["positive_reasons"]
+
+          overheated_market = main.action_priority_values(row(expectancy_score=76, expectancy_confidence="低", expectancy_evidence_count=5, score=82, rank=8, trading_value=2_000_000_000, volume_ratio=2.5), {"label": "過熱警戒"})
+          assert overheated_market["action_priority"] != "A", overheated_market
+          assert "過熱警戒相場" in overheated_market["caution_reasons"]
+
+          candidates = pd.DataFrame([row().to_dict(), row(code="5678", name="実績不足", expectancy_score=90, expectancy_confidence="蓄積中", expectancy_evidence_count=1).to_dict(), row(code="9999", name="低流動性", trading_value=40_000_000).to_dict()])
+          changes = {"current": candidates}
+          enriched = main.attach_action_priority(changes, {"label": "強気"})
+          action = enriched["action_priority"]
+          required = {
+              "code", "name", "momentum_rank", "momentum_score", "priority_labels",
+              "lifecycle_status", "expectancy_score", "expectancy_confidence",
+              "expectancy_evidence_count", "market_regime", "action_priority", "action_score",
+              "positive_reasons", "caution_reasons", "liquidity_check", "overheat_check",
+              "return_20d", "ma20_deviation", "volume_ratio", "trading_value",
+          }
+          assert required.issubset(action.columns), required - set(action.columns)
+          order = action["action_priority"].map(main.ACTION_PRIORITY_ORDER).tolist()
+          assert order == sorted(order), order
+
+          plain = "\n".join(main.plain_action_priority_section(action))
+          html = main.html_action_priority_section(action)
+          assert "本日の調査優先度" in plain
+          assert "売買推奨ではなく" in plain
+          assert "理由：" in plain and "注意：" in plain
+          assert "本日の調査優先度" in html
+          assert "売買推奨ではなく" in html
+
+          with tempfile.TemporaryDirectory() as tmp:
+              report = Path(tmp) / "report.xlsx"
+              empty = pd.DataFrame()
+              summary = {
+                  "調査優先度A": main.action_priority_count(action, "A"),
+                  "調査優先度B": main.action_priority_count(action, "B"),
+                  "調査優先度C": main.action_priority_count(action, "C"),
+                  "調査優先度見送り": main.action_priority_count(action, "見送り"),
+                  "A評価平均期待値": float(action[action["action_priority"] == "A"]["expectancy_score"].mean()) if main.action_priority_count(action, "A") else None,
+                  "A評価高信頼度件数": int(((action["action_priority"] == "A") & (action["expectancy_confidence"] == "高")).sum()),
+              }
+              main.excel_report(str(report), summary, empty, empty, empty, empty, empty, empty, empty, empty, action, empty, empty, empty, [], empty)
+              wb = openpyxl.load_workbook(report)
+              assert "Action Priority" in wb.sheetnames
+              assert "Priority Expectancy" in wb.sheetnames
+              assert "Summary" in wb.sheetnames
+              headers = [cell.value for cell in wb["Action Priority"][1]]
+              assert required.issubset(set(headers)), required - set(headers)
+
+          print("Synthetic action priority, email, Excel, and regression smoke tests passed")
+          PY
+
+      - name: Confirm only main.py remains in final diff
+        run: |
+          rm -f .github/action_priority_patch.py
+          rm -f .github/workflows/action-priority-build.yml
+          git status --short
+
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add evidence-aware daily research priorities"
+          git push origin HEAD:feature/action-priority
