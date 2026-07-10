@@ -32,6 +32,7 @@ jobs:
       - name: Prepare and apply development batch
         run: |
           python .github/fix_performance_patch.py
+          python .github/fix_performance_test.py
           python -m py_compile .github/performance_governance_patch.py
           python .github/performance_governance_patch.py
 
@@ -45,6 +46,7 @@ jobs:
         run: |
           rm -f .github/performance_governance_patch.py
           rm -f .github/fix_performance_patch.py
+          rm -f .github/fix_performance_test.py
           rm -f .github/test_performance_governance.py
           rm -f .github/workflows/build-performance-governance.yml
           git diff --check
