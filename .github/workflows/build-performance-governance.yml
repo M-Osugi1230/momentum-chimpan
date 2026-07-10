@@ -40,7 +40,17 @@ jobs:
         run: python -m py_compile main.py
 
       - name: Performance, governance, Excel, and regression tests
-        run: python .github/test_performance_governance.py
+        run: |
+          set -o pipefail
+          python .github/test_performance_governance.py 2>&1 | tee /tmp/performance-governance-test.log
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-governance-test-log
+          path: /tmp/performance-governance-test.log
+          retention-days: 1
 
       - name: Clean temporary files
         run: |
