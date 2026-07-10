@@ -31,6 +31,7 @@ jobs:
 
       - name: Apply release readiness batch
         run: |
+          python .github/fix_release_test.py
           python -m py_compile .github/release_readiness_patch.py
           python .github/release_readiness_patch.py
 
@@ -53,6 +54,7 @@ jobs:
       - name: Clean temporary files
         run: |
           rm -f .github/release_readiness_patch.py
+          rm -f .github/fix_release_test.py
           rm -f .github/test_release_readiness.py
           rm -f .github/workflows/build-release-readiness.yml
           git diff --check
