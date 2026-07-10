@@ -25,7 +25,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-11-dashboard-action-priority-v11"
+APP_VERSION = "2026-07-11-dashboard-sector-momentum-v12"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -59,6 +59,7 @@ class Stock:
     code: str
     name: str
     market: str = ""
+    sector33: str = ""
 
 
 def load_config() -> dict[str, Any]:
@@ -78,6 +79,19 @@ def ensure_dirs(config: dict[str, Any]) -> None:
 
 def normalize_code(code: Any) -> str:
     return str(code).strip().split(".")[0].zfill(4)
+
+
+def normalize_sector33(value: Any) -> str:
+    """Normalize the JPX 33-sector name while preserving valid labels such as その他製品."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    result = str(value).strip()
+    return "" if result.lower() in {"", "nan", "none", "-"} else result
 
 
 def market_matches(market_text: str, include_markets: set[str]) -> bool:
@@ -112,6 +126,9 @@ def load_universe(config: dict[str, Any]) -> tuple[list[Stock], list[dict[str, A
     code_col = next((c for c in df.columns if "コード" in str(c) or str(c).lower() == "code"), df.columns[0])
     name_col = next((c for c in df.columns if "銘柄名" in str(c) or "name" in str(c).lower()), df.columns[1])
     market_col = next((c for c in df.columns if "市場" in str(c) or "区分" in str(c)), None)
+    sector_col = next((c for c in df.columns if "33業種区分" in str(c)), None)
+    if sector_col is None:
+        sector_col = next((c for c in df.columns if "33業種" in str(c) and "コード" not in str(c)), None)
     type_col = next((c for c in df.columns if "規模" in str(c) or "商品" in str(c) or "33業種" in str(c)), None)
     include = set(config["market"].get("include_markets", []))
     excluded_words = ["ETF", "REIT", "不動産投信", "インフラ", "優先", "外国", "ETN"]
@@ -124,12 +141,13 @@ def load_universe(config: dict[str, Any]) -> tuple[list[Stock], list[dict[str, A
         valid_codes += 1
         name = str(row.get(name_col, ""))
         market = str(row.get(market_col, "")) if market_col else ""
-        type_text = " ".join(str(row.get(c, "")) for c in [market_col, type_col] if c)
+        sector33 = normalize_sector33(row.get(sector_col, "")) if sector_col else ""
+        type_text = " ".join(str(row.get(c, "")) for c in [market_col, type_col, sector_col] if c)
         if not market_matches(market, include):
             continue
         if any(w.lower() in (name + type_text).lower() for w in excluded_words):
             continue
-        stocks.append(Stock(code, name, market))
+        stocks.append(Stock(code, name, market, sector33))
     stats["jpx_listed_count"] = valid_codes
     stats["universe_count"] = len(stocks)
     stats["excluded_count"] = max(valid_codes - len(stocks), 0)
@@ -239,7 +257,7 @@ def score(m: dict[str, Any], min_trading_value: int) -> tuple[int, str, dict[str
 
 def ranking_history_columns() -> list[str]:
     return [
-        "date", "rank", "code", "name", "close", "score", "reason", "score_ytd_high", "score_ytd_streak",
+        "date", "rank", "code", "name", "sector33", "close", "score", "reason", "score_ytd_high", "score_ytd_streak",
         "score_return_20d", "score_volume_ratio", "score_ma", "score_trading_value", "ytd_high_flag",
         "ytd_high_streak", "ytd_high_count", "return_5d", "return_20d", "return_60d", "volume_ratio",
         "trading_value", "ma20", "ma60", "above_ma20", "above_ma60", "price_date", "is_top100",
@@ -311,6 +329,239 @@ def write_ranking_history(all_ranked: pd.DataFrame, path: str) -> None:
     out.to_csv(path, index=False)
 
 
+SECTOR_MOMENTUM_COLUMNS = [
+    "date", "sector_rank", "sector33", "sector_momentum_score", "sector_strength",
+    "stock_count", "top100_count", "top30_count", "top100_ratio", "avg_score", "median_score",
+    "avg_return_20d", "median_return_20d", "avg_return_60d", "avg_volume_ratio",
+    "above_ma20_ratio", "above_ma60_ratio", "ytd_high_count", "ytd_high_ratio",
+    "representative_stocks", "previous_date", "previous_sector_rank", "previous_sector_score",
+    "sector_rank_change", "sector_score_delta",
+]
+
+
+def numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
+    if df.empty or column not in df.columns:
+        return pd.Series(index=df.index, dtype=float)
+    return pd.to_numeric(df[column], errors="coerce")
+
+
+def sector_flag_ratio(df: pd.DataFrame, column: str) -> float:
+    if df.empty or column not in df.columns:
+        return 0.0
+    values = df[column].map(
+        lambda value: str(value).strip().lower() in {"true", "1", "yes", "y"}
+        if isinstance(value, str) else bool(value) if value is not None and not pd.isna(value) else False
+    )
+    return float(values.mean()) if len(values) else 0.0
+
+
+def sector_metric_mean(df: pd.DataFrame, column: str) -> float:
+    values = numeric_series(df, column).dropna()
+    return float(values.mean()) if not values.empty else 0.0
+
+
+def sector_metric_median(df: pd.DataFrame, column: str) -> float:
+    values = numeric_series(df, column).dropna()
+    return float(values.median()) if not values.empty else 0.0
+
+
+def sector_momentum_score_values(
+    avg_score: float,
+    median_return_20d: float,
+    above_ma20_ratio: float,
+    above_ma60_ratio: float,
+    top100_ratio: float,
+    ytd_high_ratio: float,
+) -> float:
+    """Blend sector strength and breadth without changing any stock-level score."""
+    score = 0.0
+    score += 25 if avg_score >= 55 else 20 if avg_score >= 45 else 14 if avg_score >= 35 else 8 if avg_score >= 25 else 3
+    score += 25 if median_return_20d >= 0.15 else 20 if median_return_20d >= 0.08 else 14 if median_return_20d >= 0.03 else 8 if median_return_20d >= 0 else 0
+    score += 20 if above_ma20_ratio >= 0.75 else 15 if above_ma20_ratio >= 0.60 else 10 if above_ma20_ratio >= 0.45 else 5 if above_ma20_ratio >= 0.30 else 0
+    score += 15 if above_ma60_ratio >= 0.75 else 11 if above_ma60_ratio >= 0.60 else 7 if above_ma60_ratio >= 0.45 else 3 if above_ma60_ratio >= 0.30 else 0
+    score += 10 if top100_ratio >= 0.20 else 7 if top100_ratio >= 0.10 else 4 if top100_ratio >= 0.05 else 2 if top100_ratio > 0 else 0
+    score += 5 if ytd_high_ratio >= 0.20 else 3 if ytd_high_ratio >= 0.10 else 1 if ytd_high_ratio >= 0.05 else 0
+    return round(min(score, 100.0), 1)
+
+
+def sector_strength_label(score: float) -> str:
+    if score >= 75:
+        return "強い"
+    if score >= 60:
+        return "やや強い"
+    if score >= 45:
+        return "中立"
+    return "弱い"
+
+
+def build_sector_momentum_snapshot(rows: pd.DataFrame, top_limit: int, report_date: str = "") -> pd.DataFrame:
+    base_columns = SECTOR_MOMENTUM_COLUMNS[:20]
+    if rows is None or rows.empty or "sector33" not in rows.columns:
+        return pd.DataFrame(columns=base_columns)
+    work = rows.copy()
+    work["sector33"] = work["sector33"].map(normalize_sector33)
+    work = work[work["sector33"] != ""].copy()
+    if work.empty:
+        return pd.DataFrame(columns=base_columns)
+    work["rank"] = numeric_series(work, "rank")
+    work["score"] = numeric_series(work, "score")
+    work["is_sector_top100"] = work["rank"] <= top_limit
+    work["is_sector_top30"] = work["rank"] <= 30
+
+    records: list[dict[str, Any]] = []
+    for sector33, group in work.groupby("sector33", sort=True):
+        stock_count = int(len(group))
+        top100_count = int(group["is_sector_top100"].sum())
+        top30_count = int(group["is_sector_top30"].sum())
+        top100_ratio = top100_count / stock_count if stock_count else 0.0
+        avg_score = sector_metric_mean(group, "score")
+        median_score = sector_metric_median(group, "score")
+        avg_return_20d = sector_metric_mean(group, "return_20d")
+        median_return_20d = sector_metric_median(group, "return_20d")
+        avg_return_60d = sector_metric_mean(group, "return_60d")
+        avg_volume_ratio = sector_metric_mean(group, "volume_ratio")
+        above_ma20_ratio = sector_flag_ratio(group, "above_ma20")
+        above_ma60_ratio = sector_flag_ratio(group, "above_ma60")
+        ytd_high_ratio = sector_flag_ratio(group, "ytd_high_flag")
+        ytd_high_count = int(round(ytd_high_ratio * stock_count))
+        momentum_score = sector_momentum_score_values(
+            avg_score, median_return_20d, above_ma20_ratio, above_ma60_ratio,
+            top100_ratio, ytd_high_ratio,
+        )
+        representatives = group.sort_values(["rank", "score"], ascending=[True, False], na_position="last").head(3)
+        representative_stocks = " / ".join(
+            f"{normalize_code(row.get('code'))} {row.get('name', '')} (#{int(row.get('rank'))})"
+            for _, row in representatives.iterrows() if row.get("rank") is not None and not pd.isna(row.get("rank"))
+        )
+        records.append({
+            "date": report_date,
+            "sector33": sector33,
+            "sector_momentum_score": momentum_score,
+            "sector_strength": sector_strength_label(momentum_score),
+            "stock_count": stock_count,
+            "top100_count": top100_count,
+            "top30_count": top30_count,
+            "top100_ratio": top100_ratio,
+            "avg_score": round(avg_score, 2),
+            "median_score": round(median_score, 2),
+            "avg_return_20d": avg_return_20d,
+            "median_return_20d": median_return_20d,
+            "avg_return_60d": avg_return_60d,
+            "avg_volume_ratio": round(avg_volume_ratio, 3),
+            "above_ma20_ratio": above_ma20_ratio,
+            "above_ma60_ratio": above_ma60_ratio,
+            "ytd_high_count": ytd_high_count,
+            "ytd_high_ratio": ytd_high_ratio,
+            "representative_stocks": representative_stocks,
+        })
+    snapshot = pd.DataFrame(records)
+    if snapshot.empty:
+        return pd.DataFrame(columns=base_columns)
+    snapshot = snapshot.sort_values(
+        ["sector_momentum_score", "median_return_20d", "above_ma20_ratio", "top100_count", "sector33"],
+        ascending=[False, False, False, False, True],
+    ).reset_index(drop=True)
+    snapshot.insert(1, "sector_rank", range(1, len(snapshot) + 1))
+    return snapshot[[column for column in base_columns if column in snapshot.columns]]
+
+
+def calculate_sector_momentum(all_ranked: pd.DataFrame, history: pd.DataFrame, today: str, top_limit: int) -> pd.DataFrame:
+    current = build_sector_momentum_snapshot(all_ranked, top_limit, today)
+    if current.empty:
+        return pd.DataFrame(columns=SECTOR_MOMENTUM_COLUMNS)
+
+    previous = pd.DataFrame()
+    previous_date = ""
+    if history is not None and not history.empty and {"date", "sector33"}.issubset(history.columns):
+        prior = history.copy()
+        prior["date_sort"] = pd.to_datetime(prior["date"], errors="coerce")
+        prior["sector33"] = prior["sector33"].map(normalize_sector33)
+        prior = prior.dropna(subset=["date_sort"])
+        prior = prior[(prior["date"].astype(str) != str(today)) & (prior["sector33"] != "")]
+        if not prior.empty:
+            previous_date_value = prior["date_sort"].max()
+            previous_date = previous_date_value.date().isoformat()
+            previous_rows = prior[prior["date_sort"] == previous_date_value].copy()
+            previous = build_sector_momentum_snapshot(previous_rows, top_limit, previous_date)
+
+    current["previous_date"] = previous_date
+    if previous.empty:
+        current["previous_sector_rank"] = None
+        current["previous_sector_score"] = None
+        current["sector_rank_change"] = None
+        current["sector_score_delta"] = None
+    else:
+        previous_index = previous.set_index("sector33")
+        current["previous_sector_rank"] = current["sector33"].map(previous_index["sector_rank"])
+        current["previous_sector_score"] = current["sector33"].map(previous_index["sector_momentum_score"])
+        current["sector_rank_change"] = current["previous_sector_rank"] - current["sector_rank"]
+        current["sector_score_delta"] = current["sector_momentum_score"] - current["previous_sector_score"]
+    return current[[column for column in SECTOR_MOMENTUM_COLUMNS if column in current.columns]]
+
+
+def sector_rank_change_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    number = int(float(value))
+    if number > 0:
+        return f"前回比 +{number}位"
+    if number < 0:
+        return f"前回比 {number}位"
+    return "前回同順位"
+
+
+def plain_sector_momentum_section(sector_momentum: pd.DataFrame, limit: int = 5) -> list[str]:
+    if sector_momentum is None or sector_momentum.empty:
+        return ["【業種別モメンタム（33業種）】", "業種分類を取得できなかったため、今回は集計対象外です。", ""]
+    lines = [
+        "【業種別モメンタム（33業種）】",
+        "個別銘柄の順位は変えず、業種内の広がり・騰落率・移動平均線・Top100比率を比較しています。",
+    ]
+    for _, row in sector_momentum.head(limit).iterrows():
+        movement = sector_rank_change_text(row.get("sector_rank_change"))
+        movement_text = f" / {movement}" if movement else ""
+        lines.append(
+            f"#{int(row['sector_rank'])} {row['sector33']}｜{float(row['sector_momentum_score']):.1f}点 {row['sector_strength']}｜"
+            f"Top100 {int(row['top100_count'])}/{int(row['stock_count'])}銘柄｜平均20日 {fmt_pct(row.get('avg_return_20d'))}｜"
+            f"20日線上 {fmt_pct(row.get('above_ma20_ratio'))}{movement_text}"
+        )
+        if str(row.get("representative_stocks", "")).strip():
+            lines.append(f"   上位銘柄: {row['representative_stocks']}")
+    lines.append("")
+    return lines
+
+
+def html_sector_momentum_section(sector_momentum: pd.DataFrame, limit: int = 5) -> str:
+    if sector_momentum is None or sector_momentum.empty:
+        return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>業種別モメンタム（33業種）</b><div style="font-size:12px;color:#64748b;margin-top:5px">業種分類を取得できなかったため、今回は集計対象外です。</div></div>'
+    colors = {
+        "強い": ("#dcfce7", "#166534"),
+        "やや強い": ("#dbeafe", "#1d4ed8"),
+        "中立": ("#fef3c7", "#92400e"),
+        "弱い": ("#f1f5f9", "#475569"),
+    }
+    items = []
+    for _, row in sector_momentum.head(limit).iterrows():
+        background, color = colors.get(str(row.get("sector_strength", "")), ("#f1f5f9", "#475569"))
+        movement = sector_rank_change_text(row.get("sector_rank_change"))
+        movement_html = f" ・ {html_text(movement)}" if movement else ""
+        representatives = str(row.get("representative_stocks", "")).strip()
+        representatives_html = f'<div style="font-size:10px;color:#64748b;margin-top:3px">上位銘柄: {html_text(representatives)}</div>' if representatives else ""
+        items.append(
+            f'<div style="border-top:1px solid #e5e7eb;padding:10px 0">'
+            f'<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(row["sector_rank"])} {html_text(row["sector33"])} '
+            f'<span style="display:inline-block;padding:2px 7px;border-radius:999px;background:{background};color:{color};font-size:11px">{float(row["sector_momentum_score"]):.1f}点 {html_text(row["sector_strength"])}</span></div>'
+            f'<div style="font-size:11px;line-height:1.8;color:#475569">Top100 {int(row["top100_count"])}/{int(row["stock_count"])}銘柄 ・ 平均20日 {fmt_pct(row.get("avg_return_20d"))} ・ 20日線上 {fmt_pct(row.get("above_ma20_ratio"))}{movement_html}</div>'
+            f'{representatives_html}</div>'
+        )
+    return (
+        '<div style="background:#fff;border:2px solid #0f766e;border-radius:18px;padding:16px;margin-top:14px">'
+        '<div style="font-size:18px;font-weight:900;color:#115e59">業種別モメンタム（33業種）</div>'
+        '<div style="font-size:12px;line-height:1.7;color:#64748b;margin-top:4px">個別銘柄の順位は変えず、業種内の広がりと継続性を比較しています。</div>'
+        + "".join(items) + '</div>'
+    )
+
+
 def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFrame, previous_temperature: pd.DataFrame) -> pd.DataFrame:
     cols = [
         "date", "ytd_high_count", "top100_avg_score", "top100_avg_return_20d", "top100_avg_volume_ratio",
@@ -347,10 +598,11 @@ def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFram
     return pd.DataFrame([{**current, **deltas}], columns=cols)
 
 
-def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
+def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, sector_momentum: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
         top100.to_excel(w, sheet_name="Momentum Top100", index=False)
+        sector_momentum.to_excel(w, sheet_name="Sector Momentum", index=False)
         new_entries.to_excel(w, sheet_name="New Entries", index=False)
         rising_fast.to_excel(w, sheet_name="Rising Fast", index=False)
         top30_streak.to_excel(w, sheet_name="Top30 Streak", index=False)
@@ -2092,7 +2344,7 @@ def html_market_regime(regime: dict[str, Any]) -> str:
 </div>"""
 
 
-def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -2124,6 +2376,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
         "",
     ]
     lines += plain_market_regime(regime)
+    lines += plain_sector_momentum_section(sector_momentum)
     lines += plain_action_priority_section(priority_changes.get("action_priority", pd.DataFrame()))
     lines += plain_performance_scorecard(summary.get("_signal_performance", pd.DataFrame()))
     lines += plain_priority_section(priority)
@@ -2150,7 +2403,7 @@ def html_section(title: str, df: pd.DataFrame, limit: int, show_empty: bool = Fa
     return f"<h2>{html_text(title)}</h2>{cards}"
 
 
-def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -2168,6 +2421,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     ]
     sections = "".join([
         html_market_regime(regime),
+        html_sector_momentum_section(sector_momentum),
         html_action_priority_section(priority_changes.get("action_priority", pd.DataFrame())),
         html_performance_scorecard(summary.get("_signal_performance", pd.DataFrame())),
         html_priority_section(priority),
@@ -2183,7 +2437,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))}（前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}） / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
-def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -2193,8 +2447,8 @@ def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.Da
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, priority_changes, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, priority_changes, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -2229,7 +2483,7 @@ def main() -> None:
                 logger.info("%s latest price date is %s (not today %s)", st.code, m["price_date"], today)
             sc, reason, score_breakdown = score(m, cfg["market"]["min_trading_value"])
             success += 1
-            row = {"code": st.code, "name": st.name, "score": sc, "reason": reason, **score_breakdown, **m}
+            row = {"code": st.code, "name": st.name, "sector33": st.sector33, "score": sc, "reason": reason, **score_breakdown, **m}
             if m["close"] >= cfg["market"].get("min_price", 0):
                 rows.append(row)
         except Exception as exc:
@@ -2259,6 +2513,7 @@ def main() -> None:
     top30_streak = top100[top100["top30_streak"] > 0].sort_values(["top30_streak", "rank"], ascending=[False, True]).copy() if not top100.empty else top100.copy()
     top30_streak_10 = top100[top100["top30_streak"] >= 10].copy() if not top100.empty else top100.copy()
     ytd_high_ranking = all_ranked[all_ranked["ytd_high_flag"] == True].sort_values(["ytd_high_streak", "ytd_high_count", "score"], ascending=[False, False, False]).copy() if not all_ranked.empty else all_ranked.copy()
+    sector_momentum = calculate_sector_momentum(all_ranked, history, today, top_limit)
     priority_changes = compare_priority_candidates(top100, history, today, top_limit)
     priority_changes = attach_priority_candidate_lifecycle(priority_changes, history, top100, today, top_limit)
     performance_history = combined_ranking_history(history, all_ranked, today)
@@ -2278,11 +2533,11 @@ def main() -> None:
 
     elapsed = round(perf_counter() - started_at, 1)
     limited_mode = max_symbols > 0 and max_symbols < full_universe_count
-    universe_df = pd.DataFrame([{"code": st.code, "name": st.name, "market": st.market, "scan_mode": "verification_limited" if limited_mode else "full"} for st in stocks])
+    universe_df = pd.DataFrame([{"code": st.code, "name": st.name, "market": st.market, "sector33": st.sector33, "scan_mode": "verification_limited" if limited_mode else "full"} for st in stocks])
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_action_priority_v11",
+        "レポート形式": "dashboard_sector_momentum_v12",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
@@ -2292,6 +2547,11 @@ def main() -> None:
         "取得失敗": len(errors),
         "年初来高値更新": int(all_ranked.get("ytd_high_flag", pd.Series(dtype=bool)).fillna(False).sum()) if not all_ranked.empty else 0,
         "Momentum Top100": len(top100),
+        "業種集計数": len(sector_momentum),
+        "強い業種数": int((sector_momentum.get("sector_strength", pd.Series(dtype=str)) == "強い").sum()) if not sector_momentum.empty else 0,
+        "やや強い業種数": int((sector_momentum.get("sector_strength", pd.Series(dtype=str)) == "やや強い").sum()) if not sector_momentum.empty else 0,
+        "最上位業種": str(sector_momentum.iloc[0]["sector33"]) if not sector_momentum.empty else "",
+        "最上位業種スコア": float(sector_momentum.iloc[0]["sector_momentum_score"]) if not sector_momentum.empty else None,
         "重点候補数": priority_change_count(priority_changes, "current"),
         "重点候補新規": priority_change_count(priority_changes, "new"),
         "重点候補継続": priority_change_count(priority_changes, "continued"),
@@ -2344,10 +2604,10 @@ def main() -> None:
         "注意事項": DISCLAIMER,
     }
     summary["_signal_performance"] = signal_performance
-    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
+    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, sector_momentum, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
     try:
-        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, priority_changes, cfg)
+        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg)
     except Exception as exc:
         logger.exception("Email sending failed: %s", exc)
 
