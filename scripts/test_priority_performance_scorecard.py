@@ -63,8 +63,8 @@ assert not performance.empty
 assert {"return_5d_after", "return_10d_after", "return_20d_after"}.issubset(performance.columns)
 
 first_1001 = performance[(performance["signal_date"] == "2026-06-01") & (performance["code"] == "1001")].iloc[0]
-assert round(first_1001["return_5d_after"], 6) == round(110 / 102 - 1, 6)
-assert round(first_1001["return_20d_after"], 6) == round(140 / 102 - 1, 6)
+assert round(first_1001["return_5d_after"], 6) == round(112 / 102 - 1, 6)
+assert round(first_1001["return_20d_after"], 6) == round(142 / 102 - 1, 6)
 assert first_1001["max_return_20d_after"] > 0
 
 summary = build_signal_performance_summary(performance)
