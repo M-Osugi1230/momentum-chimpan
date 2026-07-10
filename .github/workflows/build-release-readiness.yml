@@ -1,0 +1,66 @@
+name: Build Release Readiness
+
+on:
+  pull_request:
+    branches:
+      - feature/paper-portfolio-risk
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-validate:
+    if: github.head_ref == 'feature/release-readiness'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/release-readiness
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply release readiness batch
+        run: |
+          python -m py_compile .github/release_readiness_patch.py
+          python .github/release_readiness_patch.py
+
+      - name: Syntax check
+        run: python -m py_compile main.py
+
+      - name: Readiness, state, audit, Excel, and regression tests
+        run: |
+          set -o pipefail
+          python .github/test_release_readiness.py 2>&1 | tee /tmp/release-readiness-test.log
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-readiness-test-log
+          path: /tmp/release-readiness-test.log
+          retention-days: 1
+
+      - name: Clean temporary files
+        run: |
+          rm -f .github/release_readiness_patch.py
+          rm -f .github/test_release_readiness.py
+          rm -f .github/workflows/build-release-readiness.yml
+          git diff --check
+
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add release readiness and operations audit"
+          git push origin HEAD:feature/release-readiness
