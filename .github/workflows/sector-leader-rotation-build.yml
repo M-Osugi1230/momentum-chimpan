@@ -1,0 +1,141 @@
+name: Build Sector Leader Rotation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/sector-leader-rotation
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl yfinance pyyaml python-dotenv
+
+      - name: Prepare and apply development batch
+        run: |
+          python .github/prepare_sector_leader_patch.py
+          python .github/sector_leader_rotation_patch.py
+          python .github/sector_leader_rotation_fix.py
+
+      - name: Syntax check
+        run: python -m py_compile main.py
+
+      - name: Synthetic rotation, leader, email, Excel, and regression tests
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          import pandas as pd
+          import openpyxl
+          import main
+
+          sector_base = pd.DataFrame([
+              {"sector_rank": 1, "sector33": "電気機器", "sector_momentum_score": 78.0, "sector_strength": "強い", "previous_sector_rank": 4, "previous_sector_score": 68.0, "sector_rank_change": 3, "sector_score_delta": 10.0, "top100_count": 8, "top30_count": 3, "above_ma20_ratio": 0.82, "above_ma60_ratio": 0.75},
+              {"sector_rank": 2, "sector33": "機械", "sector_momentum_score": 66.0, "sector_strength": "やや強い", "previous_sector_rank": 2, "previous_sector_score": 66.0, "sector_rank_change": 0, "sector_score_delta": 0.0, "top100_count": 6, "top30_count": 2, "above_ma20_ratio": 0.70, "above_ma60_ratio": 0.68},
+              {"sector_rank": 3, "sector33": "サービス業", "sector_momentum_score": 52.0, "sector_strength": "中立", "previous_sector_rank": 1, "previous_sector_score": 60.0, "sector_rank_change": -2, "sector_score_delta": -8.0, "top100_count": 4, "top30_count": 1, "above_ma20_ratio": 0.55, "above_ma60_ratio": 0.50},
+              {"sector_rank": 4, "sector33": "小売業", "sector_momentum_score": 40.0, "sector_strength": "弱い", "previous_sector_rank": 7, "previous_sector_score": 34.0, "sector_rank_change": 3, "sector_score_delta": 6.0, "top100_count": 2, "top30_count": 0, "above_ma20_ratio": 0.40, "above_ma60_ratio": 0.35},
+          ])
+          sectors = main.attach_sector_rotation(sector_base)
+          state = dict(zip(sectors["sector33"], sectors["sector_rotation"]))
+          assert state["電気機器"] == "加速", state
+          assert state["機械"] == "主導", state
+          assert state["サービス業"] == "減速", state
+          assert state["小売業"] == "底上げ", state
+          assert sectors.iloc[0]["sector_rank"] == 1, sectors[["sector_rank", "sector33"]]
+
+          all_ranked = pd.DataFrame([
+              {"code": "1001", "name": "電機リーダー", "sector33": "電気機器", "rank": 1, "score": 92, "return_20d": 0.22, "return_60d": 0.35, "volume_ratio": 3.5, "trading_value": 8_000_000_000, "ma20_deviation": 0.10},
+              {"code": "1002", "name": "電機過熱", "sector33": "電気機器", "rank": 15, "score": 84, "return_20d": 0.58, "return_60d": 0.80, "volume_ratio": 2.4, "trading_value": 2_000_000_000, "ma20_deviation": 0.30},
+              {"code": "2001", "name": "機械リーダー", "sector33": "機械", "rank": 3, "score": 88, "return_20d": 0.18, "return_60d": 0.28, "volume_ratio": 2.6, "trading_value": 3_000_000_000, "ma20_deviation": 0.11},
+              {"code": "3001", "name": "減速業種銘柄", "sector33": "サービス業", "rank": 8, "score": 86, "return_20d": 0.16, "return_60d": 0.24, "volume_ratio": 2.1, "trading_value": 2_000_000_000, "ma20_deviation": 0.12},
+              {"code": "4001", "name": "低流動性", "sector33": "小売業", "rank": 20, "score": 82, "return_20d": 0.14, "return_60d": 0.20, "volume_ratio": 2.0, "trading_value": 40_000_000, "ma20_deviation": 0.10},
+          ])
+          actions = pd.DataFrame([
+              {"code": "1001", "action_priority": "A", "action_score": 92.0, "expectancy_score": 82.0, "expectancy_confidence": "高", "expectancy_evidence_count": 20},
+              {"code": "1002", "action_priority": "B", "action_score": 72.0, "expectancy_score": 67.0, "expectancy_confidence": "中", "expectancy_evidence_count": 9},
+              {"code": "2001", "action_priority": "B", "action_score": 78.0, "expectancy_score": 74.0, "expectancy_confidence": "中", "expectancy_evidence_count": 12},
+              {"code": "3001", "action_priority": "B", "action_score": 74.0, "expectancy_score": 70.0, "expectancy_confidence": "中", "expectancy_evidence_count": 8},
+          ])
+          leaders = main.build_sector_leaders(all_ranked, sectors, actions)
+          assert not leaders.empty
+          assert leaders.iloc[0]["code"] == "1001", leaders[["code", "sector_leader_score"]]
+          assert leaders.iloc[0]["sector_research_priority"] == "最優先", leaders.iloc[0].to_dict()
+          assert "4001" not in set(leaders["code"]), leaders["code"].tolist()
+          overheated = leaders[leaders["code"] == "1002"].iloc[0]
+          assert overheated["sector_research_priority"] != "最優先", overheated.to_dict()
+          assert "過熱水準" in overheated["leader_cautions"], overheated.to_dict()
+          decel = leaders[leaders["code"] == "3001"].iloc[0]
+          assert "業種減速" in decel["leader_cautions"], decel.to_dict()
+
+          rotation = main.build_sector_rotation_table(sectors, leaders)
+          assert {"sector_rotation", "top_sector_leader", "top_sector_leader_score"}.issubset(rotation.columns)
+          assert rotation.iloc[0]["sector_rotation"] == "加速", rotation.head().to_dict("records")
+
+          plain_rotation = "\n".join(main.plain_sector_rotation_section(rotation))
+          plain_leaders = "\n".join(main.plain_sector_leaders_section(leaders))
+          html_rotation = main.html_sector_rotation_section(rotation)
+          html_leaders = main.html_sector_leaders_section(leaders)
+          assert "業種ローテーション" in plain_rotation and "電気機器" in plain_rotation
+          assert "業種リーダー候補" in plain_leaders and "売買推奨ではなく" in plain_leaders
+          assert "業種ローテーション" in html_rotation and "業種リーダー候補" in html_leaders
+
+          strong_action = main.action_priority_values(pd.Series({
+              "rank": 5, "score": 88, "priority_labels": ["継続", "大型資金"],
+              "priority_lifecycle_status": "長期定着", "priority_streak_days": 12,
+              "expectancy_score": 82.0, "expectancy_confidence": "高", "expectancy_evidence_count": 25,
+              "return_20d": 0.20, "ma20_deviation": 0.10, "volume_ratio": 3.2,
+              "trading_value": 8_000_000_000,
+          }), {"label": "強気"})
+          assert strong_action["action_priority"] == "A", strong_action
+
+          with tempfile.TemporaryDirectory() as tmp:
+              report = Path(tmp) / "report.xlsx"
+              empty = pd.DataFrame()
+              main.excel_report(
+                  str(report), {"実行日": "2026-07-11"}, empty, sectors, rotation, leaders,
+                  empty, empty, empty, empty, empty, empty, empty, actions, empty, empty, empty, [], empty,
+              )
+              wb = openpyxl.load_workbook(report)
+              assert "Sector Momentum" in wb.sheetnames
+              assert "Sector Rotation" in wb.sheetnames
+              assert "Sector Leaders" in wb.sheetnames
+              leader_headers = [cell.value for cell in wb["Sector Leaders"][1]]
+              required = {"sector_leader_score", "sector_research_priority", "leader_reasons", "leader_cautions"}
+              assert required.issubset(set(leader_headers)), required - set(leader_headers)
+
+          assert main.APP_VERSION.endswith("sector-leaders-v13")
+          print("Sector rotation, leaders, research priority, email, Excel, and regression tests passed")
+          PY
+
+      - name: Clean temporary files
+        run: |
+          rm -f .github/prepare_sector_leader_patch.py
+          rm -f .github/sector_leader_rotation_patch.py
+          rm -f .github/sector_leader_rotation_fix.py
+          rm -f .github/workflows/sector-leader-rotation-build.yml
+          git status --short
+
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add sector leaders and rotation priorities"
+          git push origin HEAD:feature/sector-leader-rotation
