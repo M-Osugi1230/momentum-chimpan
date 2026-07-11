@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import yaml
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 import strategy_governance
 
 
-REGISTRY_PATH = Path("research/experiment_registry.yaml")
+REGISTRY_PATH = REPOSITORY_ROOT / "research/experiment_registry.yaml"
 EXPERIMENT_ID = "relative-strength-alpha-v18"
 
 registry = yaml.safe_load(REGISTRY_PATH.read_text(encoding="utf-8")) or {}
 registry.setdefault("experiments", [])
-fingerprint = strategy_governance.strategy_fingerprint("main.py", "config.yaml")["sha256"]
+fingerprint = strategy_governance.strategy_fingerprint(
+    str(REPOSITORY_ROOT / "main.py"),
+    str(REPOSITORY_ROOT / "config.yaml"),
+)["sha256"]
 
 experiment = {
     "experiment_id": EXPERIMENT_ID,
