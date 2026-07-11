@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: export-live-execution-evidence
@@ -22,6 +22,7 @@ jobs:
         with:
           ref: feature/live-execution-evidence
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rebase working tree onto latest main
         run: |
@@ -43,7 +44,25 @@ jobs:
       - name: Build and validate final tree
         run: bash .github/finalize_live_execution_evidence.sh
 
+      - name: Publish validated non-workflow changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            evidence_provenance.py \
+            execution_realism.py \
+            research/experiment_registry.yaml \
+            .github/validate_workflows.py \
+            .github/test_execution_provenance.py \
+            live_execution_panel.py \
+            .github/test_live_execution_panel.py
+          if ! git diff --cached --quiet; then
+            git commit -m "Require governed next-session execution evidence"
+            git push --force-with-lease origin HEAD:feature/live-execution-evidence
+          fi
+
       - name: Upload verified final tree
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: live-execution-final-tree
