@@ -1,6 +1,17 @@
 name: Historical Research Backfill
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - historical_backfill.py
+      - replay.py
+      - research_scorecard.py
+      - robustness_analysis.py
+      - strategy_governance.py
+      - data/jpx_list_cache.csv
+      - .github/workflows/historical-backfill.yml
   schedule:
     # Monthly on the first day at 10:30 JST.
     - cron: '30 1 1 * *'
@@ -31,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: momentum-historical-research-backfill
+  group: momentum-historical-research-backfill-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -51,14 +62,43 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Resolve pilot or full-run parameters
+        id: parameters
+        env:
+          INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_calendar_days }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+          INPUT_BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            max_symbols=36
+            lookback_days=240
+            sample_every=10
+            batch_size=36
+            run_mode=pull_request_pilot
+          else
+            max_symbols="${INPUT_MAX_SYMBOLS:-300}"
+            lookback_days="${INPUT_LOOKBACK_DAYS:-500}"
+            sample_every="${INPUT_SAMPLE_EVERY:-5}"
+            batch_size="${INPUT_BATCH_SIZE:-50}"
+            run_mode=scheduled_or_manual
+          fi
+          echo "max_symbols=${max_symbols}" >> "${GITHUB_OUTPUT}"
+          echo "lookback_days=${lookback_days}" >> "${GITHUB_OUTPUT}"
+          echo "sample_every=${sample_every}" >> "${GITHUB_OUTPUT}"
+          echo "batch_size=${batch_size}" >> "${GITHUB_OUTPUT}"
+          echo "run_mode=${run_mode}" >> "${GITHUB_OUTPUT}"
+
       - name: Build isolated historical rankings
         env:
-          MAX_SYMBOLS: ${{ inputs.max_symbols || '300' }}
-          LOOKBACK_DAYS: ${{ inputs.lookback_calendar_days || '500' }}
-          SAMPLE_EVERY: ${{ inputs.sample_every || '5' }}
-          BATCH_SIZE: ${{ inputs.batch_size || '50' }}
+          MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
+          LOOKBACK_DAYS: ${{ steps.parameters.outputs.lookback_days }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+          BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
+          RUN_MODE: ${{ steps.parameters.outputs.run_mode }}
         run: |
           mkdir -p output/backfill
+          echo "run_mode=${RUN_MODE}" | tee output/backfill/workflow-mode.txt
           set -o pipefail
           python historical_backfill.py \
             --strict \
