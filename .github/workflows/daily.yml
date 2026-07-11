@@ -104,13 +104,29 @@ jobs:
             --audit output/evidence_stamp_audit.json \
             --snapshot-root data/state_snapshots
 
+      - name: Seal recoverable state snapshot
+        id: recovery
+        if: >-
+          steps.strategy.outcome == 'success' &&
+          steps.report.outcome == 'success' &&
+          steps.heartbeat.outcome == 'success' &&
+          steps.evidence.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python state_recovery.py seal \
+            --report output/daily_report.xlsx \
+            --fingerprint data/strategy_fingerprint.json \
+            --snapshot-root data/state_snapshots \
+            --audit output/recovery_snapshot_audit.json
+
       - name: Validate state and apply bounded retention
         id: maintenance
         if: >-
           steps.strategy.outcome == 'success' &&
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
-          steps.evidence.outcome == 'success'
+          steps.evidence.outcome == 'success' &&
+          steps.recovery.outcome == 'success'
         continue-on-error: true
         run: |
           python operations.py maintain \
@@ -128,6 +144,7 @@ jobs:
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
           steps.evidence.outcome == 'success' &&
+          steps.recovery.outcome == 'success' &&
           steps.maintenance.outcome == 'success' &&
           (github.event_name == 'schedule' || inputs.max_symbols == '0' || inputs.max_symbols == '')
         run: |
@@ -179,6 +196,7 @@ jobs:
            steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
            steps.evidence.outcome == 'failure' ||
+           steps.recovery.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         continue-on-error: true
@@ -191,6 +209,7 @@ jobs:
           REPORT_OUTCOME: ${{ steps.report.outcome }}
           HEARTBEAT_OUTCOME: ${{ steps.heartbeat.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
           MAINTENANCE_OUTCOME: ${{ steps.maintenance.outcome }}
           PERSIST_OUTCOME: ${{ steps.persist.outcome }}
         run: |
@@ -198,8 +217,9 @@ jobs:
           if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" = "failure" ]; then stage="report"; fi
           if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
           if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" = "failure" ]; then stage="evidence-stamp"; fi
-          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
-          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" = "failure" ]; then stage="recovery-snapshot-seal"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
           python operations.py notify \
             --stage "${stage}" \
             --log output/run.log \
@@ -219,6 +239,7 @@ jobs:
             output/run.log
             output/state_maintenance.json
             output/evidence_stamp_audit.json
+            output/recovery_snapshot_audit.json
             output/ops_notification.txt
             data/operations_heartbeat.json
             data/strategy_fingerprint.json
@@ -238,6 +259,7 @@ jobs:
            steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
            steps.evidence.outcome == 'failure' ||
+           steps.recovery.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         run: |

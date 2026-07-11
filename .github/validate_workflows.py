@@ -53,6 +53,9 @@ def main() -> int:
         "output/evidence_stamp_audit.json",
         "--snapshot-root data/state_snapshots",
         "steps.evidence.outcome == 'success'",
+        "state_recovery.py seal",
+        "output/recovery_snapshot_audit.json",
+        "steps.recovery.outcome == 'success'",
         "operations.py maintain",
         "operations.py notify",
         "git rebase origin/main",
@@ -118,6 +121,23 @@ def main() -> int:
     ])
 
     assert daily.index("Snapshot governed strategy fingerprint before report") < daily.index("Run report")
+
+
+    recovery = load_workflow("recovery-drill.yml")
+    require("recovery-drill.yml", recovery, [
+        "python state_recovery.py drill",
+        "--strict",
+        "data/state_snapshots",
+        "output/recovery",
+        "contents: read",
+        "retention-days: 90",
+        "production state",
+    ])
+    forbid("recovery-drill.yml", recovery, [
+        "git push",
+        "contents: write",
+        "EMAIL_APP_PASSWORD",
+    ])
 
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
     require("main.py", main_source, [

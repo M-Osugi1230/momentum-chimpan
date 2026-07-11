@@ -1,0 +1,62 @@
+name: State Recovery Drill
+
+on:
+  schedule:
+    # Sunday 10:30 JST, after the weekly research replay.
+    - cron: '30 1 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: momentum-state-recovery-drill
+  cancel-in-progress: true
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Restore latest valid snapshot into an isolated sandbox
+        id: recovery
+        continue-on-error: true
+        run: |
+          # Read-only drill: production state is inspected but never modified.
+          mkdir -p output/recovery
+          set -o pipefail
+          python state_recovery.py drill \
+            --strict \
+            --snapshot-root data/state_snapshots \
+            --production-root . \
+            --output-dir output/recovery | tee output/recovery/recovery.log
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-recovery-drill-${{ github.run_id }}
+          path: output/recovery/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce recovery readiness
+        if: steps.recovery.outcome == 'failure'
+        run: |
+          echo "No valid sealed snapshot could be restored. Review the recovery artifact." >&2
+          exit 1
