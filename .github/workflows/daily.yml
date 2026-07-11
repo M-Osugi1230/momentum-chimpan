@@ -45,8 +45,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Snapshot governed strategy fingerprint before report
+        id: strategy
+        continue-on-error: true
+        run: |
+          python strategy_governance.py snapshot \
+            --output data/strategy_fingerprint.json
+          fingerprint=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('data/strategy_fingerprint.json').read_text(encoding='utf-8'))
+          print(payload['strategy_fingerprint'])
+          PY
+          )
+          echo "MOMENTUM_STRATEGY_FINGERPRINT=${fingerprint}" >> "${GITHUB_ENV}"
+          echo "MOMENTUM_STRATEGY_STAMP_SOURCE=DAILY_GOVERNED_WORKFLOW" >> "${GITHUB_ENV}"
+
       - name: Run report
         id: report
+        if: steps.strategy.outcome == 'success'
         continue-on-error: true
         env:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
@@ -72,34 +89,27 @@ jobs:
             --run-url "${RUN_URL}" \
             --event-name "${GITHUB_EVENT_NAME}"
 
-      - name: Snapshot governed strategy fingerprint
-        id: strategy
-        if: steps.report.outcome == 'success' && steps.heartbeat.outcome == 'success'
-        continue-on-error: true
-        run: |
-          python strategy_governance.py snapshot \
-            --output data/strategy_fingerprint.json
-
-      - name: Stamp live evidence rows with strategy fingerprint
+      - name: Verify ranking and snapshot strategy stamps
         id: evidence
         if: >-
+          steps.strategy.outcome == 'success' &&
           steps.report.outcome == 'success' &&
-          steps.heartbeat.outcome == 'success' &&
-          steps.strategy.outcome == 'success'
+          steps.heartbeat.outcome == 'success'
         continue-on-error: true
         run: |
           python evidence_provenance.py stamp-live \
             --ranking data/momentum_daily_ranking.csv \
             --report output/daily_report.xlsx \
             --fingerprint data/strategy_fingerprint.json \
-            --audit output/evidence_stamp_audit.json
+            --audit output/evidence_stamp_audit.json \
+            --snapshot-root data/state_snapshots
 
       - name: Validate state and apply bounded retention
         id: maintenance
         if: >-
+          steps.strategy.outcome == 'success' &&
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
-          steps.strategy.outcome == 'success' &&
           steps.evidence.outcome == 'success'
         continue-on-error: true
         run: |
@@ -114,9 +124,9 @@ jobs:
         id: persist
         continue-on-error: true
         if: >-
+          steps.strategy.outcome == 'success' &&
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
-          steps.strategy.outcome == 'success' &&
           steps.evidence.outcome == 'success' &&
           steps.maintenance.outcome == 'success' &&
           (github.event_name == 'schedule' || inputs.max_symbols == '0' || inputs.max_symbols == '')
@@ -165,9 +175,9 @@ jobs:
         id: notify
         if: >-
           always() &&
-          (steps.report.outcome == 'failure' ||
+          (steps.strategy.outcome == 'failure' ||
+           steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
-           steps.strategy.outcome == 'failure' ||
            steps.evidence.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
@@ -177,19 +187,19 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STRATEGY_OUTCOME: ${{ steps.strategy.outcome }}
           REPORT_OUTCOME: ${{ steps.report.outcome }}
           HEARTBEAT_OUTCOME: ${{ steps.heartbeat.outcome }}
-          STRATEGY_OUTCOME: ${{ steps.strategy.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
           MAINTENANCE_OUTCOME: ${{ steps.maintenance.outcome }}
           PERSIST_OUTCOME: ${{ steps.persist.outcome }}
         run: |
-          stage="report"
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" = "failure" ]; then stage="strategy-fingerprint"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" = "failure" ]; then stage="evidence-stamp"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
+          stage="strategy-fingerprint"
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" = "failure" ]; then stage="report"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" = "failure" ]; then stage="evidence-stamp"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
           python operations.py notify \
             --stage "${stage}" \
             --log output/run.log \
@@ -224,9 +234,9 @@ jobs:
       - name: Enforce operational success
         if: >-
           always() &&
-          (steps.report.outcome == 'failure' ||
+          (steps.strategy.outcome == 'failure' ||
+           steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
-           steps.strategy.outcome == 'failure' ||
            steps.evidence.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
