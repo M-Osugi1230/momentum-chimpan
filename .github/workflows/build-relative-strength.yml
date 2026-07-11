@@ -37,6 +37,11 @@ jobs:
           path = Path('.github/relative_strength_patch.py')
           text = path.read_text(encoding='utf-8')
           text = text.replace("relative_block = r'''", 'relative_block = r"""', 1)
+          text = text.replace(
+              '    """Measure stock strength versus the scanned market and its JPX 33-sector peers."""',
+              '    "Measure stock strength versus the scanned market and its JPX 33-sector peers."',
+              1,
+          )
           marker = "\n'''\nreplace_once(\"\\n\\ndef score"
           if marker not in text:
               raise SystemExit('relative block closing marker not found')
