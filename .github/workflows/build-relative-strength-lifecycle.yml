@@ -1,0 +1,57 @@
+name: Build Relative Strength Lifecycle
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  build-and-validate:
+    if: github.head_ref == 'feature/relative-strength-lifecycle'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/relative-strength-lifecycle
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Apply lifecycle integration
+        run: |
+          python -m py_compile relative_strength_lifecycle.py .github/apply_rs_lifecycle_integration.py
+          python .github/apply_rs_lifecycle_integration.py
+      - name: Compile application
+        run: python -m py_compile main.py relative_strength_lifecycle.py
+      - name: Validate lifecycle analytics
+        run: python .github/test_relative_strength_lifecycle.py
+      - name: Confirm strategy fingerprint unchanged
+        run: |
+          git fetch origin main
+          mkdir -p /tmp/strategy-base
+          git show origin/main:main.py > /tmp/strategy-base/main.py
+          git show origin/main:config.yaml > /tmp/strategy-base/config.yaml
+          python strategy_governance.py ci-check \
+            --base-main /tmp/strategy-base/main.py \
+            --base-config /tmp/strategy-base/config.yaml \
+            --current-main main.py \
+            --current-config config.yaml \
+            --registry research/experiment_registry.yaml
+      - name: Clean temporary implementation files
+        run: |
+          rm -f .github/apply_rs_lifecycle_integration.py
+          rm -f .github/test_relative_strength_lifecycle.py
+          git diff --check
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add relative strength lifecycle monitoring"
+          git push origin HEAD:feature/relative-strength-lifecycle
