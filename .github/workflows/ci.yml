@@ -38,10 +38,12 @@ jobs:
         run: >-
           python -m py_compile
           main.py replay.py research_scorecard.py robustness_analysis.py
-          strategy_governance.py operations.py smoke_validate.py historical_backfill.py
+          strategy_governance.py evidence_provenance.py operations.py
+          smoke_validate.py historical_backfill.py
           .github/test_walk_forward_replay.py .github/test_research_scorecard.py
           .github/test_robustness_analysis.py .github/test_strategy_governance.py
-          .github/test_operations.py .github/test_historical_backfill.py
+          .github/test_evidence_provenance.py .github/test_operations.py
+          .github/test_historical_backfill.py
 
       - name: Import and safety smoke test
         run: |
@@ -65,17 +67,15 @@ jobs:
           print(module.APP_VERSION)
           PY
 
-      - name: Validate workflow syntax and durable state coverage
+      - name: Validate workflow syntax and governed evidence paths
         run: |
           python - <<'PY'
           from pathlib import Path
           import yaml
 
-          daily_path = Path(".github/workflows/daily.yml")
-          daily_text = daily_path.read_text(encoding="utf-8")
+          daily_text = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
           assert isinstance(yaml.safe_load(daily_text), dict)
-
-          required_fragments = [
+          daily_fragments = [
               "python-version: '3.12'",
               "daily-momentum-report-main",
               "retention-days: 90",
@@ -91,12 +91,14 @@ jobs:
               "data/state_snapshots",
               "operations.py heartbeat",
               "strategy_governance.py snapshot",
+              "evidence_provenance.py stamp-live",
+              "output/evidence_stamp_audit.json",
+              "steps.evidence.outcome == 'success'",
               "operations.py maintain",
               "operations.py notify",
-              "steps.strategy.outcome == 'success'",
               "git rebase origin/main",
           ]
-          missing = [fragment for fragment in required_fragments if fragment not in daily_text]
+          missing = [fragment for fragment in daily_fragments if fragment not in daily_text]
           assert not missing, f"daily workflow missing governed controls: {missing}"
 
           source = Path("main.py").read_text(encoding="utf-8")
@@ -114,17 +116,21 @@ jobs:
           replay_text = Path(".github/workflows/replay.yml").read_text(encoding="utf-8")
           assert isinstance(yaml.safe_load(replay_text), dict)
           replay_fragments = [
+              "evidence_provenance.py prepare-live",
+              "live_strategy_history.csv",
+              "eligible_dates",
               "python replay.py",
-              "research_scorecard.py --strict",
+              "research_scorecard.py",
               "robustness_analysis.py --strict",
-              "strategy_governance.py audit",
-              "--strict",
+              "evidence_provenance.py governance-audit",
+              "evidence_provenance.json",
+              "insufficient-live-evidence.txt",
               "retention-days: 90",
               "contents: read",
-              "strategy-governance.log",
           ]
           missing_replay = [fragment for fragment in replay_fragments if fragment not in replay_text]
           assert not missing_replay, f"replay workflow regression: {missing_replay}"
+          assert "strategy_governance.py audit" not in replay_text
 
           smoke_text = Path(".github/workflows/smoke.yml").read_text(encoding="utf-8")
           assert isinstance(yaml.safe_load(smoke_text), dict)
@@ -150,10 +156,12 @@ jobs:
               "--strict",
               "--max-symbols",
               "output/backfill/historical_ranking.csv",
+              "evidence_provenance.py seal-derived",
+              "HISTORICAL_CURRENT_UNIVERSE_BACKFILL",
+              "evidence_provenance.py governance-audit",
               "python replay.py",
               "python research_scorecard.py",
               "python robustness_analysis.py",
-              "python strategy_governance.py audit",
               "promotion_evidence_allowed",
               "CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS",
               "contents: read",
@@ -161,12 +169,14 @@ jobs:
           ]
           missing_backfill = [fragment for fragment in backfill_fragments if fragment not in backfill_text]
           assert not missing_backfill, f"historical backfill workflow regression: {missing_backfill}"
+          assert "strategy_governance.py audit" not in backfill_text
           assert "git push" not in backfill_text
           assert "EMAIL_APP_PASSWORD" not in backfill_text
 
           registry = yaml.safe_load(Path("research/experiment_registry.yaml").read_text(encoding="utf-8"))
           assert registry["policy"]["automatic_promotion"] is False
           assert registry["policy"]["require_manual_approval"] is True
+          assert registry["policy"]["allowed_promotion_evidence_origins"] == ["LIVE_FORWARD_RANKING_HISTORY"]
           PY
 
       - name: Enforce strategy experiment registration
@@ -203,6 +213,11 @@ jobs:
           set -o pipefail
           python .github/test_strategy_governance.py 2>&1 | tee /tmp/strategy-governance-test.log
 
+      - name: Run evidence provenance validation
+        run: |
+          set -o pipefail
+          python .github/test_evidence_provenance.py 2>&1 | tee /tmp/evidence-provenance-test.log
+
       - name: Run operational controls validation
         run: |
           set -o pipefail
@@ -223,6 +238,7 @@ jobs:
             /tmp/research-scorecard-test.log
             /tmp/robustness-analysis-test.log
             /tmp/strategy-governance-test.log
+            /tmp/evidence-provenance-test.log
             /tmp/operations-test.log
             /tmp/historical-backfill-test.log
           retention-days: 1
