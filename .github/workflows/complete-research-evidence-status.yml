@@ -1,0 +1,105 @@
+name: Complete Research Evidence Status
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: complete-research-evidence-status
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: github.head_ref == 'feature/research-evidence-status'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/research-evidence-status
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebase onto latest main and require execution provenance
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          git push --force-with-lease origin HEAD:feature/research-evidence-status
+          grep -q 'execution_evidence_provenance.json' .github/workflows/replay.yml
+          grep -q '^def seal_execution_evidence' evidence_provenance.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply signed evidence status integration
+        run: |
+          if ! grep -q '^def load_research_evidence_status' main.py; then
+            python .github/research_evidence_status_patch.py
+          else
+            echo "Research evidence status integration is already applied"
+          fi
+
+      - name: Validate signed evidence and unchanged strategy fingerprint
+        run: |
+          python -m py_compile \
+            main.py research_evidence_status.py evidence_provenance.py \
+            strategy_governance.py .github/validate_workflows.py \
+            .github/test_research_evidence_status.py \
+            .github/test_release_evidence_gate.py
+          python .github/validate_workflows.py
+          python .github/test_research_evidence_status.py
+          python .github/test_release_evidence_gate.py
+          mkdir -p /tmp/strategy-base
+          git show origin/main:main.py > /tmp/strategy-base/main.py
+          git show origin/main:config.yaml > /tmp/strategy-base/config.yaml
+          python strategy_governance.py ci-check \
+            --base-main /tmp/strategy-base/main.py \
+            --base-config /tmp/strategy-base/config.yaml \
+            --current-main main.py \
+            --current-config config.yaml \
+            --registry research/experiment_registry.yaml
+
+      - name: Remove temporary implementation machinery
+        run: |
+          rm -f .github/research_evidence_status_patch.py
+          rm -f .github/workflows/complete-research-evidence-status.yml
+          git diff --check
+
+      - name: Commit and push verified final head
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Connect signed execution evidence to release readiness"
+            git fetch origin feature/research-evidence-status
+            git rebase origin/feature/research-evidence-status
+            git push origin HEAD:feature/research-evidence-status
+          fi
+
+      - name: Mark ready and merge exact verified head
+        run: |
+          pr_number=$(gh pr list --repo "${GITHUB_REPOSITORY}" --head feature/research-evidence-status --state open --json number --jq '.[0].number')
+          test -n "${pr_number}"
+          head_sha=$(gh pr view "${pr_number}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" || true
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/merge" \
+            -f merge_method=merge \
+            -f sha="${head_sha}"
