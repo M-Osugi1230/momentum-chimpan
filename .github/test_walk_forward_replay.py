@@ -29,10 +29,9 @@ assert result.manifest["live_state_mutation_allowed"] is False
 assert result.manifest["lookahead_violations"] == 0
 assert not result.audit.empty
 assert set(result.audit["status"]) == {"PASS"}
-assert (
-    pd.to_datetime(result.audit["prior_input_max_date"], errors="coerce")
-    < pd.to_datetime(result.audit["signal_date"], errors="coerce")
-).fillna(True).all()
+prior_dates = pd.to_datetime(result.audit["prior_input_max_date"], errors="coerce")
+signal_dates = pd.to_datetime(result.audit["signal_date"], errors="coerce")
+assert (prior_dates.isna() | (prior_dates < signal_dates)).all()
 assert (result.audit["future_rows_available_to_signal_generation"] == 0).all()
 assert (result.coverage["sector_coverage_ratio"] >= 0.90).all()
 
