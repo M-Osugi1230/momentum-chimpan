@@ -165,7 +165,9 @@ def rank_diagnostics(baseline: pd.DataFrame, variant: pd.DataFrame) -> dict[str,
     top30_overlap: list[float] = []
     top100_overlap: list[float] = []
     for _, group in merged.groupby("date"):
-        corr = group["rank_baseline"].corr(group["rank_variant"], method="spearman")
+        baseline_ranks = pd.to_numeric(group["rank_baseline"], errors="coerce").rank(method="average")
+        variant_ranks = pd.to_numeric(group["rank_variant"], errors="coerce").rank(method="average")
+        corr = baseline_ranks.corr(variant_ranks, method="pearson")
         if pd.notna(corr):
             daily_corr.append(float(corr))
         for limit, target in ((30, top30_overlap), (100, top100_overlap)):
