@@ -37,6 +37,7 @@ jobs:
         id: recovery
         continue-on-error: true
         run: |
+          # Read-only drill: production state is inspected but never modified.
           mkdir -p output/recovery
           set -o pipefail
           python state_recovery.py drill \
