@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - historical_backfill.py
+      - historical_price_panel.py
+      - execution_realism.py
       - replay.py
       - research_scorecard.py
       - robustness_analysis.py
@@ -98,7 +100,7 @@ jobs:
           BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
           RUN_MODE: ${{ steps.parameters.outputs.run_mode }}
         run: |
-          mkdir -p output/backfill/replay
+          mkdir -p output/backfill/replay output/backfill/execution
           echo "run_mode=${RUN_MODE}" | tee output/backfill/workflow-mode.txt
           set -o pipefail
           python historical_backfill.py \
@@ -115,6 +117,19 @@ jobs:
             --source-manifest output/backfill/backfill_manifest.json \
             --provenance output/backfill/replay/evidence_provenance.json | tee output/backfill/replay/provenance.log
 
+      - name: Build daily adjusted price panel
+        env:
+          BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
+        run: |
+          set -o pipefail
+          python historical_price_panel.py \
+            --strict \
+            --history output/backfill/historical_ranking.csv \
+            --backfill-manifest output/backfill/backfill_manifest.json \
+            --output output/backfill/historical_price_panel.csv \
+            --manifest output/backfill/historical_price_panel_manifest.json \
+            --batch-size "${BATCH_SIZE}" | tee output/backfill/price-panel.log
+
       - name: Replay backfilled research history
         run: |
           set -o pipefail
@@ -124,7 +139,7 @@ jobs:
             --jpx-cache data/jpx_list_cache.csv \
             --output-dir output/backfill/replay | tee output/backfill/replay.log
 
-      - name: Build backfill evidence scorecard
+      - name: Build close-based backfill evidence scorecard
         run: |
           set -o pipefail
           python research_scorecard.py \
@@ -134,7 +149,7 @@ jobs:
             --jpx-cache data/jpx_list_cache.csv \
             --output-dir output/backfill/replay | tee output/backfill/evidence.log
 
-      - name: Stress-test backfill evidence
+      - name: Stress-test close-based backfill evidence
         run: |
           set -o pipefail
           python robustness_analysis.py \
@@ -142,7 +157,27 @@ jobs:
             --input output/backfill/replay/replay_benchmarked_outcomes.csv \
             --output-dir output/backfill/replay | tee output/backfill/robustness.log
 
-      - name: Audit governance with non-promotable provenance
+      - name: Simulate next-session executable prices
+        run: |
+          set -o pipefail
+          python execution_realism.py \
+            --strict \
+            --signals output/backfill/replay/replay_signals.csv \
+            --prices output/backfill/historical_price_panel.csv \
+            --ranking output/backfill/historical_ranking.csv \
+            --provenance output/backfill/replay/evidence_provenance.json \
+            --output-dir output/backfill/execution | tee output/backfill/execution/execution.log
+
+      - name: Stress-test already-net execution evidence
+        run: |
+          set -o pipefail
+          python robustness_analysis.py \
+            --strict \
+            --base-cost-bps 0 \
+            --input output/backfill/execution/execution_benchmarked_outcomes.csv \
+            --output-dir output/backfill/execution | tee output/backfill/execution/robustness.log
+
+      - name: Audit close-based governance with non-promotable provenance
         run: |
           set -o pipefail
           python evidence_provenance.py governance-audit \
@@ -151,22 +186,37 @@ jobs:
             --robustness output/backfill/replay/replay_robustness_summary.csv \
             --output-dir output/backfill/replay | tee output/backfill/governance.log
 
-      - name: Confirm isolated research mode
+      - name: Audit execution evidence with non-promotable provenance
+        run: |
+          set -o pipefail
+          python evidence_provenance.py governance-audit \
+            --strict \
+            --provenance output/backfill/replay/evidence_provenance.json \
+            --robustness output/backfill/execution/replay_robustness_summary.csv \
+            --output-dir output/backfill/execution | tee output/backfill/execution/governance.log
+
+      - name: Confirm isolated research and execution mode
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          manifest = json.loads(Path('output/backfill/backfill_manifest.json').read_text(encoding='utf-8'))
+          backfill = json.loads(Path('output/backfill/backfill_manifest.json').read_text(encoding='utf-8'))
+          panel = json.loads(Path('output/backfill/historical_price_panel_manifest.json').read_text(encoding='utf-8'))
           provenance = json.loads(Path('output/backfill/replay/evidence_provenance.json').read_text(encoding='utf-8'))
-          audit = json.loads(Path('output/backfill/replay/evidence_provenance_audit.json').read_text(encoding='utf-8'))
-          assert manifest['research_only'] is True
-          assert manifest['promotion_evidence_allowed'] is False
-          assert manifest['production_state_mutation_allowed'] is False
-          assert manifest['production_state_mutations'] == []
-          assert manifest['universe_bias'] == 'CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS'
+          execution = json.loads(Path('output/backfill/execution/execution_realism_manifest.json').read_text(encoding='utf-8'))
+          audit = json.loads(Path('output/backfill/execution/evidence_provenance_audit.json').read_text(encoding='utf-8'))
+          assert backfill['research_only'] is True
+          assert backfill['promotion_evidence_allowed'] is False
+          assert backfill['production_state_mutations'] == []
+          assert panel['promotion_evidence_allowed'] is False
+          assert panel['production_state_mutations'] == []
           assert provenance['evidence_origin'] == 'HISTORICAL_CURRENT_UNIVERSE_BACKFILL'
           assert provenance['promotion_evidence_allowed'] is False
+          assert execution['promotion_evidence_allowed'] is False
+          assert execution['same_day_close_entry_allowed'] is False
+          assert execution['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert execution['production_state_mutations'] == []
           assert audit['provenance_valid'] is False
           PY
 

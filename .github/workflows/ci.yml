@@ -39,11 +39,12 @@ jobs:
           python -m py_compile
           main.py replay.py research_scorecard.py robustness_analysis.py
           strategy_governance.py evidence_provenance.py operations.py
-          smoke_validate.py historical_backfill.py
+          smoke_validate.py historical_backfill.py historical_price_panel.py
+          execution_realism.py .github/validate_workflows.py
           .github/test_walk_forward_replay.py .github/test_research_scorecard.py
           .github/test_robustness_analysis.py .github/test_strategy_governance.py
           .github/test_evidence_provenance.py .github/test_operations.py
-          .github/test_historical_backfill.py
+          .github/test_historical_backfill.py .github/test_execution_realism.py
 
       - name: Import and safety smoke test
         run: |
@@ -67,117 +68,10 @@ jobs:
           print(module.APP_VERSION)
           PY
 
-      - name: Validate workflow syntax and governed evidence paths
+      - name: Validate workflow policies and governed evidence paths
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import yaml
-
-          daily_text = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
-          assert isinstance(yaml.safe_load(daily_text), dict)
-          daily_fragments = [
-              "python-version: '3.12'",
-              "daily-momentum-report-main",
-              "retention-days: 90",
-              "data/momentum_daily_ranking.csv",
-              "data/market_temperature.csv",
-              "data/sector_leader_signal_history.csv",
-              "data/paper_portfolio.csv",
-              "data/paper_trade_history.csv",
-              "data/paper_equity_history.csv",
-              "data/execution_audit.csv",
-              "data/operations_heartbeat.json",
-              "data/strategy_fingerprint.json",
-              "data/state_snapshots",
-              "operations.py heartbeat",
-              "strategy_governance.py snapshot",
-              "evidence_provenance.py stamp-live",
-              "output/evidence_stamp_audit.json",
-              "steps.evidence.outcome == 'success'",
-              "operations.py maintain",
-              "operations.py notify",
-              "git rebase origin/main",
-          ]
-          missing = [fragment for fragment in daily_fragments if fragment not in daily_text]
-          assert not missing, f"daily workflow missing governed controls: {missing}"
-
-          source = Path("main.py").read_text(encoding="utf-8")
-          freshness_fragments = [
-              "def evaluate_market_data_freshness(",
-              "def attach_market_data_freshness_health(",
-              "if state_update_allowed:\n        write_ranking_history",
-              "paper_result = load_existing_paper_state(regime, run_health)",
-              "state_snapshots = pd.DataFrame(columns=STATE_SNAPSHOT_COLUMNS)",
-              '"状態更新実行": "YES" if state_update_allowed else "NO"',
-          ]
-          missing_freshness = [fragment for fragment in freshness_fragments if fragment not in source]
-          assert not missing_freshness, f"market freshness guard regression: {missing_freshness}"
-
-          replay_text = Path(".github/workflows/replay.yml").read_text(encoding="utf-8")
-          assert isinstance(yaml.safe_load(replay_text), dict)
-          replay_fragments = [
-              "evidence_provenance.py prepare-live",
-              "live_strategy_history.csv",
-              "eligible_dates",
-              "python replay.py",
-              "research_scorecard.py",
-              "robustness_analysis.py --strict",
-              "evidence_provenance.py governance-audit",
-              "evidence_provenance.json",
-              "insufficient-live-evidence.txt",
-              "retention-days: 90",
-              "contents: read",
-          ]
-          missing_replay = [fragment for fragment in replay_fragments if fragment not in replay_text]
-          assert not missing_replay, f"replay workflow regression: {missing_replay}"
-          assert "strategy_governance.py audit" not in replay_text
-
-          smoke_text = Path(".github/workflows/smoke.yml").read_text(encoding="utf-8")
-          assert isinstance(yaml.safe_load(smoke_text), dict)
-          smoke_fragments = [
-              "MOMENTUM_MAX_SYMBOLS",
-              "python main.py",
-              "operations.py heartbeat",
-              "strategy_governance.py snapshot",
-              "python smoke_validate.py",
-              "contents: read",
-              "retention-days: 14",
-              "Smoke workflow never commits or pushes production state.",
-          ]
-          missing_smoke = [fragment for fragment in smoke_fragments if fragment not in smoke_text]
-          assert not missing_smoke, f"smoke workflow regression: {missing_smoke}"
-          assert "git push" not in smoke_text
-          assert "EMAIL_APP_PASSWORD" not in smoke_text
-
-          backfill_text = Path(".github/workflows/historical-backfill.yml").read_text(encoding="utf-8")
-          assert isinstance(yaml.safe_load(backfill_text), dict)
-          backfill_fragments = [
-              "python historical_backfill.py",
-              "--strict",
-              "--max-symbols",
-              "output/backfill/historical_ranking.csv",
-              "evidence_provenance.py seal-derived",
-              "HISTORICAL_CURRENT_UNIVERSE_BACKFILL",
-              "evidence_provenance.py governance-audit",
-              "python replay.py",
-              "python research_scorecard.py",
-              "python robustness_analysis.py",
-              "promotion_evidence_allowed",
-              "CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS",
-              "contents: read",
-              "retention-days: 30",
-          ]
-          missing_backfill = [fragment for fragment in backfill_fragments if fragment not in backfill_text]
-          assert not missing_backfill, f"historical backfill workflow regression: {missing_backfill}"
-          assert "strategy_governance.py audit" not in backfill_text
-          assert "git push" not in backfill_text
-          assert "EMAIL_APP_PASSWORD" not in backfill_text
-
-          registry = yaml.safe_load(Path("research/experiment_registry.yaml").read_text(encoding="utf-8"))
-          assert registry["policy"]["automatic_promotion"] is False
-          assert registry["policy"]["require_manual_approval"] is True
-          assert registry["policy"]["allowed_promotion_evidence_origins"] == ["LIVE_FORWARD_RANKING_HISTORY"]
-          PY
+          set -o pipefail
+          python .github/validate_workflows.py 2>&1 | tee /tmp/workflow-policy-test.log
 
       - name: Enforce strategy experiment registration
         if: github.event_name == 'pull_request'
@@ -228,12 +122,18 @@ jobs:
           set -o pipefail
           python .github/test_historical_backfill.py 2>&1 | tee /tmp/historical-backfill-test.log
 
+      - name: Run execution realism validation
+        run: |
+          set -o pipefail
+          python .github/test_execution_realism.py 2>&1 | tee /tmp/execution-realism-test.log
+
       - name: Upload validation failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: momentum-validation-test-logs
           path: |
+            /tmp/workflow-policy-test.log
             /tmp/walk-forward-replay-test.log
             /tmp/research-scorecard-test.log
             /tmp/robustness-analysis-test.log
@@ -241,4 +141,5 @@ jobs:
             /tmp/evidence-provenance-test.log
             /tmp/operations-test.log
             /tmp/historical-backfill-test.log
+            /tmp/execution-realism-test.log
           retention-days: 1
