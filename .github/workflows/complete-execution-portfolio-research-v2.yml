@@ -41,27 +41,33 @@ jobs:
           git show origin/feature/execution-portfolio-research:.github/test_portfolio_research.py > .github/test_portfolio_research.py
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('portfolio_research.py')
           text = path.read_text(encoding='utf-8')
-          old_time = '    if int(position["holding_sessions"]) >= MAX_HOLDING_SESSIONS:\n'
-          new_time = '    if int(position["holding_sessions"]) >= MAX_HOLDING_SESSIONS - 1:\n'
-          if old_time in text:
-              text = text.replace(old_time, new_time, 1)
-          elif new_time not in text:
+          text, time_count = re.subn(
+              r'if int\(position\["holding_sessions"\]\) >= MAX_HOLDING_SESSIONS:',
+              'if int(position["holding_sessions"]) >= MAX_HOLDING_SESSIONS - 1:',
+              text,
+              count=1,
+          )
+          if time_count != 1 and '>= MAX_HOLDING_SESSIONS - 1:' not in text:
               raise SystemExit('holding-session exit anchor not found')
 
-          old_sector = '''        if (pd.to_numeric(results["metrics"]["maximum_sector_weight"], errors="coerce") > MAX_SECTOR_WEIGHT + 0.01).any():
-              raise RuntimeError("portfolio materially exceeded sector weight")
-          '''
-          new_cash = '''        if not results["equity"].empty and (pd.to_numeric(results["equity"]["cash"], errors="coerce") < -1e-6).any():
-              raise RuntimeError("portfolio cash became negative")
-          '''
-          if old_sector in text:
-              text = text.replace(old_sector, new_cash, 1)
-          elif 'portfolio cash became negative' not in text:
+          sector_pattern = re.compile(
+              r'\n        if \(pd\.to_numeric\(results\["metrics"\]\["maximum_sector_weight"\], errors="coerce"\) > MAX_SECTOR_WEIGHT \+ 0\.01\)\.any\(\):\n'
+              r'            raise RuntimeError\("portfolio materially exceeded sector weight"\)\n'
+          )
+          replacement = (
+              '\n        if not results["equity"].empty and '
+              '(pd.to_numeric(results["equity"]["cash"], errors="coerce") < -1e-6).any():\n'
+              '            raise RuntimeError("portfolio cash became negative")\n'
+          )
+          text, cash_count = sector_pattern.subn(replacement, text, count=1)
+          if cash_count != 1 and 'portfolio cash became negative' not in text:
               raise SystemExit('strict cash invariant anchor not found')
           path.write_text(text, encoding='utf-8')
+          print({'holding_patch': time_count, 'cash_patch': cash_count})
           PY
 
       - name: Run synthetic portfolio and governed-system validation
