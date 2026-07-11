@@ -41,8 +41,8 @@ assert portfolio.resolve_exit(position, price_row, True, set(), no_signal) is No
 signal_exit = portfolio.ExitPolicy("signal", 0.08, 0.15, 0.10, 20, True)
 assert portfolio.resolve_exit(position, price_row, True, set(), signal_exit) == ("SIGNAL_EXIT", 101.0)
 
-# Hold eligibility must be independent of entry eligibility. A held stock exits
-# when the hold flag becomes false even if the row remains on the report date.
+# A held stock exits when hold eligibility becomes false. Entry eligibility is
+# also false on the deterioration date, so the stock is not immediately re-opened.
 dates = pd.bdate_range("2026-01-05", periods=12)
 prices_calendar = pd.DataFrame([
     {
@@ -68,14 +68,15 @@ signals_calendar = pd.DataFrame([
         "signal_date": dates[3], "code": "1001", "name": "Hold Gate",
         "sector33": "電気機器", "entry_close": 100.0,
         "sector_research_priority": "最優先", "sector_leader_score": 90,
-        "portfolio_eligible": True, "portfolio_hold_eligible": False,
+        "portfolio_eligible": False, "portfolio_hold_eligible": False,
     },
 ])
+baseline_exit = portfolio.ExitPolicy("baseline", 0.08, 0.15, 0.10, 20, True)
 calendar_result = portfolio.simulate_scenario(
     signals_calendar,
     prices_calendar,
     portfolio.PortfolioScenario("hold-gate", None, 0.0, 0.01),
-    exit_policy=BASELINE_EXIT if (BASELINE_EXIT := portfolio.ExitPolicy("baseline", 0.08, 0.15, 0.10, 20, True)) else portfolio.DEFAULT_EXIT_POLICY,
+    exit_policy=baseline_exit,
 )
 assert len(calendar_result["trades"]) == 1
 assert calendar_result["trades"].iloc[0]["exit_reason"] == "SIGNAL_EXIT"
