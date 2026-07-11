@@ -10,6 +10,7 @@ on:
       - execution_realism.py
       - portfolio_research.py
       - portfolio_filter_lab.py
+      - portfolio_exit_lab.py
       - replay.py
       - research_scorecard.py
       - robustness_analysis.py
@@ -102,7 +103,7 @@ jobs:
           BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
           RUN_MODE: ${{ steps.parameters.outputs.run_mode }}
         run: |
-          mkdir -p output/backfill/replay output/backfill/execution output/backfill/portfolio output/backfill/portfolio_filters
+          mkdir -p output/backfill/replay output/backfill/execution output/backfill/portfolio output/backfill/portfolio_filters output/backfill/portfolio_exits
           echo "run_mode=${RUN_MODE}" | tee output/backfill/workflow-mode.txt
           set -o pipefail
           python historical_backfill.py \
@@ -207,6 +208,17 @@ jobs:
             --provenance output/backfill/replay/evidence_provenance.json \
             --output-dir output/backfill/portfolio_filters | tee output/backfill/portfolio_filters/filter-lab.log
 
+      - name: Compare governed portfolio exit policies
+        run: |
+          set -o pipefail
+          python portfolio_exit_lab.py \
+            --strict \
+            --signals output/backfill/replay/replay_signals.csv \
+            --history output/backfill/historical_ranking.csv \
+            --prices output/backfill/historical_price_panel.csv \
+            --provenance output/backfill/replay/evidence_provenance.json \
+            --output-dir output/backfill/portfolio_exits | tee output/backfill/portfolio_exits/exit-lab.log
+
       - name: Audit close-based governance with non-promotable provenance
         run: |
           set -o pipefail
@@ -238,6 +250,7 @@ jobs:
           execution_provenance = json.loads(Path('output/backfill/execution/execution_evidence_provenance.json').read_text(encoding='utf-8'))
           portfolio = json.loads(Path('output/backfill/portfolio/portfolio_research_manifest.json').read_text(encoding='utf-8'))
           portfolio_filter = json.loads(Path('output/backfill/portfolio_filters/portfolio_filter_manifest.json').read_text(encoding='utf-8'))
+          portfolio_exit = json.loads(Path('output/backfill/portfolio_exits/portfolio_exit_manifest.json').read_text(encoding='utf-8'))
           audit = json.loads(Path('output/backfill/execution/evidence_provenance_audit.json').read_text(encoding='utf-8'))
           assert backfill['research_only'] is True
           assert backfill['promotion_evidence_allowed'] is False
@@ -263,6 +276,11 @@ jobs:
           assert portfolio_filter['automatic_filter_activation'] is False
           assert portfolio_filter['production_state_mutations'] == []
           assert portfolio_filter['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert portfolio_exit['promotion_evidence_allowed'] is False
+          assert portfolio_exit['automatic_strategy_change'] is False
+          assert portfolio_exit['automatic_exit_activation'] is False
+          assert portfolio_exit['production_state_mutations'] == []
+          assert portfolio_exit['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
           assert audit['provenance_valid'] is False
           PY
 
