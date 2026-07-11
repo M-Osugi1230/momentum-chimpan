@@ -27,6 +27,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Rebase onto latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          git push --force-with-lease origin HEAD:feature/live-execution-evidence
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -115,11 +123,21 @@ jobs:
 
       - name: Mark ready and merge the exact verified head
         run: |
-          head_sha=$(gh pr view 38 --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)
-          gh pr ready 38 --repo "${GITHUB_REPOSITORY}" || true
+          pr_number=$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head feature/live-execution-evidence \
+            --state open \
+            --json number \
+            --jq '.[0].number')
+          test -n "${pr_number}"
+          head_sha=$(gh pr view "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json headRefOid \
+            --jq .headRefOid)
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" || true
           gh api \
             --method PUT \
             -H "Accept: application/vnd.github+json" \
-            "repos/${GITHUB_REPOSITORY}/pulls/38/merge" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/merge" \
             -f merge_method=merge \
             -f sha="${head_sha}"
