@@ -1,0 +1,55 @@
+name: Walk Forward Replay
+
+on:
+  schedule:
+    # Saturday 09:30 JST, after the Friday market data is persisted.
+    - cron: '30 0 * * 6'
+  workflow_dispatch:
+    inputs:
+      max_dates:
+        description: 'Replay the latest N stored report dates (blank = all)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: momentum-walk-forward-replay
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run no-lookahead replay
+        env:
+          REPLAY_MAX_DATES: ${{ inputs.max_dates }}
+        run: |
+          args=(--strict)
+          if [ -n "${REPLAY_MAX_DATES}" ]; then
+            args+=(--max-dates "${REPLAY_MAX_DATES}")
+          fi
+          python replay.py "${args[@]}" | tee output/replay/run.log
+
+      - name: Upload replay research artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walk-forward-replay-${{ github.run_number }}
+          path: output/replay/
+          if-no-files-found: error
+          retention-days: 90

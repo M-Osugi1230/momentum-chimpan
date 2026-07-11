@@ -18,7 +18,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -32,8 +32,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Compile application
-        run: python -m py_compile main.py
+      - name: Compile application and replay engine
+        run: python -m py_compile main.py replay.py .github/test_walk_forward_replay.py
 
       - name: Import and safety smoke test
         run: |
@@ -65,8 +65,7 @@ jobs:
 
           daily_path = Path(".github/workflows/daily.yml")
           daily_text = daily_path.read_text(encoding="utf-8")
-          parsed = yaml.safe_load(daily_text)
-          assert isinstance(parsed, dict)
+          assert isinstance(yaml.safe_load(daily_text), dict)
 
           required_fragments = [
               "python-version: '3.12'",
@@ -97,4 +96,29 @@ jobs:
           ]
           missing_freshness = [fragment for fragment in freshness_fragments if fragment not in source]
           assert not missing_freshness, f"market freshness guard regression: {missing_freshness}"
+
+          replay_text = Path(".github/workflows/replay.yml").read_text(encoding="utf-8")
+          assert isinstance(yaml.safe_load(replay_text), dict)
+          replay_fragments = [
+              "python replay.py",
+              "--strict",
+              "retention-days: 90",
+              "contents: read",
+              "output/replay/",
+          ]
+          missing_replay = [fragment for fragment in replay_fragments if fragment not in replay_text]
+          assert not missing_replay, f"replay workflow regression: {missing_replay}"
           PY
+
+      - name: Run walk-forward replay validation
+        run: |
+          set -o pipefail
+          python .github/test_walk_forward_replay.py 2>&1 | tee /tmp/walk-forward-replay-test.log
+
+      - name: Upload replay validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walk-forward-replay-test-log
+          path: /tmp/walk-forward-replay-test.log
+          retention-days: 1
