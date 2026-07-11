@@ -106,6 +106,9 @@ def main() -> int:
         "python research_scorecard.py",
         "python robustness_analysis.py",
         "python execution_realism.py",
+        "python portfolio_research.py",
+        "portfolio_research_manifest.json",
+        "STOP_FIRST_CONSERVATIVE",
         "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN",
         "execution_benchmarked_outcomes.csv",
         "--base-cost-bps 0",
@@ -121,7 +124,6 @@ def main() -> int:
     ])
 
     assert daily.index("Snapshot governed strategy fingerprint before report") < daily.index("Run report")
-
 
     recovery = load_workflow("recovery-drill.yml")
     require("recovery-drill.yml", recovery, [
