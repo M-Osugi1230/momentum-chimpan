@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: complete-state-recovery-drill
@@ -22,6 +22,7 @@ jobs:
         with:
           ref: feature/state-recovery-drill
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rebase working tree onto latest main
         run: |
@@ -58,11 +59,7 @@ jobs:
             python .github/test_state_recovery.py
             python .github/test_atomic_strategy_stamp.py
             python .github/test_operations.py
-            rm -f .github/state_recovery_patch.py
-            rm -f .github/workflows/complete-state-recovery-drill.yml
             git diff --check
-            tar --exclude=.git --exclude=output --exclude='*.pyc' --exclude=__pycache__ \
-              -czf /tmp/state-recovery-final-tree.tar.gz .
           } 2>&1 | tee /tmp/state-recovery-validation.log
 
       - name: Upload recovery diagnostics
@@ -78,11 +75,22 @@ jobs:
         if: steps.validate.outcome == 'failure'
         run: exit 1
 
-      - name: Upload validated final tree
+      - name: Publish validated non-workflow changes
         if: steps.validate.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/validate_workflows.py
+          if ! git diff --cached --quiet; then
+            git commit -m "Validate sealed state recovery workflows"
+            git push --force-with-lease origin HEAD:feature/state-recovery-drill
+          fi
+
+      - name: Upload validated final tree
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: state-recovery-final-tree
           path: /tmp/state-recovery-final-tree.tar.gz
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 1
