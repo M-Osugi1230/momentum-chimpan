@@ -123,6 +123,11 @@ jobs:
           assert manifest['automatic_filter_activation'] is False
           assert manifest['production_state_mutations'] == []
           assert (pd.to_numeric(metrics['eligible_signal_count'], errors='coerce') <= pd.to_numeric(metrics['total_signal_count'], errors='coerce')).all()
+          allowed_statuses = {
+              'BASELINE', 'OUTPERFORMED', 'POSITIVE_BUT_UNDERPERFORMED',
+              'LOSS_REDUCED_ONLY', 'NOT_IMPROVED', 'NOT_EVALUATED',
+          }
+          assert set(metrics['improvement_status']).issubset(allowed_statuses)
           print(metrics[['filter_rule', 'eligible_signal_count', 'closed_trades', 'total_return', 'max_drawdown', 'excess_total_return', 'improvement_status']].to_string(index=False))
           PY
 
@@ -134,10 +139,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish validated engine update
+      - name: Publish validated engine and evidence status updates
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add portfolio_research.py
-          git commit -m "Preserve report calendar for filtered portfolio research"
+          git add portfolio_research.py portfolio_filter_lab.py
+          git commit -m "Refine portfolio filter evidence classification"
           git push origin HEAD:feature/portfolio-filter-lab
