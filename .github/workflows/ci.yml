@@ -1,0 +1,83 @@
+name: Validate Momentum Pipeline
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: momentum-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile application
+        run: python -m py_compile main.py
+
+      - name: Import smoke test
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+
+          spec = importlib.util.spec_from_file_location("momentum_main", "main.py")
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+
+          assert module.EXECUTION_MODE == "RESEARCH_AND_PAPER_ONLY"
+          assert module.APP_VERSION
+          print(module.APP_VERSION)
+          PY
+
+      - name: Validate workflow syntax and durable state coverage
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          daily_path = Path(".github/workflows/daily.yml")
+          daily_text = daily_path.read_text(encoding="utf-8")
+          parsed = yaml.safe_load(daily_text)
+          assert isinstance(parsed, dict)
+
+          required_fragments = [
+              "python-version: '3.12'",
+              "daily-momentum-report-main",
+              "retention-days: 90",
+              "data/momentum_daily_ranking.csv",
+              "data/market_temperature.csv",
+              "data/sector_leader_signal_history.csv",
+              "data/paper_portfolio.csv",
+              "data/paper_trade_history.csv",
+              "data/paper_equity_history.csv",
+              "data/execution_audit.csv",
+              "data/state_snapshots",
+              "steps.report.outcome == 'success'",
+              "git rebase origin/main",
+          ]
+          missing = [fragment for fragment in required_fragments if fragment not in daily_text]
+          assert not missing, f"daily workflow missing durable-state controls: {missing}"
+          PY
