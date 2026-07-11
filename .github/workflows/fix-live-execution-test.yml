@@ -1,0 +1,56 @@
+name: Complete Live Execution Test Fixture
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.head_ref == 'feature/live-execution-evidence'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/live-execution-evidence
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Complete the execution output fixture
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/test_execution_provenance.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        "horizon_days": 5,
+        "forward_return": 0.03,
+        "excess_vs_universe": 0.01,
+        "entry_slippage_bps": 5.0,
+'''
+          new = '''        "horizon_days": 5,
+        "entry_gap_return": 0.01,
+        "execution_status": "NORMAL",
+        "close_based_forward_return": 0.035,
+        "next_open_gross_return": 0.033,
+        "implementation_shortfall": -0.002,
+        "forward_return": 0.03,
+        "excess_vs_universe": 0.01,
+        "beat_universe": True,
+        "entry_slippage_bps": 5.0,
+'''
+          if old not in text:
+              raise SystemExit('execution fixture anchor not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm -f .github/workflows/fix-live-execution-test.yml
+
+      - name: Commit completed fixture and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Complete live execution evidence test fixture"
+          git push origin HEAD:feature/live-execution-evidence
