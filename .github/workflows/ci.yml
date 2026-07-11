@@ -59,7 +59,7 @@ jobs:
           spec.loader.exec_module(module)
 
           assert module.EXECUTION_MODE == "RESEARCH_AND_PAPER_ONLY"
-          assert module.APP_VERSION == "2026-07-11-dashboard-market-freshness-v17"
+          assert module.APP_VERSION == "2026-07-11-dashboard-relative-strength-v18"
 
           fresh = module.pd.DataFrame({"price_date": ["2026-07-13"] * 100})
           stale = module.pd.DataFrame({"price_date": ["2026-07-10"] * 100})
@@ -131,7 +131,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: momentum-validation-test-logs
+          name: momentum-pipeline-validation-logs
           path: |
             /tmp/workflow-policy-test.log
             /tmp/walk-forward-replay-test.log
@@ -142,4 +142,5 @@ jobs:
             /tmp/operations-test.log
             /tmp/historical-backfill-test.log
             /tmp/execution-realism-test.log
-          retention-days: 1
+          if-no-files-found: ignore
+          retention-days: 7
