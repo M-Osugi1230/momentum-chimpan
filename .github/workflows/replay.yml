@@ -50,6 +50,11 @@ jobs:
           set -o pipefail
           python research_scorecard.py --strict | tee output/replay/evidence.log
 
+      - name: Stress-test replay robustness
+        run: |
+          set -o pipefail
+          python robustness_analysis.py --strict | tee output/replay/robustness.log
+
       - name: Upload replay research artifact
         if: always()
         uses: actions/upload-artifact@v4
