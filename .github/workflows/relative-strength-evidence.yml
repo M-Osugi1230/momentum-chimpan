@@ -1,0 +1,82 @@
+name: Relative Strength Evidence Lab
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - relative_strength_evidence.py
+      - .github/test_relative_strength_evidence.py
+      - .github/workflows/relative-strength-evidence.yml
+      - research/experiment_registry.yaml
+      - main.py
+      - replay.py
+      - research_scorecard.py
+      - robustness_analysis.py
+  workflow_dispatch:
+  schedule:
+    - cron: '30 11 * * 1-5'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relative-strength-evidence-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile evidence lab
+        run: |
+          python -m py_compile relative_strength_evidence.py
+          python -m py_compile .github/test_relative_strength_evidence.py
+      - name: Run synthetic evidence validation
+        run: |
+          set -o pipefail
+          python .github/test_relative_strength_evidence.py 2>&1 | tee /tmp/relative-strength-evidence-test.log
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-strength-evidence-test-log
+          path: /tmp/relative-strength-evidence-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  analyze:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Build governed evidence report
+        run: |
+          python relative_strength_evidence.py --max-dates 260 --strict
+      - name: Upload evidence report
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-strength-evidence
+          path: output/relative_strength
+          if-no-files-found: error
+          retention-days: 30
