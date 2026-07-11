@@ -1,0 +1,8 @@
+schema_version: 1
+policy:
+  automatic_activation: false
+  require_exact_strategy_fingerprint: true
+  require_exact_evidence_status_sha256: true
+  require_exact_review_packet_sha256: true
+  allowed_scope: MANUAL_REVIEW_ONLY
+approvals: []
