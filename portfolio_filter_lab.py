@@ -325,15 +325,26 @@ def run_filter_rules(
     metrics_frame["improvement_status"] = "NOT_EVALUATED"
     if not baseline_rows.empty:
         evaluable = metrics_frame["sample_status"] == "EVALUABLE"
+        total_return = pd.to_numeric(metrics_frame.get("total_return"), errors="coerce")
+        excess_return = pd.to_numeric(metrics_frame.get("excess_total_return"), errors="coerce")
         improved_return = pd.to_numeric(metrics_frame.get("delta_excess_total_return_vs_baseline"), errors="coerce") > 0
         improved_drawdown = pd.to_numeric(metrics_frame.get("delta_max_drawdown_vs_baseline"), errors="coerce") >= 0
-        metrics_frame.loc[evaluable & improved_return & improved_drawdown, "improvement_status"] = "IMPROVED"
-        metrics_frame.loc[evaluable & ~(improved_return & improved_drawdown), "improvement_status"] = "NOT_IMPROVED"
+        outperformed = evaluable & total_return.gt(0) & excess_return.gt(0)
+        positive_underperformer = evaluable & total_return.gt(0) & ~excess_return.gt(0)
+        loss_reduced = evaluable & total_return.le(0) & improved_return & improved_drawdown
+        metrics_frame.loc[outperformed, "improvement_status"] = "OUTPERFORMED"
+        metrics_frame.loc[positive_underperformer, "improvement_status"] = "POSITIVE_BUT_UNDERPERFORMED"
+        metrics_frame.loc[loss_reduced, "improvement_status"] = "LOSS_REDUCED_ONLY"
+        metrics_frame.loc[
+            evaluable & metrics_frame["improvement_status"].eq("NOT_EVALUATED"),
+            "improvement_status",
+        ] = "NOT_IMPROVED"
         metrics_frame.loc[metrics_frame["filter_rule"] == "baseline", "improvement_status"] = "BASELINE"
+    metrics_frame["_sample_order"] = metrics_frame["sample_status"].map({"EVALUABLE": 0, "INSUFFICIENT": 1}).fillna(9)
     metrics_frame = metrics_frame.sort_values(
-        ["sample_status", "excess_total_return", "max_drawdown"],
-        ascending=[False, False, False],
-    ).reset_index(drop=True)
+        ["_sample_order", "excess_total_return", "max_drawdown"],
+        ascending=[True, False, False],
+    ).drop(columns="_sample_order").reset_index(drop=True)
     return {
         "metrics": metrics_frame,
         "trades": pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame(),
