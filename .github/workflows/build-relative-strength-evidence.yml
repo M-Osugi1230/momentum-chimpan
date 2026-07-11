@@ -34,6 +34,21 @@ jobs:
         run: |
           set -o pipefail
           python .github/build_relative_strength_evidence.py 2>&1 | tee /tmp/evidence-build.log
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/test_relative_strength_evidence.py')
+          text = path.read_text(encoding='utf-8')
+          anchor = 'import tempfile\nfrom pathlib import Path\n\nimport numpy as np\n'
+          replacement = (
+              'import tempfile\nfrom pathlib import Path\nimport sys\n\n'
+              'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n\n'
+              'import numpy as np\n'
+          )
+          if anchor not in text:
+              raise SystemExit('test import anchor not found')
+          path.write_text(text.replace(anchor, replacement, 1), encoding='utf-8')
+          PY
 
       - name: Compile implementation
         run: |
