@@ -1,0 +1,107 @@
+name: End-to-End Smoke Test
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - main.py
+      - requirements.txt
+      - config.yaml
+      - operations.py
+      - strategy_governance.py
+      - smoke_validate.py
+      - .github/workflows/daily.yml
+      - .github/workflows/smoke.yml
+  schedule:
+    # Wednesday 17:30 JST, after the normal daily run.
+    - cron: '30 8 * * 3'
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: 'Number of symbols for the ephemeral smoke scan'
+        required: false
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: momentum-e2e-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Tokyo
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run limited external-data pipeline
+        env:
+          MOMENTUM_MAX_SYMBOLS: ${{ inputs.max_symbols || '5' }}
+        run: |
+          mkdir -p output/smoke
+          set -o pipefail
+          success=0
+          for attempt in 1 2; do
+            echo "Smoke attempt ${attempt}"
+            if python main.py 2>&1 | tee output/smoke/main-attempt-${attempt}.log; then
+              success=1
+              break
+            fi
+            sleep $((attempt * 15))
+          done
+          test "${success}" -eq 1
+
+      - name: Generate ephemeral heartbeat and strategy fingerprint
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python operations.py heartbeat \
+            --report output/daily_report.xlsx \
+            --output output/smoke/operations_heartbeat.json \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-url "${RUN_URL}" \
+            --event-name "${GITHUB_EVENT_NAME}"
+          python strategy_governance.py snapshot \
+            --output output/smoke/strategy_fingerprint.json
+
+      - name: Validate complete smoke output
+        env:
+          SMOKE_MAX_SYMBOLS: ${{ inputs.max_symbols || '5' }}
+        run: |
+          python smoke_validate.py \
+            --max-symbols "${SMOKE_MAX_SYMBOLS}" \
+            --output output/smoke/smoke_manifest.json
+
+      - name: Confirm production persistence is disabled
+        run: |
+          test ! -f output/smoke/persisted.flag
+          echo "Smoke workflow never commits or pushes production state."
+
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-${{ github.run_id }}
+          path: |
+            output/daily_report.xlsx
+            output/smoke/
+          if-no-files-found: error
+          retention-days: 14
