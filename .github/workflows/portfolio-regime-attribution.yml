@@ -76,9 +76,9 @@ jobs:
           text = path.read_text(encoding='utf-8')
           parsed = yaml.safe_load(text)
           assert isinstance(parsed, dict)
-          assert 'contents: read' in text
-          for forbidden in ('git push', 'contents: write', 'EMAIL_APP_PASSWORD'):
-              assert forbidden not in text, forbidden
+          assert parsed.get('permissions', {}).get('contents') == 'read'
+          assert ('git' + ' push') not in text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
           for required in (
               'promotion_evidence_allowed', 'automatic_regime_filter_activation',
               'automatic_sector_exclusion', 'production_state_mutations',
