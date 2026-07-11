@@ -45,6 +45,11 @@ jobs:
           fi
           python replay.py "${args[@]}" | tee output/replay/run.log
 
+      - name: Build benchmarked evidence scorecard
+        run: |
+          set -o pipefail
+          python research_scorecard.py --strict | tee output/replay/evidence.log
+
       - name: Upload replay research artifact
         if: always()
         uses: actions/upload-artifact@v4
