@@ -37,17 +37,32 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('.github/test_relative_strength_evidence.py')
-          text = path.read_text(encoding='utf-8')
-          anchor = 'import tempfile\nfrom pathlib import Path\n\nimport numpy as np\n'
-          replacement = (
+          test_path = Path('.github/test_relative_strength_evidence.py')
+          test_text = test_path.read_text(encoding='utf-8')
+          test_anchor = 'import tempfile\nfrom pathlib import Path\n\nimport numpy as np\n'
+          test_replacement = (
               'import tempfile\nfrom pathlib import Path\nimport sys\n\n'
               'sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n\n'
               'import numpy as np\n'
           )
-          if anchor not in text:
+          if test_anchor not in test_text:
               raise SystemExit('test import anchor not found')
-          path.write_text(text.replace(anchor, replacement, 1), encoding='utf-8')
+          test_path.write_text(test_text.replace(test_anchor, test_replacement, 1), encoding='utf-8')
+
+          implementation_path = Path('relative_strength_evidence.py')
+          implementation_text = implementation_path.read_text(encoding='utf-8')
+          implementation_anchor = '    value = pair["x"].corr(pair["y"], method="spearman")\n'
+          implementation_replacement = (
+              '    ranked_x = pair["x"].rank(method="average")\n'
+              '    ranked_y = pair["y"].rank(method="average")\n'
+              '    value = ranked_x.corr(ranked_y)\n'
+          )
+          if implementation_anchor not in implementation_text:
+              raise SystemExit('spearman implementation anchor not found')
+          implementation_path.write_text(
+              implementation_text.replace(implementation_anchor, implementation_replacement, 1),
+              encoding='utf-8',
+          )
           PY
 
       - name: Compile implementation
