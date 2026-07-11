@@ -22,11 +22,12 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import relative_strength_lifecycle as rs_lifecycle
 import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-11-dashboard-relative-strength-v18"
+APP_VERSION = "2026-07-11-dashboard-relative-strength-lifecycle-v19"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -421,6 +422,7 @@ def ranking_history_columns() -> list[str]:
         "market_median_return_20d", "market_median_return_60d", "sector_median_return_20d", "sector_median_return_60d",
         "market_relative_20d", "market_relative_60d", "sector_relative_20d", "sector_relative_60d",
         "relative_strength_score", "relative_strength_rank", "relative_strength_grade", "dual_outperformer", "relative_strength_reason",
+        *rs_lifecycle.LIFECYCLE_COLUMNS,
         "volume_ratio",
         "trading_value", "ma20", "ma60", "above_ma20", "above_ma60", "price_date", "is_top100",
         "is_new_entry", "rank_change", "is_rising_fast", "is_best_rank", "top30_streak", "top30_streak_days",
@@ -2456,11 +2458,12 @@ def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFram
     return pd.DataFrame([{**current, **deltas}], columns=cols)
 
 
-def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_signal_history: pd.DataFrame, sector_leader_outcomes: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_trade_history: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, state_snapshots: pd.DataFrame, execution_audit: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
+def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, relative_strength_lifecycle: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_signal_history: pd.DataFrame, sector_leader_outcomes: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_trade_history: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, state_snapshots: pd.DataFrame, execution_audit: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
         top100.to_excel(w, sheet_name="Momentum Top100", index=False)
         relative_strength.to_excel(w, sheet_name="Relative Strength", index=False)
+        relative_strength_lifecycle.to_excel(w, sheet_name="RS Lifecycle", index=False)
         sector_momentum.to_excel(w, sheet_name="Sector Momentum", index=False)
         sector_rotation.to_excel(w, sheet_name="Sector Rotation", index=False)
         sector_leaders.to_excel(w, sheet_name="Sector Leaders", index=False)
@@ -4221,7 +4224,7 @@ def html_market_regime(regime: dict[str, Any]) -> str:
 </div>"""
 
 
-def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, relative_strength_lifecycle: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -4254,6 +4257,7 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, relative_st
     ]
     lines += plain_market_regime(regime)
     lines += plain_relative_strength_section(relative_strength)
+    lines += rs_lifecycle.plain_section(relative_strength_lifecycle)
     lines += plain_sector_momentum_section(sector_momentum)
     lines += plain_sector_rotation_section(sector_rotation)
     lines += plain_sector_leaders_section(sector_leaders)
@@ -4286,7 +4290,7 @@ def html_section(title: str, df: pd.DataFrame, limit: int, show_empty: bool = Fa
     return f"<h2>{html_text(title)}</h2>{cards}"
 
 
-def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, relative_strength_lifecycle: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -4305,6 +4309,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, relative_str
     sections = "".join([
         html_market_regime(regime),
         html_relative_strength_section(relative_strength),
+        rs_lifecycle.html_section(relative_strength_lifecycle),
         html_sector_momentum_section(sector_momentum),
         html_sector_rotation_section(sector_rotation),
         html_sector_leaders_section(sector_leaders),
@@ -4326,7 +4331,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, relative_str
     return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))}（前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}） / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
-def send_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength: pd.DataFrame, relative_strength_lifecycle: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -4336,8 +4341,8 @@ def send_email(summary: dict[str, Any], top100: pd.DataFrame, relative_strength:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, top100, relative_strength, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, top100, relative_strength, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, top100, relative_strength, relative_strength_lifecycle, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, top100, relative_strength, relative_strength_lifecycle, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -4392,6 +4397,7 @@ def main() -> None:
     history = load_ranking_history(cfg["data"]["ranking_history_path"])
     all_ranked = enrich_ranking_features(base_all, history, today, top_limit) if not base_all.empty else pd.DataFrame(columns=ranking_history_columns())
     all_ranked = attach_relative_strength(all_ranked)
+    all_ranked = rs_lifecycle.attach(all_ranked, history, today)
     if not all_ranked.empty:
         cols = [c for c in ranking_history_columns() if c in all_ranked.columns] + [c for c in all_ranked.columns if c not in ranking_history_columns()]
         all_ranked = all_ranked[cols]
@@ -4405,6 +4411,7 @@ def main() -> None:
 
     top100 = all_ranked[all_ranked["rank"] <= top_limit].copy() if not all_ranked.empty else pd.DataFrame(columns=ranking_history_columns())
     relative_strength = build_relative_strength_table(top100)
+    relative_strength_lifecycle = rs_lifecycle.build_table(top100)
     new_entries = top100[top100["is_new_entry"] == True].copy() if not top100.empty else top100.copy()
     rising_fast = top100[top100["is_rising_fast"] == True].copy() if not top100.empty else top100.copy()
     top30_streak = top100[top100["top30_streak"] > 0].sort_values(["top30_streak", "rank"], ascending=[False, True]).copy() if not top100.empty else top100.copy()
@@ -4476,7 +4483,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_relative_strength_v18",
+        "レポート形式": "dashboard_relative_strength_lifecycle_v19",
         "市場データ鮮度": market_freshness["status"],
         "最新株価日": market_freshness["latest_price_date"],
         "当日株価件数": market_freshness["fresh_count"],
@@ -4493,6 +4500,14 @@ def main() -> None:
         "Momentum Top100": len(top100),
         "相対強度S/A": int(relative_strength.get("relative_strength_grade", pd.Series(dtype=str)).isin(["S", "A"]).sum()) if not relative_strength.empty else 0,
         "市場・同業双方超過": int(relative_strength.get("dual_outperformer", pd.Series(dtype=bool)).fillna(False).sum()) if not relative_strength.empty else 0,
+        "相対強度急加速": rs_lifecycle.count(relative_strength_lifecycle, "急加速"),
+        "相対強度再浮上": rs_lifecycle.count(relative_strength_lifecycle, "再浮上"),
+        "相対強度加速": rs_lifecycle.count(relative_strength_lifecycle, "加速"),
+        "相対強度主導継続": rs_lifecycle.count(relative_strength_lifecycle, "主導継続"),
+        "相対強度失速警戒": rs_lifecycle.count(relative_strength_lifecycle, "失速警戒"),
+        "相対強度崩れ": rs_lifecycle.count(relative_strength_lifecycle, "崩れ"),
+        "相対強度A以上5日継続": int((relative_strength_lifecycle.get("relative_strength_strong_streak", pd.Series(dtype=float)).fillna(0) >= 5).sum()) if not relative_strength_lifecycle.empty else 0,
+        "相対強度双方超過5日継続": int((relative_strength_lifecycle.get("dual_outperformer_streak", pd.Series(dtype=float)).fillna(0) >= 5).sum()) if not relative_strength_lifecycle.empty else 0,
         "相対強度トップ": (str(relative_strength.iloc[0]["code"]) + " " + str(relative_strength.iloc[0]["name"])) if not relative_strength.empty else "",
         "相対強度トップスコア": float(relative_strength.iloc[0]["relative_strength_score"]) if not relative_strength.empty else None,
         "市場中央値20日騰落率": float(all_ranked["return_20d"].median()) if not all_ranked.empty else None,
@@ -4594,10 +4609,10 @@ def main() -> None:
         "注意事項": DISCLAIMER,
     }
     summary["_signal_performance"] = signal_performance
-    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, relative_strength, sector_momentum, sector_rotation, sector_leaders, sector_signal_history, sector_leader_outcomes, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_trade_history, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, state_snapshots, execution_audit, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
+    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, relative_strength, relative_strength_lifecycle, sector_momentum, sector_rotation, sector_leaders, sector_signal_history, sector_leader_outcomes, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_trade_history, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, state_snapshots, execution_audit, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
     try:
-        send_email(summary, top100, relative_strength, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg)
+        send_email(summary, top100, relative_strength, relative_strength_lifecycle, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg)
     except Exception as exc:
         logger.exception("Email sending failed: %s", exc)
 
