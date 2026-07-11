@@ -45,9 +45,13 @@ def main() -> int:
         "data/strategy_fingerprint.json",
         "data/state_snapshots",
         "operations.py heartbeat",
+        "Snapshot governed strategy fingerprint before report",
+        "MOMENTUM_STRATEGY_FINGERPRINT",
+        "MOMENTUM_STRATEGY_STAMP_SOURCE",
         "strategy_governance.py snapshot",
         "evidence_provenance.py stamp-live",
         "output/evidence_stamp_audit.json",
+        "--snapshot-root data/state_snapshots",
         "steps.evidence.outcome == 'success'",
         "operations.py maintain",
         "operations.py notify",
@@ -113,8 +117,13 @@ def main() -> int:
         "EMAIL_APP_PASSWORD",
     ])
 
+    assert daily.index("Snapshot governed strategy fingerprint before report") < daily.index("Run report")
+
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
     require("main.py", main_source, [
+        "def attach_strategy_provenance(",
+        "MOMENTUM_STRATEGY_FINGERPRINT",
+        "all_ranked = attach_strategy_provenance(all_ranked)",
         "def evaluate_market_data_freshness(",
         "def attach_market_data_freshness_health(",
         "if state_update_allowed:\n        write_ranking_history",

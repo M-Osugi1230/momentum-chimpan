@@ -23,12 +23,16 @@ with TemporaryDirectory() as temporary:
     stamp_audit = root / "stamp_audit.json"
     filtered = root / "filtered.csv"
     live_manifest = root / "live_provenance.json"
+    snapshot_root = root / "state_snapshots"
 
     pd.DataFrame([
         {"date": "2026-07-09", "rank": 1, "code": "1001", "close": 100, "score": 80},
         {"date": "2026-07-10", "rank": 1, "code": "1001", "close": 105, "score": 85},
         {"date": "2026-07-10", "rank": 2, "code": "1002", "close": 110, "score": 75},
     ]).to_csv(ranking, index=False)
+    snapshot_path = snapshot_root / "2026-07-10" / "ranking_history.csv"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.read_csv(ranking, dtype={"code": str}).to_csv(snapshot_path, index=False)
     with pd.ExcelWriter(report, engine="openpyxl") as writer:
         pd.DataFrame([{
             "実行日": "2026-07-10",
@@ -40,7 +44,7 @@ with TemporaryDirectory() as temporary:
     }), encoding="utf-8")
 
     stamp = provenance.stamp_live_ranking_history(
-        str(ranking), str(report), str(fingerprint), str(stamp_audit)
+        str(ranking), str(report), str(fingerprint), str(stamp_audit), str(snapshot_root)
     )
     assert stamp["stamped_rows"] == 2
     stamped = pd.read_csv(ranking, dtype={"code": str})
