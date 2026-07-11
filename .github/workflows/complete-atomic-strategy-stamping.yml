@@ -50,6 +50,35 @@ jobs:
               python -m py_compile .github/atomic_strategy_stamp_patch.py
               python .github/atomic_strategy_stamp_patch.py
             fi
+            python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/test_evidence_provenance.py')
+          text = path.read_text(encoding='utf-8')
+          if 'snapshot_root = root / "state_snapshots"' not in text:
+              text = text.replace(
+                  '    live_manifest = root / "live_provenance.json"\n',
+                  '    live_manifest = root / "live_provenance.json"\n'
+                  '    snapshot_root = root / "state_snapshots"\n',
+                  1,
+              )
+              text = text.replace(
+                  '    ]).to_csv(ranking, index=False)\n',
+                  '    ]).to_csv(ranking, index=False)\n'
+                  '    snapshot_path = snapshot_root / "2026-07-10" / "ranking_history.csv"\n'
+                  '    snapshot_path.parent.mkdir(parents=True, exist_ok=True)\n'
+                  '    pd.read_csv(ranking, dtype={"code": str}).to_csv(snapshot_path, index=False)\n',
+                  1,
+              )
+              text = text.replace(
+                  '        str(ranking), str(report), str(fingerprint), str(stamp_audit)\n'
+                  '    )',
+                  '        str(ranking), str(report), str(fingerprint), str(stamp_audit), str(snapshot_root)\n'
+                  '    )',
+                  1,
+              )
+              path.write_text(text, encoding='utf-8')
+          PY
             python -m py_compile \
               main.py evidence_provenance.py strategy_governance.py operations.py \
               .github/validate_workflows.py .github/test_atomic_strategy_stamp.py \
