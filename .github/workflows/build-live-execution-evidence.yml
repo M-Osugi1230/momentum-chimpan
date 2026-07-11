@@ -46,13 +46,17 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Converge live execution implementation
+        id: converge
+        continue-on-error: true
         run: |
-          if ! grep -q '^def seal_execution_evidence' evidence_provenance.py; then
-            test -f .github/live_execution_evidence_patch.py
-            python -m py_compile .github/live_execution_evidence_patch.py
-            python .github/live_execution_evidence_patch.py
-          fi
-          python - <<'PY'
+          set -o pipefail
+          {
+            if ! grep -q '^def seal_execution_evidence' evidence_provenance.py; then
+              test -f .github/live_execution_evidence_patch.py
+              python -m py_compile .github/live_execution_evidence_patch.py
+              python .github/live_execution_evidence_patch.py
+            fi
+            python - <<'PY'
           from pathlib import Path
 
           path = Path('.github/test_execution_provenance.py')
@@ -80,8 +84,23 @@ jobs:
           elif '"implementation_shortfall": -0.002' not in text:
               raise SystemExit('execution fixture is neither original nor completed')
           PY
+          } 2>&1 | tee /tmp/live-execution-converge.log
+
+      - name: Upload convergence diagnostics
+        if: steps.converge.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-execution-convergence-log
+          path: /tmp/live-execution-converge.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce convergence success
+        if: steps.converge.outcome == 'failure'
+        run: exit 1
 
       - name: Run complete governed evidence validation
+        if: steps.converge.outcome == 'success'
         run: |
           python -m py_compile \
             main.py replay.py research_scorecard.py robustness_analysis.py \
@@ -104,6 +123,7 @@ jobs:
           python .github/test_operations.py
 
       - name: Remove temporary implementation machinery
+        if: steps.converge.outcome == 'success'
         run: |
           rm -f .github/live_execution_evidence_patch.py
           rm -f .github/live-execution-finalize-trigger.txt
@@ -115,6 +135,7 @@ jobs:
           git diff --check
 
       - name: Commit and push verified final head
+        if: steps.converge.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -127,6 +148,7 @@ jobs:
           fi
 
       - name: Mark ready and merge exact verified head
+        if: steps.converge.outcome == 'success'
         run: |
           pr_number=$(gh pr list \
             --repo "${GITHUB_REPOSITORY}" \
