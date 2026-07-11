@@ -228,18 +228,37 @@ jobs:
           git diff --check
 
       - name: Commit and push verified final head
+        id: publish
         if: steps.converge.outcome == 'success' && steps.validation.outcome == 'success'
+        continue-on-error: true
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "Complete governed live execution evidence"
-            git push --force-with-lease origin HEAD:feature/live-execution-evidence
-          fi
+          set -o pipefail
+          {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git status --short
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "Complete governed live execution evidence"
+              git push --force-with-lease origin HEAD:feature/live-execution-evidence
+            fi
+          } 2>&1 | tee /tmp/live-execution-publish.log
+
+      - name: Upload publish diagnostics
+        if: steps.publish.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-execution-publish-log
+          path: /tmp/live-execution-publish.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce publish success
+        if: steps.publish.outcome == 'failure'
+        run: exit 1
 
       - name: Mark ready and merge exact verified head
-        if: steps.converge.outcome == 'success' && steps.validation.outcome == 'success'
+        if: steps.publish.outcome == 'success'
         run: |
           pr_number=$(gh pr list \
             --repo "${GITHUB_REPOSITORY}" \
