@@ -46,6 +46,7 @@ jobs:
           .github/test_evidence_provenance.py .github/test_operations.py
           .github/test_historical_backfill.py .github/test_execution_realism.py
           .github/test_live_execution_panel.py .github/test_execution_provenance.py
+          .github/test_atomic_strategy_stamp.py
 
       - name: Import and safety smoke test
         run: |
@@ -123,6 +124,11 @@ jobs:
           set -o pipefail
           python .github/test_execution_provenance.py 2>&1 | tee /tmp/execution-provenance-test.log
 
+      - name: Run atomic strategy stamp validation
+        run: |
+          set -o pipefail
+          python .github/test_atomic_strategy_stamp.py 2>&1 | tee /tmp/atomic-strategy-stamp-test.log
+
       - name: Run operational controls validation
         run: |
           set -o pipefail
@@ -152,6 +158,7 @@ jobs:
             /tmp/evidence-provenance-test.log
             /tmp/live-execution-panel-test.log
             /tmp/execution-provenance-test.log
+            /tmp/atomic-strategy-stamp-test.log
             /tmp/operations-test.log
             /tmp/historical-backfill-test.log
             /tmp/execution-realism-test.log

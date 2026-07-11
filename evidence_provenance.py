@@ -93,6 +93,7 @@ def stamp_live_ranking_history(
     report_path: str,
     fingerprint_path: str,
     audit_path: str,
+    snapshot_root: str = "data/state_snapshots",
 ) -> dict[str, Any]:
     fingerprint_manifest = load_json(fingerprint_path)
     fingerprint = str(fingerprint_manifest.get("strategy_fingerprint", "")).strip()
@@ -103,40 +104,92 @@ def stamp_live_ranking_history(
         raise ValueError("strategy fingerprint snapshot does not match current code")
 
     report_date, state_update, app_version = report_state_update(report_path)
-    target = Path(ranking_path)
-    stamped_rows = 0
-    prior_stamped_rows = 0
-    if state_update:
-        if not target.exists():
-            raise FileNotFoundError(ranking_path)
-        frame = pd.read_csv(target, dtype={"code": str})
+
+    def verify_or_stamp(path: Path, required: bool) -> dict[str, Any]:
+        if not path.exists():
+            if required:
+                raise FileNotFoundError(str(path))
+            return {
+                "row_count": 0,
+                "already_stamped": 0,
+                "changed": False,
+                "sha256": "",
+            }
+        frame = pd.read_csv(path, dtype={"code": str})
         if "date" not in frame.columns:
-            raise ValueError("ranking history is missing date column")
-        for column in ("strategy_fingerprint", "strategy_app_version", "strategy_stamp_source"):
-            if column not in frame.columns:
-                frame[column] = ""
-        dates = frame["date"].astype(str)
-        mask = dates == report_date
-        stamped_rows = int(mask.sum())
-        if stamped_rows == 0:
-            raise ValueError(f"no ranking rows found for report date {report_date}")
-        prior_stamped_rows = int(frame["strategy_fingerprint"].astype(str).str.strip().ne("").sum())
-        frame.loc[mask, "strategy_fingerprint"] = fingerprint
-        frame.loc[mask, "strategy_app_version"] = app_version
-        frame.loc[mask, "strategy_stamp_source"] = "DAILY_GOVERNED_WORKFLOW"
-        atomic_write_csv(frame, target)
+            raise ValueError(f"ranking state is missing date column: {path}")
+        missing_columns = [
+            column
+            for column in (
+                "strategy_fingerprint",
+                "strategy_app_version",
+                "strategy_stamp_source",
+            )
+            if column not in frame.columns
+        ]
+        for column in missing_columns:
+            frame[column] = ""
+        mask = frame["date"].astype(str) == report_date
+        row_count = int(mask.sum())
+        if required and row_count == 0:
+            raise ValueError(f"no ranking rows found for report date {report_date}: {path}")
+        existing = frame.loc[mask, "strategy_fingerprint"].fillna("").astype(str).str.strip()
+        mismatch = existing.ne("") & existing.ne(fingerprint)
+        if bool(mismatch.any()):
+            raise ValueError(f"ranking rows already contain a different strategy fingerprint: {path}")
+        already_stamped = int(existing.eq(fingerprint).sum())
+        blank_rows = existing.eq("")
+        changed = bool(missing_columns or blank_rows.any())
+        if row_count:
+            frame.loc[mask, "strategy_fingerprint"] = fingerprint
+            frame.loc[mask, "strategy_app_version"] = app_version
+            frame.loc[mask, "strategy_stamp_source"] = "DAILY_GOVERNED_WORKFLOW"
+        if changed:
+            atomic_write_csv(frame, path)
+        return {
+            "row_count": row_count,
+            "already_stamped": already_stamped,
+            "changed": changed,
+            "sha256": sha256_file(path),
+        }
+
+    ranking_result = {
+        "row_count": 0,
+        "already_stamped": 0,
+        "changed": False,
+        "sha256": sha256_file(ranking_path),
+    }
+    snapshot_result = {
+        "row_count": 0,
+        "already_stamped": 0,
+        "changed": False,
+        "sha256": "",
+    }
+    snapshot_path = Path(snapshot_root) / report_date / "ranking_history.csv"
+    if state_update:
+        ranking_result = verify_or_stamp(Path(ranking_path), required=True)
+        snapshot_result = verify_or_stamp(snapshot_path, required=True)
+        if ranking_result["row_count"] != snapshot_result["row_count"]:
+            raise ValueError("ranking history and state snapshot have different report-date row counts")
 
     audit = {
         "provenance_version": PROVENANCE_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "ranking_path": ranking_path,
+        "snapshot_path": str(snapshot_path),
         "report_date": report_date,
         "state_update_executed": state_update,
         "strategy_fingerprint": fingerprint,
         "strategy_app_version": app_version,
-        "stamped_rows": stamped_rows,
-        "prior_stamped_rows": prior_stamped_rows,
-        "ranking_sha256": sha256_file(target),
+        "stamped_rows": ranking_result["row_count"],
+        "already_stamped_rows": ranking_result["already_stamped"],
+        "ranking_changed_by_verifier": ranking_result["changed"],
+        "ranking_sha256": ranking_result["sha256"],
+        "snapshot_verified": bool(state_update),
+        "snapshot_stamped_rows": snapshot_result["row_count"],
+        "snapshot_already_stamped_rows": snapshot_result["already_stamped"],
+        "snapshot_changed_by_verifier": snapshot_result["changed"],
+        "snapshot_sha256": snapshot_result["sha256"],
         "research_only": True,
     }
     atomic_write_json(audit, audit_path)
@@ -396,6 +449,7 @@ def parse_args() -> argparse.Namespace:
     stamp.add_argument("--report", default="output/daily_report.xlsx")
     stamp.add_argument("--fingerprint", default="data/strategy_fingerprint.json")
     stamp.add_argument("--audit", default="output/evidence_stamp_audit.json")
+    stamp.add_argument("--snapshot-root", default="data/state_snapshots")
 
     prepare = sub.add_parser("prepare-live")
     prepare.add_argument("--ranking", default=ALLOWED_LIVE_SOURCE)
@@ -424,7 +478,9 @@ def parse_args() -> argparse.Namespace:
 def main_cli() -> int:
     args = parse_args()
     if args.command == "stamp-live":
-        result = stamp_live_ranking_history(args.ranking, args.report, args.fingerprint, args.audit)
+        result = stamp_live_ranking_history(
+            args.ranking, args.report, args.fingerprint, args.audit, args.snapshot_root
+        )
     elif args.command == "prepare-live":
         result = prepare_live_history(args.ranking, args.output, args.provenance, args.fingerprint)
     elif args.command == "seal-derived":
