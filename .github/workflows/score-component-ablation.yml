@@ -1,0 +1,180 @@
+name: Score Component Ablation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - score_component_ablation.py
+      - .github/test_score_component_ablation.py
+      - .github/workflows/score-component-ablation.yml
+      - portfolio_holdout_validation.py
+      - research/portfolio_holdout_hypotheses.yaml
+      - historical_backfill.py
+      - historical_price_panel.py
+      - replay.py
+      - portfolio_research.py
+      - portfolio_exit_lab.py
+      - portfolio_regime_attribution.py
+      - main.py
+  workflow_dispatch:
+  schedule:
+    # Monthly, fourth day at 11:30 JST after disjoint holdout research.
+    - cron: '30 2 4 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: score-component-ablation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile ablation tools
+        run: |
+          python -m py_compile \
+            score_component_ablation.py portfolio_holdout_validation.py \
+            portfolio_regime_attribution.py portfolio_exit_lab.py portfolio_research.py \
+            historical_backfill.py historical_price_panel.py replay.py main.py \
+            .github/test_score_component_ablation.py
+      - name: Run synthetic component ablation
+        run: |
+          set -o pipefail
+          python .github/test_score_component_ablation.py 2>&1 | tee /tmp/score-component-ablation-test.log
+      - name: Validate read-only workflow policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          workflow = yaml.safe_load(Path('.github/workflows/score-component-ablation.yml').read_text(encoding='utf-8'))
+          assert workflow['permissions']['contents'] == 'read'
+          text = Path('.github/workflows/score-component-ablation.yml').read_text(encoding='utf-8')
+          assert ('git' + ' push') not in text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          PY
+      - name: Upload validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: score-component-ablation-test-log
+          path: /tmp/score-component-ablation-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  analyze:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Recreate disjoint holdout universe
+        run: |
+          mkdir -p output/ablation/replay output/ablation/report
+          python portfolio_holdout_validation.py prepare-universe \
+            --strict \
+            --registry research/portfolio_holdout_hypotheses.yaml \
+            --cache data/jpx_list_cache.csv \
+            --config config.yaml \
+            --max-symbols 72 \
+            --output-cache output/ablation/holdout_jpx_cache.csv \
+            --manifest output/ablation/holdout_universe_manifest.json
+      - name: Build isolated holdout history
+        run: |
+          set -o pipefail
+          python historical_backfill.py \
+            --strict \
+            --cache output/ablation/holdout_jpx_cache.csv \
+            --max-symbols 0 \
+            --lookback-calendar-days 420 \
+            --sample-every 5 \
+            --batch-size 36 \
+            --output-dir output/ablation | tee output/ablation/backfill.log
+          python evidence_provenance.py seal-derived \
+            --source-manifest output/ablation/backfill_manifest.json \
+            --provenance output/ablation/replay/evidence_provenance.json
+          python historical_price_panel.py \
+            --strict \
+            --history output/ablation/historical_ranking.csv \
+            --backfill-manifest output/ablation/backfill_manifest.json \
+            --output output/ablation/historical_price_panel.csv \
+            --manifest output/ablation/historical_price_panel_manifest.json \
+            --batch-size 36 | tee output/ablation/price-panel.log
+      - name: Run distribution-preserving ablation
+        run: |
+          set -o pipefail
+          python score_component_ablation.py \
+            --strict \
+            --history output/ablation/historical_ranking.csv \
+            --prices output/ablation/historical_price_panel.csv \
+            --provenance output/ablation/replay/evidence_provenance.json \
+            --output-dir output/ablation/report \
+            --top-limit 100 | tee output/ablation/report/ablation.log
+      - name: Validate ablation evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/ablation')
+          report = root / 'report'
+          universe = json.loads((root / 'holdout_universe_manifest.json').read_text(encoding='utf-8'))
+          manifest = json.loads((report / 'score_component_ablation_manifest.json').read_text(encoding='utf-8'))
+          summary = pd.read_csv(report / 'score_component_ablation_summary.csv')
+          periods = pd.read_csv(report / 'score_component_ablation_period_metrics.csv')
+          audit = pd.read_csv(report / 'score_distribution_preservation_audit.csv')
+          signals = pd.read_csv(report / 'score_component_variant_signal_counts.csv')
+          assert universe['selected_holdout_symbol_count'] == 72
+          assert universe['discovery_holdout_overlap_count'] == 0
+          assert set(summary['variant']) == {
+              'baseline', 'drop_ytd_high', 'drop_ytd_streak', 'drop_return_20d',
+              'drop_volume_ratio', 'drop_moving_average', 'drop_trading_value'
+          }
+          assert len(summary) == 7
+          assert len(periods) == 21
+          assert set(periods['period']) == {'full', 'early', 'late'}
+          assert audit['score_multiset_equal'].all()
+          assert signals['lookahead_violations'].fillna(0).eq(0).all()
+          assert manifest['daily_score_distribution_preserved'] is True
+          assert manifest['automatic_weight_change'] is False
+          assert manifest['automatic_component_removal'] is False
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['production_state_mutations'] == []
+          assert summary.loc[summary['variant'] != 'baseline', 'automatic_weight_change_allowed'].eq(False).all()
+          print(summary[[
+              'variant', 'full_closed_trades', 'full_total_return', 'full_excess_return',
+              'full_max_drawdown', 'delta_excess_vs_baseline',
+              'delta_max_drawdown_vs_baseline', 'early_delta_excess',
+              'late_delta_excess', 'fdr_q_value', 'mean_daily_rank_spearman',
+              'mean_top30_jaccard', 'ablation_status'
+          ]].to_string(index=False))
+          PY
+      - name: Upload ablation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: score-component-ablation-${{ github.run_id }}
+          path: output/ablation/
+          if-no-files-found: error
+          retention-days: 90
