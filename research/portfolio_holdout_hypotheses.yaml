@@ -1,0 +1,132 @@
+version: 1
+registered_at_utc: '2026-07-11T10:00:00Z'
+source_discovery_pr: 57
+source_discovery_artifact_run: 29148285360
+discovery_design:
+  symbol_count: 72
+  lookback_calendar_days: 420
+  sample_every_trading_days: 5
+  current_universe_bias: true
+  codes_sha256: 8c473a56ce21f781f20352b39ebbc02cae266da1f29be1cd15fa111c0ca2f50e
+  codes:
+    - '1301'
+    - '1332'
+    - '1401'
+    - '1407'
+    - '1435'
+    - '1491'
+    - '1514'
+    - '1515'
+    - '1518'
+    - '1717'
+    - '1783'
+    - '1909'
+    - '2001'
+    - '2002'
+    - '2120'
+    - '2121'
+    - '2122'
+    - '2138'
+    - '2160'
+    - '2384'
+    - '2388'
+    - '2652'
+    - '2653'
+    - '2667'
+    - '2668'
+    - '2930'
+    - '2961'
+    - '2962'
+    - '3001'
+    - '3002'
+    - '3101'
+    - '3105'
+    - '3110'
+    - '3113'
+    - '3116'
+    - '3150'
+    - '3315'
+    - '3708'
+    - '3856'
+    - '3861'
+    - '3863'
+    - '4026'
+    - '4151'
+    - '4346'
+    - '4351'
+    - '4543'
+    - '5010'
+    - '5016'
+    - '5101'
+    - '5103'
+    - '5105'
+    - '5187'
+    - '5201'
+    - '5401'
+    - '5406'
+    - '5631'
+    - '5830'
+    - '5831'
+    - '5834'
+    - '5949'
+    - '5962'
+    - '7157'
+    - '7162'
+    - '7181'
+    - '7791'
+    - '9001'
+    - '9101'
+    - '9104'
+    - '9193'
+    - '9201'
+    - '9202'
+    - '9301'
+holdout_design:
+  symbol_count: 72
+  selection: sector_stratified_current_JPX_excluding_all_discovery_codes
+  temporal_lookback_calendar_days: 420
+  sample_every_trading_days: 5
+  entry_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  same_day_close_entry_allowed: false
+  initial_capital: 10000000
+  maximum_positions: 10
+  maximum_position_weight: 0.12
+  maximum_sector_weight: 0.25
+  risk_per_trade: 0.01
+  round_trip_fees_bps: 20
+  minimum_baseline_trades: 30
+  minimum_variant_trades: 20
+  minimum_subperiod_trades: 6
+  block_bootstrap_length: 5
+  bootstrap_iterations: 2000
+  maximum_fdr_q_value: 0.05
+hypotheses:
+  - id: H1_EXCLUDE_AIR_TRANSPORT
+    description: Excluding 空運業 improves excess return without worsening maximum drawdown.
+    exclude_sectors:
+      - 空運業
+    exclude_lifecycles: []
+  - id: H2_EXCLUDE_PULP_PAPER
+    description: Excluding パルプ・紙 improves excess return without worsening maximum drawdown.
+    exclude_sectors:
+      - パルプ・紙
+    exclude_lifecycles: []
+  - id: H3_EXCLUDE_RAPID_ACCELERATION
+    description: Excluding 急加速 improves excess return without worsening maximum drawdown.
+    exclude_sectors: []
+    exclude_lifecycles:
+      - 急加速
+  - id: H4_COMBINED_DISCOVERY_FILTERS
+    description: Excluding 空運業, パルプ・紙 and 急加速 jointly improves excess return without worsening maximum drawdown.
+    exclude_sectors:
+      - 空運業
+      - パルプ・紙
+    exclude_lifecycles:
+      - 急加速
+governance:
+  research_only: true
+  promotion_evidence_allowed: false
+  automatic_strategy_change: false
+  automatic_hypothesis_activation: false
+  manual_review_required: true
+  production_state_mutation_allowed: false

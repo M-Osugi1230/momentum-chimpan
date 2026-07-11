@@ -1,0 +1,193 @@
+name: Portfolio Hypothesis Holdout
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - portfolio_holdout_validation.py
+      - research/portfolio_holdout_hypotheses.yaml
+      - .github/test_portfolio_holdout_validation.py
+      - .github/workflows/portfolio-hypothesis-holdout.yml
+      - portfolio_research.py
+      - portfolio_filter_lab.py
+      - portfolio_exit_lab.py
+      - portfolio_regime_attribution.py
+      - historical_backfill.py
+      - historical_price_panel.py
+      - replay.py
+      - main.py
+  workflow_dispatch:
+  schedule:
+    # Monthly, third day at 11:30 JST after attribution research.
+    - cron: '30 2 3 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-hypothesis-holdout-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile holdout tools
+        run: |
+          python -m py_compile \
+            portfolio_holdout_validation.py portfolio_regime_attribution.py \
+            portfolio_exit_lab.py portfolio_filter_lab.py portfolio_research.py \
+            historical_backfill.py historical_price_panel.py replay.py main.py \
+            .github/test_portfolio_holdout_validation.py
+      - name: Run synthetic disjoint-holdout validation
+        run: |
+          set -o pipefail
+          python .github/test_portfolio_holdout_validation.py 2>&1 | tee /tmp/portfolio-holdout-test.log
+      - name: Validate registry and read-only workflow policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          import portfolio_holdout_validation as holdout
+
+          registry = holdout.load_registry('research/portfolio_holdout_hypotheses.yaml')
+          assert registry['governance']['research_only'] is True
+          assert registry['governance']['promotion_evidence_allowed'] is False
+          assert registry['governance']['automatic_hypothesis_activation'] is False
+          assert len(registry['hypotheses']) == 4
+          workflow = yaml.safe_load(Path('.github/workflows/portfolio-hypothesis-holdout.yml').read_text(encoding='utf-8'))
+          assert workflow['permissions']['contents'] == 'read'
+          PY
+      - name: Upload validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-holdout-test-log
+          path: /tmp/portfolio-holdout-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  analyze:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Prepare disjoint sector-stratified holdout universe
+        run: |
+          mkdir -p output/holdout/replay output/holdout/evaluation
+          python portfolio_holdout_validation.py prepare-universe \
+            --strict \
+            --registry research/portfolio_holdout_hypotheses.yaml \
+            --cache data/jpx_list_cache.csv \
+            --config config.yaml \
+            --max-symbols 72 \
+            --output-cache output/holdout/holdout_jpx_cache.csv \
+            --manifest output/holdout/holdout_universe_manifest.json | tee output/holdout/universe.log
+      - name: Build isolated holdout rankings
+        run: |
+          set -o pipefail
+          python historical_backfill.py \
+            --strict \
+            --cache output/holdout/holdout_jpx_cache.csv \
+            --max-symbols 0 \
+            --lookback-calendar-days 420 \
+            --sample-every 5 \
+            --batch-size 36 \
+            --output-dir output/holdout | tee output/holdout/backfill.log
+      - name: Seal non-promotable holdout provenance
+        run: |
+          python evidence_provenance.py seal-derived \
+            --source-manifest output/holdout/backfill_manifest.json \
+            --provenance output/holdout/replay/evidence_provenance.json
+      - name: Build holdout adjusted price panel
+        run: |
+          set -o pipefail
+          python historical_price_panel.py \
+            --strict \
+            --history output/holdout/historical_ranking.csv \
+            --backfill-manifest output/holdout/backfill_manifest.json \
+            --output output/holdout/historical_price_panel.csv \
+            --manifest output/holdout/historical_price_panel_manifest.json \
+            --batch-size 36 | tee output/holdout/price-panel.log
+      - name: Replay holdout signals without lookahead
+        run: |
+          set -o pipefail
+          python replay.py \
+            --strict \
+            --history output/holdout/historical_ranking.csv \
+            --jpx-cache output/holdout/holdout_jpx_cache.csv \
+            --output-dir output/holdout/replay | tee output/holdout/replay.log
+      - name: Evaluate pre-registered hypotheses
+        run: |
+          set -o pipefail
+          python portfolio_holdout_validation.py evaluate \
+            --strict \
+            --registry research/portfolio_holdout_hypotheses.yaml \
+            --signals output/holdout/replay/replay_signals.csv \
+            --history output/holdout/historical_ranking.csv \
+            --prices output/holdout/historical_price_panel.csv \
+            --provenance output/holdout/replay/evidence_provenance.json \
+            --holdout-universe-manifest output/holdout/holdout_universe_manifest.json \
+            --output-dir output/holdout/evaluation | tee output/holdout/evaluation/holdout.log
+      - name: Validate holdout evidence and non-overlap
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/holdout')
+          universe = json.loads((root / 'holdout_universe_manifest.json').read_text(encoding='utf-8'))
+          manifest = json.loads((root / 'evaluation/portfolio_holdout_validation_manifest.json').read_text(encoding='utf-8'))
+          summary = pd.read_csv(root / 'evaluation/portfolio_holdout_hypothesis_summary.csv')
+          periods = pd.read_csv(root / 'evaluation/portfolio_holdout_period_metrics.csv')
+          baseline = pd.read_csv(root / 'evaluation/portfolio_holdout_baseline_metrics.csv')
+          assert universe['selected_holdout_symbol_count'] == 72
+          assert universe['discovery_holdout_overlap_count'] == 0
+          assert universe['discovery_codes_sha256'] != universe['selected_holdout_codes_sha256']
+          assert manifest['discovery_holdout_overlap_count'] == 0
+          assert manifest['hypothesis_count'] == 4
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_hypothesis_activation'] is False
+          assert manifest['automatic_strategy_change'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert len(summary) == 4
+          assert set(periods['period']) == {'full', 'early', 'late'}
+          assert len(periods) == 15
+          assert not baseline.empty
+          assert summary['automatic_activation_allowed'].eq(False).all()
+          assert set(summary['validation_status']).issubset({
+              'VALIDATED', 'DIRECTIONALLY_SUPPORTED', 'REJECTED', 'INSUFFICIENT'
+          })
+          print(universe['selected_codes'])
+          print(baseline[['total_return', 'max_drawdown', 'benchmark_total_return', 'excess_total_return', 'closed_trades']].to_string(index=False))
+          print(summary[['hypothesis_id', 'variant_closed_trades', 'variant_total_return', 'variant_excess_total_return', 'delta_excess_total_return', 'delta_max_drawdown', 'early_delta_excess', 'late_delta_excess', 'fdr_q_value', 'validation_status']].to_string(index=False))
+          PY
+      - name: Upload holdout evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-hypothesis-holdout-${{ github.run_id }}
+          path: output/holdout/
+          if-no-files-found: error
+          retention-days: 90
