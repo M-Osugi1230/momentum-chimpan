@@ -235,9 +235,7 @@ jobs:
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "Complete governed live execution evidence"
-            git fetch origin feature/live-execution-evidence
-            git rebase origin/feature/live-execution-evidence
-            git push origin HEAD:feature/live-execution-evidence
+            git push --force-with-lease origin HEAD:feature/live-execution-evidence
           fi
 
       - name: Mark ready and merge exact verified head
