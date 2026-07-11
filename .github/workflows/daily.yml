@@ -80,12 +80,27 @@ jobs:
           python strategy_governance.py snapshot \
             --output data/strategy_fingerprint.json
 
+      - name: Stamp live evidence rows with strategy fingerprint
+        id: evidence
+        if: >-
+          steps.report.outcome == 'success' &&
+          steps.heartbeat.outcome == 'success' &&
+          steps.strategy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python evidence_provenance.py stamp-live \
+            --ranking data/momentum_daily_ranking.csv \
+            --report output/daily_report.xlsx \
+            --fingerprint data/strategy_fingerprint.json \
+            --audit output/evidence_stamp_audit.json
+
       - name: Validate state and apply bounded retention
         id: maintenance
         if: >-
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
-          steps.strategy.outcome == 'success'
+          steps.strategy.outcome == 'success' &&
+          steps.evidence.outcome == 'success'
         continue-on-error: true
         run: |
           python operations.py maintain \
@@ -102,6 +117,7 @@ jobs:
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
           steps.strategy.outcome == 'success' &&
+          steps.evidence.outcome == 'success' &&
           steps.maintenance.outcome == 'success' &&
           (github.event_name == 'schedule' || inputs.max_symbols == '0' || inputs.max_symbols == '')
         run: |
@@ -152,6 +168,7 @@ jobs:
           (steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
            steps.strategy.outcome == 'failure' ||
+           steps.evidence.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         continue-on-error: true
@@ -163,14 +180,16 @@ jobs:
           REPORT_OUTCOME: ${{ steps.report.outcome }}
           HEARTBEAT_OUTCOME: ${{ steps.heartbeat.outcome }}
           STRATEGY_OUTCOME: ${{ steps.strategy.outcome }}
+          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
           MAINTENANCE_OUTCOME: ${{ steps.maintenance.outcome }}
           PERSIST_OUTCOME: ${{ steps.persist.outcome }}
         run: |
           stage="report"
           if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
           if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" = "failure" ]; then stage="strategy-fingerprint"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" = "failure" ]; then stage="evidence-stamp"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
           python operations.py notify \
             --stage "${stage}" \
             --log output/run.log \
@@ -189,6 +208,7 @@ jobs:
             output/daily_report.xlsx
             output/run.log
             output/state_maintenance.json
+            output/evidence_stamp_audit.json
             output/ops_notification.txt
             data/operations_heartbeat.json
             data/strategy_fingerprint.json
@@ -207,6 +227,7 @@ jobs:
           (steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
            steps.strategy.outcome == 'failure' ||
+           steps.evidence.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         run: |

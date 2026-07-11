@@ -9,6 +9,8 @@ policy:
   require_positive_late_period: true
   require_positive_leave_one_sector: true
   require_manual_approval: true
+  allowed_promotion_evidence_origins:
+    - LIVE_FORWARD_RANKING_HISTORY
 experiments:
   - experiment_id: production-baseline-v17
     experiment_type: baseline
