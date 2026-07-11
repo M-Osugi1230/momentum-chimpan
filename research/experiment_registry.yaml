@@ -11,6 +11,7 @@ policy:
   require_manual_approval: true
   allowed_promotion_evidence_origins:
   - LIVE_FORWARD_RANKING_HISTORY
+  required_promotion_execution_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
 experiments:
 - experiment_id: production-baseline-v17
   experiment_type: baseline

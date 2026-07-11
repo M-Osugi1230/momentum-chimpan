@@ -168,6 +168,13 @@ jobs:
             --provenance output/backfill/replay/evidence_provenance.json \
             --output-dir output/backfill/execution | tee output/backfill/execution/execution.log
 
+      - name: Seal historical execution provenance
+        run: |
+          python evidence_provenance.py seal-execution \
+            --source-provenance output/backfill/replay/evidence_provenance.json \
+            --execution-manifest output/backfill/execution/execution_realism_manifest.json \
+            --provenance output/backfill/execution/execution_evidence_provenance.json | tee output/backfill/execution/execution-provenance.log
+
       - name: Stress-test already-net execution evidence
         run: |
           set -o pipefail
@@ -191,7 +198,7 @@ jobs:
           set -o pipefail
           python evidence_provenance.py governance-audit \
             --strict \
-            --provenance output/backfill/replay/evidence_provenance.json \
+            --provenance output/backfill/execution/execution_evidence_provenance.json \
             --robustness output/backfill/execution/replay_robustness_summary.csv \
             --output-dir output/backfill/execution | tee output/backfill/execution/governance.log
 
@@ -205,6 +212,7 @@ jobs:
           panel = json.loads(Path('output/backfill/historical_price_panel_manifest.json').read_text(encoding='utf-8'))
           provenance = json.loads(Path('output/backfill/replay/evidence_provenance.json').read_text(encoding='utf-8'))
           execution = json.loads(Path('output/backfill/execution/execution_realism_manifest.json').read_text(encoding='utf-8'))
+          execution_provenance = json.loads(Path('output/backfill/execution/execution_evidence_provenance.json').read_text(encoding='utf-8'))
           audit = json.loads(Path('output/backfill/execution/evidence_provenance_audit.json').read_text(encoding='utf-8'))
           assert backfill['research_only'] is True
           assert backfill['promotion_evidence_allowed'] is False
@@ -217,6 +225,9 @@ jobs:
           assert execution['same_day_close_entry_allowed'] is False
           assert execution['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
           assert execution['production_state_mutations'] == []
+          assert execution_provenance['execution_evidence'] is True
+          assert execution_provenance['promotion_evidence_allowed'] is False
+          assert execution_provenance['execution_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
           assert audit['provenance_valid'] is False
           PY
 
