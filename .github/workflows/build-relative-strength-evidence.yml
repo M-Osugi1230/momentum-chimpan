@@ -1,0 +1,79 @@
+name: Build Relative Strength Evidence Lab
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-validate:
+    if: github.head_ref == 'feature/relative-strength-evidence-lab'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/relative-strength-evidence-lab
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Materialize evidence lab
+        run: |
+          set -o pipefail
+          python .github/build_relative_strength_evidence.py 2>&1 | tee /tmp/evidence-build.log
+
+      - name: Compile implementation
+        run: |
+          python -m py_compile relative_strength_evidence.py
+          python -m py_compile .github/test_relative_strength_evidence.py
+
+      - name: Run synthetic validation
+        run: |
+          set -o pipefail
+          python .github/test_relative_strength_evidence.py 2>&1 | tee /tmp/evidence-test.log
+
+      - name: Validate insufficient-data operation
+        run: |
+          set -o pipefail
+          python relative_strength_evidence.py --output-dir /tmp/evidence-empty --strict 2>&1 | tee /tmp/evidence-empty.log
+          test -f /tmp/evidence-empty/relative_strength_evidence.xlsx
+          test -f /tmp/evidence-empty/relative_strength_evidence_manifest.json
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-strength-evidence-build-logs
+          path: |
+            /tmp/evidence-build.log
+            /tmp/evidence-test.log
+            /tmp/evidence-empty.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Clean temporary builder
+        run: |
+          rm -f .github/build_relative_strength_evidence.py
+          rm -f .github/workflows/build-relative-strength-evidence.yml
+          git diff --check
+
+      - name: Commit final evidence lab
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add governed relative strength evidence lab"
+          git push origin HEAD:feature/relative-strength-evidence-lab
