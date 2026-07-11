@@ -83,4 +83,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Integrate governed portfolio exit research"
+          git fetch origin feature/portfolio-exit-lab
+          git rebase origin/feature/portfolio-exit-lab
           git push origin HEAD:feature/portfolio-exit-lab
