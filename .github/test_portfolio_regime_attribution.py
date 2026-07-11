@@ -92,6 +92,10 @@ for member in members:
         })
 prices = pd.DataFrame(price_rows)
 
+aligned_prices = attribution.align_prices_to_signal_window(signals, prices)
+assert pd.to_datetime(aligned_prices["date"]).min().normalize() >= signals["signal_date"].min().normalize()
+assert len(aligned_prices) < len(prices)
+
 results = attribution.run_attribution(signals, history, prices)
 assert not results["baseline_metrics"].empty
 assert not results["trades"].empty
@@ -138,6 +142,7 @@ with TemporaryDirectory() as temporary:
     assert manifest["automatic_sector_exclusion"] is False
     assert manifest["automatic_strategy_change"] is False
     assert manifest["same_day_close_entry_allowed"] is False
+    assert manifest["price_window_aligned_to_signals"] is True
     workbook = pd.ExcelFile(output["paths"]["excel"])
     assert {
         "Manifest", "Summary", "Trades", "Trade Attribution", "Daily Regime",

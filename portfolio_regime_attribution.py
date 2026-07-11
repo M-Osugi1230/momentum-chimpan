@@ -23,7 +23,7 @@ import portfolio_filter_lab as filter_lab
 import portfolio_research as portfolio
 import replay
 
-ATTRIBUTION_VERSION = "2026-07-11-portfolio-regime-attribution-v1"
+ATTRIBUTION_VERSION = "2026-07-11-portfolio-regime-attribution-v2-signal-window"
 DEFAULT_SIGNALS = "output/backfill/replay/replay_signals.csv"
 DEFAULT_HISTORY = "output/backfill/historical_ranking.csv"
 DEFAULT_PRICES = "output/backfill/historical_price_panel.csv"
@@ -51,6 +51,34 @@ def safe_profit_factor(pnl: pd.Series) -> float | None:
     if gross_loss > 0:
         return gross_profit / gross_loss
     return None if gross_profit == 0 else float("inf")
+
+
+def align_prices_to_signal_window(
+    signals: pd.DataFrame,
+    prices: pd.DataFrame,
+    maximum_holding_sessions: int = portfolio.MAX_HOLDING_SESSIONS,
+) -> pd.DataFrame:
+    """Align benchmark and portfolio dates to the tradable signal window.
+
+    Historical price panels intentionally include warm-up data for indicators.
+    Those pre-signal sessions must not accrue benchmark return while the
+    portfolio is structurally unable to hold a position.
+    """
+    signal_dates = pd.to_datetime(signals.get("signal_date"), errors="coerce").dropna().dt.normalize()
+    if signal_dates.empty or prices is None or prices.empty:
+        return prices.copy()
+    price_dates = pd.DatetimeIndex(
+        sorted(pd.to_datetime(prices["date"], errors="coerce").dropna().dt.normalize().unique())
+    )
+    if price_dates.empty:
+        return prices.copy()
+    start = signal_dates.min()
+    last_signal = signal_dates.max()
+    end_index = int(price_dates.searchsorted(last_signal, side="right"))
+    end_index = min(end_index + maximum_holding_sessions + 2, len(price_dates))
+    end = price_dates[end_index - 1] if end_index else last_signal
+    normalized = pd.to_datetime(prices["date"], errors="coerce").dt.normalize()
+    return prices[(normalized >= start) & (normalized <= end)].copy()
 
 
 def run_baseline(signals: pd.DataFrame, prices: pd.DataFrame) -> dict[str, Any]:
@@ -342,7 +370,8 @@ def run_counterfactuals(
 
 def run_attribution(signals: pd.DataFrame, history: pd.DataFrame, prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
     enriched_signals, coverage = filter_lab.attach_filter_context(signals, history)
-    baseline = run_baseline(enriched_signals, prices)
+    aligned_prices = align_prices_to_signal_window(enriched_signals, prices)
+    baseline = run_baseline(enriched_signals, aligned_prices)
     trades = enrich_trades(baseline["trades"], enriched_signals)
     daily = attach_daily_regime(baseline["equity"], history)
     return {
@@ -353,7 +382,7 @@ def run_attribution(signals: pd.DataFrame, history: pd.DataFrame, prices: pd.Dat
         "daily_regime_attribution": build_daily_regime_attribution(daily),
         "quarterly_stability": build_quarterly_stability(daily),
         "rolling_stability": build_rolling_stability(daily),
-        "counterfactuals": run_counterfactuals(enriched_signals, prices, baseline["metrics"]),
+        "counterfactuals": run_counterfactuals(enriched_signals, aligned_prices, baseline["metrics"]),
         "context_coverage": coverage,
     }
 
@@ -401,6 +430,7 @@ def write_outputs(results: dict[str, pd.DataFrame], provenance_path: str, output
         "production_state_mutations": [],
         "entry_model": "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN",
         "same_day_close_entry_allowed": False,
+        "price_window_aligned_to_signals": True,
         "rolling_sessions": ROLLING_SESSIONS,
         "rolling_step": ROLLING_STEP,
         "maximum_sector_counterfactuals": MAX_SECTOR_COUNTERFACTUALS,
