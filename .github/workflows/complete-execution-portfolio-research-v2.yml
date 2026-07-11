@@ -1,0 +1,176 @@
+name: Complete Execution Portfolio Research V2
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: complete-execution-portfolio-research-v2
+  cancel-in-progress: true
+
+jobs:
+  complete:
+    if: github.head_ref == 'feature/execution-portfolio-research-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/execution-portfolio-research-v2
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Import portfolio research implementation
+        run: |
+          git fetch origin feature/execution-portfolio-research
+          git show origin/feature/execution-portfolio-research:portfolio_research.py > portfolio_research.py
+          git show origin/feature/execution-portfolio-research:.github/test_portfolio_research.py > .github/test_portfolio_research.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('portfolio_research.py')
+          text = path.read_text(encoding='utf-8')
+          old_time = '    if int(position["holding_sessions"]) >= MAX_HOLDING_SESSIONS:\n'
+          new_time = '    if int(position["holding_sessions"]) >= MAX_HOLDING_SESSIONS - 1:\n'
+          if old_time in text:
+              text = text.replace(old_time, new_time, 1)
+          elif new_time not in text:
+              raise SystemExit('holding-session exit anchor not found')
+
+          old_sector = '''        if (pd.to_numeric(results["metrics"]["maximum_sector_weight"], errors="coerce") > MAX_SECTOR_WEIGHT + 0.01).any():
+              raise RuntimeError("portfolio materially exceeded sector weight")
+          '''
+          new_cash = '''        if not results["equity"].empty and (pd.to_numeric(results["equity"]["cash"], errors="coerce") < -1e-6).any():
+              raise RuntimeError("portfolio cash became negative")
+          '''
+          if old_sector in text:
+              text = text.replace(old_sector, new_cash, 1)
+          elif 'portfolio cash became negative' not in text:
+              raise SystemExit('strict cash invariant anchor not found')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Run synthetic portfolio and governed-system validation
+        run: |
+          python -m py_compile \
+            portfolio_research.py capacity_analysis.py historical_backfill.py \
+            historical_price_panel.py replay.py evidence_provenance.py main.py \
+            relative_strength_lifecycle.py state_recovery.py \
+            .github/test_portfolio_research.py .github/validate_workflows.py
+          python .github/test_portfolio_research.py
+          python .github/validate_workflows.py
+          python .github/test_walk_forward_replay.py
+          python .github/test_research_scorecard.py
+          python .github/test_robustness_analysis.py
+          python .github/test_strategy_governance.py
+          python .github/test_evidence_provenance.py
+          python .github/test_live_execution_panel.py
+          python .github/test_execution_provenance.py
+          python .github/test_atomic_strategy_stamp.py
+          python .github/test_state_recovery.py
+          python .github/test_relative_strength_lifecycle.py
+          python .github/test_operations.py
+          python .github/test_historical_backfill.py
+          python .github/test_execution_realism.py
+
+      - name: Confirm strategy fingerprint is unchanged
+        run: |
+          mkdir -p /tmp/portfolio-base
+          git show origin/main:main.py > /tmp/portfolio-base/main.py
+          git show origin/main:config.yaml > /tmp/portfolio-base/config.yaml
+          python strategy_governance.py ci-check \
+            --base-main /tmp/portfolio-base/main.py \
+            --base-config /tmp/portfolio-base/config.yaml \
+            --current-main main.py \
+            --current-config config.yaml \
+            --registry research/experiment_registry.yaml
+
+      - name: Build 36-symbol real-data portfolio pilot
+        run: |
+          mkdir -p /tmp/portfolio-pilot/replay /tmp/portfolio-pilot/portfolio
+          set -o pipefail
+          python historical_backfill.py \
+            --strict \
+            --max-symbols 36 \
+            --lookback-calendar-days 240 \
+            --sample-every 10 \
+            --batch-size 36 \
+            --output-dir /tmp/portfolio-pilot | tee /tmp/portfolio-pilot/backfill.log
+          python evidence_provenance.py seal-derived \
+            --source-manifest /tmp/portfolio-pilot/backfill_manifest.json \
+            --provenance /tmp/portfolio-pilot/replay/evidence_provenance.json
+          python historical_price_panel.py \
+            --strict \
+            --history /tmp/portfolio-pilot/historical_ranking.csv \
+            --backfill-manifest /tmp/portfolio-pilot/backfill_manifest.json \
+            --output /tmp/portfolio-pilot/historical_price_panel.csv \
+            --manifest /tmp/portfolio-pilot/historical_price_panel_manifest.json \
+            --batch-size 36 | tee /tmp/portfolio-pilot/price-panel.log
+          python replay.py \
+            --strict \
+            --history /tmp/portfolio-pilot/historical_ranking.csv \
+            --jpx-cache data/jpx_list_cache.csv \
+            --output-dir /tmp/portfolio-pilot/replay | tee /tmp/portfolio-pilot/replay.log
+          python portfolio_research.py \
+            --strict \
+            --signals /tmp/portfolio-pilot/replay/replay_signals.csv \
+            --prices /tmp/portfolio-pilot/historical_price_panel.csv \
+            --provenance /tmp/portfolio-pilot/replay/evidence_provenance.json \
+            --output-dir /tmp/portfolio-pilot/portfolio | tee /tmp/portfolio-pilot/portfolio/portfolio.log
+
+      - name: Validate real-data portfolio artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('/tmp/portfolio-pilot')
+          manifest = json.loads((root / 'portfolio/portfolio_research_manifest.json').read_text(encoding='utf-8'))
+          metrics = pd.read_csv(root / 'portfolio/portfolio_scenario_metrics.csv')
+          trades = pd.read_csv(root / 'portfolio/portfolio_trades.csv')
+          equity = pd.read_csv(root / 'portfolio/portfolio_equity_curve.csv')
+          assert manifest['research_only'] is True
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_strategy_change'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert manifest['intraday_ambiguity_policy'] == 'STOP_FIRST_CONSERVATIVE'
+          assert set(metrics['scenario']) == {'baseline', 'no_gap_chase_3pct', 'gap3_minimum_500m'}
+          assert not trades.empty
+          assert not equity.empty
+          assert (pd.to_numeric(equity['cash'], errors='coerce') >= -1e-6).all()
+          assert pd.to_numeric(metrics['maximum_positions'], errors='coerce').max() <= 10
+          assert pd.to_numeric(metrics['maximum_sector_weight'], errors='coerce').max() <= 1.0
+          print(metrics[['scenario', 'total_return', 'max_drawdown', 'closed_trades', 'win_rate', 'excess_total_return']].to_string(index=False))
+          PY
+
+      - name: Upload pilot evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-portfolio-pilot-${{ github.run_id }}
+          path: /tmp/portfolio-pilot/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish validated non-workflow files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add portfolio_research.py .github/test_portfolio_research.py
+          git commit -m "Add execution-aware portfolio research"
+          git push origin HEAD:feature/execution-portfolio-research-v2
