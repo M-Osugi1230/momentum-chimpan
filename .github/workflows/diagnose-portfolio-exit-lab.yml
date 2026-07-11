@@ -26,4 +26,17 @@ jobs:
       - name: Apply exit policy
         run: python .github/apply_portfolio_exit_policy.py
       - name: Run isolated exit lab test
-        run: python .github/test_portfolio_exit_lab.py
+        id: exit_test
+        continue-on-error: true
+        run: python .github/test_portfolio_exit_lab.py > /tmp/portfolio-exit-test.log 2>&1
+      - name: Upload isolated diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-exit-test-diagnostic
+          path: /tmp/portfolio-exit-test.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Enforce isolated test success
+        if: steps.exit_test.outcome == 'failure'
+        run: exit 1
