@@ -10,20 +10,50 @@ policy:
   require_positive_leave_one_sector: true
   require_manual_approval: true
   allowed_promotion_evidence_origins:
-    - LIVE_FORWARD_RANKING_HISTORY
+  - LIVE_FORWARD_RANKING_HISTORY
 experiments:
-  - experiment_id: production-baseline-v17
-    experiment_type: baseline
-    status: production
-    hypothesis: Current production research rules before governed experiments.
-    strategy_fingerprint: CURRENT
-    change_summary: Baseline only; no automatic promotion or threshold changes.
-    evidence_scope:
-      group_type: overall
-      group_value: all
-      horizon_days: 10
-    manual_approval:
-      approved: true
-      approved_by: repository-owner
-      approved_at: '2026-07-11'
-    notes: The exact current fingerprint is emitted into daily and weekly audit artifacts.
+- experiment_id: production-baseline-v17
+  experiment_type: baseline
+  status: production
+  hypothesis: Current production research rules before governed experiments.
+  strategy_fingerprint: CURRENT
+  change_summary: Baseline only; no automatic promotion or threshold changes.
+  evidence_scope:
+    group_type: overall
+    group_value: all
+    horizon_days: 10
+  manual_approval:
+    approved: true
+    approved_by: repository-owner
+    approved_at: '2026-07-11'
+  notes: The exact current fingerprint is emitted into daily and weekly audit artifacts.
+- experiment_id: relative-strength-alpha-v18
+  experiment_type: relative-strength-feature
+  status: proposed
+  hypothesis: Stocks outperforming both the scanned market median and their JPX 33-sector
+    median over 20 and 60 trading days will produce stronger 10-day forward excess
+    returns than otherwise similar momentum leaders.
+  strategy_fingerprint: c5397894cc4a67a1f5efe1131a990f0d3508f28dc15f23dc0e50671e6f5de05c
+  change_summary: Add market-relative and sector-relative 20/60-day strength, include
+    a bounded relative-strength contribution in sector-leader scoring, and evaluate
+    forward returns against same-window market and sector medians. Base Momentum scoring
+    is unchanged.
+  evidence_scope:
+    group_type: overall
+    group_value: all
+    horizon_days: 10
+  success_criteria:
+    minimum_outcome_count: 100
+    positive_market_excess_return: true
+    positive_sector_excess_return: true
+    minimum_market_outperformance_rate: 0.55
+    minimum_sector_outperformance_rate: 0.55
+    required_robustness_status: ROBUST
+    maximum_fdr_q_value: 0.05
+  manual_approval:
+    approved: false
+    approved_by: ''
+    approved_at: ''
+  automatic_promotion: false
+  notes: Research and paper validation only. Registration permits governed measurement
+    but does not authorize automatic threshold changes, promotion, or live order execution.
