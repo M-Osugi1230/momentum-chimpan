@@ -103,6 +103,33 @@ jobs:
           PY
               python -m py_compile .github/live_execution_evidence_patch.py
               python .github/live_execution_evidence_patch.py
+              python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/replay.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          fixed = []
+          repairs = 0
+          index = 0
+          backslash = chr(92)
+          while index < len(lines):
+              line = lines[index]
+              if (
+                  line.strip() == 'python robustness_analysis.py ' + backslash
+                  and index + 1 < len(lines)
+                  and lines[index + 1].strip() == '--strict ' + backslash
+              ):
+                  indent = line[: len(line) - len(line.lstrip())]
+                  fixed.append(indent + 'python robustness_analysis.py --strict ' + backslash)
+                  index += 2
+                  repairs += 1
+                  continue
+              fixed.append(line)
+              index += 1
+          if repairs != 2:
+              raise SystemExit(f'expected two robustness control repairs, found {repairs}')
+          path.write_text('\n'.join(fixed) + '\n', encoding='utf-8')
+          PY
             fi
             python - <<'PY'
           from pathlib import Path
