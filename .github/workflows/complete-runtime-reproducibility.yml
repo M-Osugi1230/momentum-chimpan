@@ -1,0 +1,151 @@
+name: Complete Runtime Reproducibility
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: complete-runtime-reproducibility
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: github.head_ref == 'feature/runtime-reproducibility'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/runtime-reproducibility
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebase onto latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          git push --force-with-lease origin HEAD:feature/runtime-reproducibility
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Resolve current dependency graph
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+          python -m pip freeze --all \
+            | grep -viE '^(pip|setuptools|wheel)==' \
+            | LC_ALL=C sort -f > requirements.lock
+          test -s requirements.lock
+
+      - name: Apply runtime reproducibility integration
+        run: |
+          python .github/runtime_reproducibility_patch.py
+          python .github/runtime_reproducibility_finalize.py
+
+      - name: Validate clean install from constraints lock
+        run: |
+          python -m venv /tmp/momentum-locked-env
+          /tmp/momentum-locked-env/bin/python -m pip install --upgrade pip
+          /tmp/momentum-locked-env/bin/python -m pip install -r requirements.txt -c requirements.lock
+          /tmp/momentum-locked-env/bin/python -m pip check
+          /tmp/momentum-locked-env/bin/python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          lock = {
+              line.strip().lower()
+              for line in Path('requirements.lock').read_text(encoding='utf-8').splitlines()
+              if line.strip() and not line.lstrip().startswith('#')
+          }
+          freeze = {
+              line.strip().lower()
+              for line in subprocess.check_output(
+                  [sys.executable, '-m', 'pip', 'freeze'], text=True
+              ).splitlines()
+              if line.strip()
+          }
+          missing = sorted(lock - freeze)
+          assert not missing, f'locked packages not installed exactly: {missing}'
+          PY
+
+      - name: Run runtime provenance and workflow policy validation
+        run: |
+          python -m py_compile \
+            runtime_provenance.py evidence_provenance.py strategy_governance.py \
+            .github/validate_workflows.py .github/test_runtime_provenance.py
+          python .github/test_runtime_provenance.py
+          python .github/validate_workflows.py
+          python runtime_provenance.py \
+            --strict \
+            --output /tmp/runtime_provenance.json \
+            --freeze-output /tmp/runtime_pip_freeze.txt
+          python -m pip check
+
+      - name: Confirm every project workflow uses the lock
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          failures = []
+          for path in Path('.github/workflows').glob('*.yml'):
+              if path.name == 'complete-runtime-reproducibility.yml':
+                  continue
+              text = path.read_text(encoding='utf-8')
+              if 'requirements.txt' in text and '-c requirements.lock' not in text:
+                  failures.append(path.name)
+          assert not failures, f'workflows without requirements.lock: {failures}'
+          PY
+
+      - name: Upload generated lock evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-reproducibility-${{ github.run_id }}
+          path: |
+            requirements.lock
+            /tmp/runtime_provenance.json
+            /tmp/runtime_pip_freeze.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove temporary integration machinery
+        run: |
+          rm -f .github/runtime_reproducibility_patch.py
+          rm -f .github/runtime_reproducibility_finalize.py
+          rm -f .github/workflows/complete-runtime-reproducibility.yml
+          git diff --check
+
+      - name: Commit and push verified final head
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Lock dependencies and sign runtime provenance"
+            git fetch origin feature/runtime-reproducibility
+            git rebase origin/feature/runtime-reproducibility
+            git push origin HEAD:feature/runtime-reproducibility
+          fi
+
+      - name: Mark ready and merge exact verified head
+        run: |
+          pr_number=$(gh pr list --repo "${GITHUB_REPOSITORY}" --head feature/runtime-reproducibility --state open --json number --jq '.[0].number')
+          test -n "${pr_number}"
+          head_sha=$(gh pr view "${pr_number}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" || true
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/merge" \
+            -f merge_method=merge \
+            -f sha="${head_sha}"
