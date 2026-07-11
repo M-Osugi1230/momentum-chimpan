@@ -1,0 +1,106 @@
+name: Finalize Live Execution Evidence V2
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-live-execution-evidence-v2
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.head_ref == 'feature/live-execution-evidence'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/live-execution-evidence
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply implementation patch only when absent
+        run: |
+          if ! grep -q '^def seal_execution_evidence' evidence_provenance.py; then
+            test -f .github/live_execution_evidence_patch.py
+            python .github/live_execution_evidence_patch.py
+          else
+            echo "Live execution evidence patch is already applied"
+          fi
+
+      - name: Ensure execution fixture is complete
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/test_execution_provenance.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        "horizon_days": 5,
+        "forward_return": 0.03,
+        "excess_vs_universe": 0.01,
+        "entry_slippage_bps": 5.0,
+'''
+          new = '''        "horizon_days": 5,
+        "entry_gap_return": 0.01,
+        "execution_status": "NORMAL",
+        "close_based_forward_return": 0.035,
+        "next_open_gross_return": 0.033,
+        "implementation_shortfall": -0.002,
+        "forward_return": 0.03,
+        "excess_vs_universe": 0.01,
+        "beat_universe": True,
+        "entry_slippage_bps": 5.0,
+'''
+          if old in text:
+              path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          elif '"implementation_shortfall": -0.002' not in text:
+              raise SystemExit('execution fixture is neither original nor completed')
+          PY
+
+      - name: Verify governed execution implementation
+        run: |
+          python -m py_compile \
+            execution_realism.py evidence_provenance.py live_execution_panel.py \
+            .github/validate_workflows.py .github/test_live_execution_panel.py \
+            .github/test_execution_provenance.py .github/test_evidence_provenance.py \
+            .github/test_execution_realism.py
+          python .github/validate_workflows.py
+          python .github/test_live_execution_panel.py
+          python .github/test_execution_provenance.py
+          python .github/test_evidence_provenance.py
+          python .github/test_execution_realism.py
+
+      - name: Remove temporary implementation files
+        run: |
+          rm -f .github/live_execution_evidence_patch.py
+          rm -f .github/workflows/build-live-execution-evidence.yml
+          rm -f .github/workflows/fix-live-execution-test.yml
+          rm -f .github/workflows/finalize-live-execution-evidence.yml
+          rm -f .github/workflows/finalize-live-execution-evidence-v2.yml
+          git diff --check
+
+      - name: Commit verified final state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Final state already verified and clean"
+          else
+            git commit -m "Finalize governed live execution evidence"
+            git push origin HEAD:feature/live-execution-evidence
+          fi
