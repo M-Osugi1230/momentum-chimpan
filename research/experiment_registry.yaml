@@ -1,0 +1,27 @@
+schema_version: 1
+policy:
+  execution_mode: RESEARCH_AND_PAPER_ONLY
+  automatic_promotion: false
+  minimum_outcome_count: 100
+  required_robustness_status: ROBUST
+  maximum_fdr_q_value: 0.05
+  require_positive_early_period: true
+  require_positive_late_period: true
+  require_positive_leave_one_sector: true
+  require_manual_approval: true
+experiments:
+  - experiment_id: production-baseline-v17
+    experiment_type: baseline
+    status: production
+    hypothesis: Current production research rules before governed experiments.
+    strategy_fingerprint: CURRENT
+    change_summary: Baseline only; no automatic promotion or threshold changes.
+    evidence_scope:
+      group_type: overall
+      group_value: all
+      horizon_days: 10
+    manual_approval:
+      approved: true
+      approved_by: repository-owner
+      approved_at: '2026-07-11'
+    notes: The exact current fingerprint is emitted into daily and weekly audit artifacts.
