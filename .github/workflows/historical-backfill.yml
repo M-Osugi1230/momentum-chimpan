@@ -1,0 +1,167 @@
+name: Historical Research Backfill
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - historical_backfill.py
+      - replay.py
+      - research_scorecard.py
+      - robustness_analysis.py
+      - strategy_governance.py
+      - data/jpx_list_cache.csv
+      - .github/workflows/historical-backfill.yml
+  schedule:
+    # Monthly on the first day at 10:30 JST.
+    - cron: '30 1 1 * *'
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: 'Current JPX symbols, stratified across sectors; 0 means all'
+        required: false
+        default: '300'
+        type: string
+      lookback_calendar_days:
+        description: 'Calendar-day price lookback'
+        required: false
+        default: '500'
+        type: string
+      sample_every:
+        description: 'Create one ranking snapshot every N trading days'
+        required: false
+        default: '5'
+        type: string
+      batch_size:
+        description: 'yfinance symbols per download batch'
+        required: false
+        default: '50'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: momentum-historical-research-backfill-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Resolve pilot or full-run parameters
+        id: parameters
+        env:
+          INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_calendar_days }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+          INPUT_BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            max_symbols=36
+            lookback_days=240
+            sample_every=10
+            batch_size=36
+            run_mode=pull_request_pilot
+          else
+            max_symbols="${INPUT_MAX_SYMBOLS:-300}"
+            lookback_days="${INPUT_LOOKBACK_DAYS:-500}"
+            sample_every="${INPUT_SAMPLE_EVERY:-5}"
+            batch_size="${INPUT_BATCH_SIZE:-50}"
+            run_mode=scheduled_or_manual
+          fi
+          echo "max_symbols=${max_symbols}" >> "${GITHUB_OUTPUT}"
+          echo "lookback_days=${lookback_days}" >> "${GITHUB_OUTPUT}"
+          echo "sample_every=${sample_every}" >> "${GITHUB_OUTPUT}"
+          echo "batch_size=${batch_size}" >> "${GITHUB_OUTPUT}"
+          echo "run_mode=${run_mode}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build isolated historical rankings
+        env:
+          MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
+          LOOKBACK_DAYS: ${{ steps.parameters.outputs.lookback_days }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+          BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
+          RUN_MODE: ${{ steps.parameters.outputs.run_mode }}
+        run: |
+          mkdir -p output/backfill
+          echo "run_mode=${RUN_MODE}" | tee output/backfill/workflow-mode.txt
+          set -o pipefail
+          python historical_backfill.py \
+            --strict \
+            --max-symbols "${MAX_SYMBOLS}" \
+            --lookback-calendar-days "${LOOKBACK_DAYS}" \
+            --sample-every "${SAMPLE_EVERY}" \
+            --batch-size "${BATCH_SIZE}" \
+            --output-dir output/backfill | tee output/backfill/backfill.log
+
+      - name: Replay backfilled research history
+        run: |
+          set -o pipefail
+          python replay.py \
+            --strict \
+            --history output/backfill/historical_ranking.csv \
+            --jpx-cache data/jpx_list_cache.csv \
+            --output-dir output/backfill/replay | tee output/backfill/replay.log
+
+      - name: Build backfill evidence scorecard
+        run: |
+          set -o pipefail
+          python research_scorecard.py \
+            --strict \
+            --outcomes output/backfill/replay/replay_outcomes.csv \
+            --history output/backfill/historical_ranking.csv \
+            --jpx-cache data/jpx_list_cache.csv \
+            --output-dir output/backfill/replay | tee output/backfill/evidence.log
+
+      - name: Stress-test backfill evidence
+        run: |
+          set -o pipefail
+          python robustness_analysis.py \
+            --strict \
+            --input output/backfill/replay/replay_benchmarked_outcomes.csv \
+            --output-dir output/backfill/replay | tee output/backfill/robustness.log
+
+      - name: Audit governance without promotion eligibility
+        run: |
+          set -o pipefail
+          python strategy_governance.py audit \
+            --strict \
+            --robustness output/backfill/replay/replay_robustness_summary.csv \
+            --output-dir output/backfill/replay | tee output/backfill/governance.log
+
+      - name: Confirm isolated research mode
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('output/backfill/backfill_manifest.json').read_text(encoding='utf-8'))
+          assert manifest['research_only'] is True
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['production_state_mutation_allowed'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['universe_bias'] == 'CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS'
+          PY
+
+      - name: Upload historical research artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-research-backfill-${{ github.run_id }}
+          path: output/backfill/
+          if-no-files-found: error
+          retention-days: 30
