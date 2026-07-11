@@ -111,4 +111,14 @@ jobs:
           PY
 
       - name: Run walk-forward replay validation
-        run: python .github/test_walk_forward_replay.py
+        run: |
+          set -o pipefail
+          python .github/test_walk_forward_replay.py 2>&1 | tee /tmp/walk-forward-replay-test.log
+
+      - name: Upload replay validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walk-forward-replay-test-log
+          path: /tmp/walk-forward-replay-test.log
+          retention-days: 1
