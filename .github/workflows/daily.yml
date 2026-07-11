@@ -72,9 +72,20 @@ jobs:
             --run-url "${RUN_URL}" \
             --event-name "${GITHUB_EVENT_NAME}"
 
+      - name: Snapshot governed strategy fingerprint
+        id: strategy
+        if: steps.report.outcome == 'success' && steps.heartbeat.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python strategy_governance.py snapshot \
+            --output data/strategy_fingerprint.json
+
       - name: Validate state and apply bounded retention
         id: maintenance
-        if: steps.report.outcome == 'success' && steps.heartbeat.outcome == 'success'
+        if: >-
+          steps.report.outcome == 'success' &&
+          steps.heartbeat.outcome == 'success' &&
+          steps.strategy.outcome == 'success'
         continue-on-error: true
         run: |
           python operations.py maintain \
@@ -90,6 +101,7 @@ jobs:
         if: >-
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
+          steps.strategy.outcome == 'success' &&
           steps.maintenance.outcome == 'success' &&
           (github.event_name == 'schedule' || inputs.max_symbols == '0' || inputs.max_symbols == '')
         run: |
@@ -105,6 +117,7 @@ jobs:
             data/paper_equity_history.csv \
             data/execution_audit.csv \
             data/operations_heartbeat.json \
+            data/strategy_fingerprint.json \
             data/state_snapshots \
             data/jpx_list_cache.csv
 
@@ -138,6 +151,7 @@ jobs:
           always() &&
           (steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
+           steps.strategy.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         continue-on-error: true
@@ -148,13 +162,15 @@ jobs:
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_OUTCOME: ${{ steps.report.outcome }}
           HEARTBEAT_OUTCOME: ${{ steps.heartbeat.outcome }}
+          STRATEGY_OUTCOME: ${{ steps.strategy.outcome }}
           MAINTENANCE_OUTCOME: ${{ steps.maintenance.outcome }}
           PERSIST_OUTCOME: ${{ steps.persist.outcome }}
         run: |
           stage="report"
           if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
-          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" = "failure" ]; then stage="strategy-fingerprint"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
           python operations.py notify \
             --stage "${stage}" \
             --log output/run.log \
@@ -175,6 +191,7 @@ jobs:
             output/state_maintenance.json
             output/ops_notification.txt
             data/operations_heartbeat.json
+            data/strategy_fingerprint.json
             data/momentum_daily_ranking.csv
             data/market_temperature.csv
             data/sector_leader_signal_history.csv
@@ -189,6 +206,7 @@ jobs:
           always() &&
           (steps.report.outcome == 'failure' ||
            steps.heartbeat.outcome == 'failure' ||
+           steps.strategy.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         run: |
