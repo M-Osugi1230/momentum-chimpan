@@ -168,11 +168,12 @@ jobs:
             --provenance output/backfill/replay/evidence_provenance.json \
             --output-dir output/backfill/execution | tee output/backfill/execution/execution.log
 
-      - name: Stress-test execution-realistic evidence
+      - name: Stress-test already-net execution evidence
         run: |
           set -o pipefail
           python robustness_analysis.py \
             --strict \
+            --base-cost-bps 0 \
             --input output/backfill/execution/execution_benchmarked_outcomes.csv \
             --output-dir output/backfill/execution | tee output/backfill/execution/robustness.log
 
