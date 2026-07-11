@@ -1,0 +1,187 @@
+name: Refine Score Component Inference
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - score_component_ablation.py
+      - .github/test_score_component_ablation.py
+      - .github/workflows/refine-score-component-inference.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refine-score-component-inference
+  cancel-in-progress: true
+
+jobs:
+  refine:
+    if: github.head_ref == 'feature/score-component-ablation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/score-component-ablation
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Add bidirectional component inference
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('score_component_ablation.py')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '        return {"mean_daily_difference": None, "ci_low": None, "ci_high": None, "one_sided_p_value": None}\n',
+                  '        return {\n'
+                  '            "mean_daily_difference": None,\n'
+                  '            "ci_low": None,\n'
+                  '            "ci_high": None,\n'
+                  '            "two_sided_p_value": None,\n'
+                  '            "improvement_p_value": None,\n'
+                  '            "harm_p_value": None,\n'
+                  '        }\n',
+              ),
+              (
+                  '    p_value = float((1 + np.sum(null_means >= observed)) / (iterations + 1))\n',
+                  '    improvement_p_value = float((1 + np.sum(null_means >= observed)) / (iterations + 1))\n'
+                  '    harm_p_value = float((1 + np.sum(null_means <= observed)) / (iterations + 1))\n'
+                  '    two_sided_p_value = float((1 + np.sum(np.abs(null_means) >= abs(observed))) / (iterations + 1))\n',
+              ),
+              (
+                  '        "one_sided_p_value": p_value,\n',
+                  '        "two_sided_p_value": two_sided_p_value,\n'
+                  '        "improvement_p_value": improvement_p_value,\n'
+                  '        "harm_p_value": harm_p_value,\n',
+              ),
+              (
+                  '            {"mean_daily_difference": 0.0, "ci_low": 0.0, "ci_high": 0.0, "one_sided_p_value": None}\n',
+                  '            {\n'
+                  '                "mean_daily_difference": 0.0,\n'
+                  '                "ci_low": 0.0,\n'
+                  '                "ci_high": 0.0,\n'
+                  '                "two_sided_p_value": None,\n'
+                  '                "improvement_p_value": None,\n'
+                  '                "harm_p_value": None,\n'
+                  '            }\n',
+              ),
+              (
+                  '        p_values.append(test["one_sided_p_value"])\n',
+                  '        p_values.append(test["two_sided_p_value"])\n',
+              ),
+              (
+                  '        statistically_supported = (\n'
+                  '            q_value is not None\n'
+                  '            and q_value <= MAXIMUM_FDR_Q\n'
+                  '            and row["ci_low"] is not None\n'
+                  '            and row["ci_low"] > 0\n'
+                  '        )\n',
+                  '        improvement_supported = (\n'
+                  '            q_value is not None\n'
+                  '            and q_value <= MAXIMUM_FDR_Q\n'
+                  '            and row["ci_low"] is not None\n'
+                  '            and row["ci_low"] > 0\n'
+                  '        )\n'
+                  '        harm_supported = (\n'
+                  '            q_value is not None\n'
+                  '            and q_value <= MAXIMUM_FDR_Q\n'
+                  '            and row["ci_high"] is not None\n'
+                  '            and row["ci_high"] < 0\n'
+                  '        )\n',
+              ),
+              (
+                  '        elif removal_improves and statistically_supported:\n'
+                  '            row["ablation_status"] = "REMOVAL_IMPROVES_VALIDATED"\n'
+                  '        elif removal_improves:\n'
+                  '            row["ablation_status"] = "REMOVAL_IMPROVES_DIRECTIONAL"\n'
+                  '        elif removal_hurts:\n'
+                  '            row["ablation_status"] = "REMOVAL_HURTS_DIRECTIONAL"\n',
+                  '        elif removal_improves and improvement_supported:\n'
+                  '            row["ablation_status"] = "REMOVAL_IMPROVES_VALIDATED"\n'
+                  '        elif removal_improves:\n'
+                  '            row["ablation_status"] = "REMOVAL_IMPROVES_DIRECTIONAL"\n'
+                  '        elif removal_hurts and harm_supported:\n'
+                  '            row["ablation_status"] = "REMOVAL_HURTS_VALIDATED"\n'
+                  '        elif removal_hurts:\n'
+                  '            row["ablation_status"] = "REMOVAL_HURTS_DIRECTIONAL"\n',
+              ),
+              (
+                  '        "BASELINE": 2,\n'
+                  '        "MIXED": 3,\n'
+                  '        "REMOVAL_HURTS_DIRECTIONAL": 4,\n'
+                  '        "INSUFFICIENT": 5,\n',
+                  '        "BASELINE": 2,\n'
+                  '        "REMOVAL_HURTS_VALIDATED": 3,\n'
+                  '        "REMOVAL_HURTS_DIRECTIONAL": 4,\n'
+                  '        "MIXED": 5,\n'
+                  '        "INSUFFICIENT": 6,\n',
+              ),
+          ]
+
+          for old, new in replacements:
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif new not in text:
+                  raise SystemExit(f'expected inference anchor not found: {old[:80]!r}')
+
+          path.write_text(text, encoding='utf-8')
+
+          test_path = Path('.github/test_score_component_ablation.py')
+          test_text = test_path.read_text(encoding='utf-8')
+          old_status = (
+              '    "BASELINE", "REMOVAL_IMPROVES_VALIDATED", "REMOVAL_IMPROVES_DIRECTIONAL",\n'
+              '    "REMOVAL_HURTS_DIRECTIONAL", "MIXED", "INSUFFICIENT",\n'
+          )
+          new_status = (
+              '    "BASELINE", "REMOVAL_IMPROVES_VALIDATED", "REMOVAL_IMPROVES_DIRECTIONAL",\n'
+              '    "REMOVAL_HURTS_VALIDATED", "REMOVAL_HURTS_DIRECTIONAL", "MIXED", "INSUFFICIENT",\n'
+          )
+          if old_status in test_text:
+              test_text = test_text.replace(old_status, new_status, 1)
+          elif new_status not in test_text:
+              raise SystemExit('expected test status anchor not found')
+
+          assertion_anchor = 'assert not results["equity"].empty\n'
+          assertion = (
+              'assert not results["equity"].empty\n'
+              'assert {"two_sided_p_value", "improvement_p_value", "harm_p_value"}.issubset(results["summary"].columns)\n'
+          )
+          if assertion_anchor in test_text:
+              test_text = test_text.replace(assertion_anchor, assertion, 1)
+          elif assertion not in test_text:
+              raise SystemExit('expected p-value assertion anchor not found')
+          test_path.write_text(test_text, encoding='utf-8')
+          PY
+
+      - name: Validate bidirectional inference
+        run: |
+          python -m py_compile score_component_ablation.py .github/test_score_component_ablation.py
+          python .github/test_score_component_ablation.py
+
+      - name: Commit inference refinement
+        run: |
+          if git diff --quiet -- score_component_ablation.py .github/test_score_component_ablation.py; then
+            echo 'No inference commit required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add score_component_ablation.py .github/test_score_component_ablation.py
+          git commit -m 'Classify statistically supported score component harm'
+          git push origin HEAD:feature/score-component-ablation
