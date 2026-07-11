@@ -23,7 +23,7 @@ import capacity_analysis
 import main
 import replay
 
-PORTFOLIO_RESEARCH_VERSION = "2026-07-11-execution-portfolio-v2-eligibility-calendar"
+PORTFOLIO_RESEARCH_VERSION = "2026-07-11-execution-portfolio-v3-exit-policy"
 DEFAULT_SIGNALS = "output/backfill/replay/replay_signals.csv"
 DEFAULT_PRICES = "output/backfill/historical_price_panel.csv"
 DEFAULT_PROVENANCE = "output/backfill/replay/evidence_provenance.json"
@@ -51,6 +51,19 @@ class PortfolioScenario:
     maximum_participation: float
 
 
+@dataclass(frozen=True)
+class ExitPolicy:
+    name: str
+    stop_loss_pct: float = STOP_LOSS_PCT
+    target_gain_pct: float = TARGET_GAIN_PCT
+    trailing_stop_pct: float = TRAILING_STOP_PCT
+    maximum_holding_sessions: int = MAX_HOLDING_SESSIONS
+    use_signal_exit: bool = True
+
+
+DEFAULT_EXIT_POLICY = ExitPolicy("baseline")
+
+
 SCENARIOS: tuple[PortfolioScenario, ...] = (
     PortfolioScenario("baseline", None, 0.0, 0.01),
     PortfolioScenario("no_gap_chase_3pct", 0.03, 0.0, 0.01),
@@ -60,11 +73,14 @@ SCENARIOS: tuple[PortfolioScenario, ...] = (
 PRIORITY_ORDER = {"最優先": 0, "優先": 1, "監視": 2, "見送り": 3}
 
 
-def signal_eligibility_mask(signals: pd.DataFrame) -> pd.Series:
-    """Return research eligibility while preserving the complete report calendar."""
-    if "portfolio_eligible" not in signals.columns:
+def signal_eligibility_mask(
+    signals: pd.DataFrame,
+    column: str = "portfolio_eligible",
+) -> pd.Series:
+    """Return a research eligibility mask while preserving the report calendar."""
+    if column not in signals.columns:
         return pd.Series(True, index=signals.index, dtype=bool)
-    values = signals["portfolio_eligible"]
+    values = signals[column]
     if values.dtype == bool:
         return values.fillna(False)
     return values.astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "t"})
@@ -229,12 +245,13 @@ def resolve_exit(
     price_row: dict[str, Any],
     report_day: bool,
     active_codes: set[str],
+    exit_policy: ExitPolicy = DEFAULT_EXIT_POLICY,
 ) -> tuple[str, float] | None:
     open_price = float(price_row["adjusted_open"])
     high = float(price_row["adjusted_high"])
     low = float(price_row["adjusted_low"])
     close = float(price_row["adjusted_close"])
-    trailing_stop = float(position["highest_close"]) * (1 - TRAILING_STOP_PCT)
+    trailing_stop = float(position["highest_close"]) * (1 - exit_policy.trailing_stop_pct)
     effective_stop = max(float(position["fixed_stop"]), trailing_stop)
     target = float(position["target_price"])
     stop_hit = low <= effective_stop
@@ -245,9 +262,9 @@ def resolve_exit(
         return ("STOP_CONSERVATIVE" if target_hit else "STOP", min(open_price, effective_stop))
     if target_hit:
         return "TARGET", max(open_price, target)
-    if int(position["holding_sessions"]) >= MAX_HOLDING_SESSIONS - 1:
+    if int(position["holding_sessions"]) >= exit_policy.maximum_holding_sessions - 1:
         return "TIME_EXIT", close
-    if report_day and position["code"] not in active_codes:
+    if exit_policy.use_signal_exit and report_day and position["code"] not in active_codes:
         return "SIGNAL_EXIT", close
     return None
 
@@ -257,15 +274,21 @@ def simulate_scenario(
     prices: pd.DataFrame,
     scenario: PortfolioScenario,
     initial_capital: float = INITIAL_CAPITAL,
+    exit_policy: ExitPolicy = DEFAULT_EXIT_POLICY,
 ) -> dict[str, pd.DataFrame | dict[str, Any]]:
     signal_frame = signals.copy()
     signal_frame["_report_date"] = pd.to_datetime(signal_frame["signal_date"], errors="coerce").dt.normalize()
     report_dates = set(signal_frame["_report_date"].dropna())
-    eligible_mask = signal_eligibility_mask(signal_frame)
-    entry_signals = signal_frame.loc[eligible_mask].drop(columns=["_report_date"], errors="ignore")
+    entry_eligible_mask = signal_eligibility_mask(signal_frame, "portfolio_eligible")
+    hold_eligible_mask = (
+        signal_eligibility_mask(signal_frame, "portfolio_hold_eligible")
+        if "portfolio_hold_eligible" in signal_frame.columns
+        else entry_eligible_mask.copy()
+    )
+    entry_signals = signal_frame.loc[entry_eligible_mask].drop(columns=["_report_date"], errors="ignore")
     events = build_entry_events(entry_signals, prices)
     active_codes_by_report = {pd.Timestamp(report_date).normalize(): set() for report_date in report_dates}
-    for report_date, group in signal_frame.loc[eligible_mask].groupby("_report_date"):
+    for report_date, group in signal_frame.loc[hold_eligible_mask].groupby("_report_date"):
         if pd.isna(report_date):
             continue
         active_codes_by_report[pd.Timestamp(report_date).normalize()] = set(group["code"].map(main.normalize_code))
@@ -308,7 +331,7 @@ def simulate_scenario(
             price_row = rows_by_code.get(code)
             if price_row is None:
                 continue
-            exit_signal = resolve_exit(position, price_row, report_day, active_codes)
+            exit_signal = resolve_exit(position, price_row, report_day, active_codes, exit_policy)
             if exit_signal is None and current_date == last_date:
                 exit_signal = ("END_OF_SAMPLE", float(price_row["adjusted_close"]))
             if exit_signal is None:
@@ -375,7 +398,7 @@ def simulate_scenario(
                 sector_value = sector_value_at_open(sector, positions, rows_by_code)
                 position_notional_limit = equity_open * MAX_POSITION_WEIGHT
                 sector_notional_limit = max(equity_open * MAX_SECTOR_WEIGHT - sector_value, 0.0)
-                risk_quantity = equity_open * RISK_PER_TRADE / (raw_entry * STOP_LOSS_PCT)
+                risk_quantity = equity_open * RISK_PER_TRADE / (raw_entry * exit_policy.stop_loss_pct)
                 position_quantity = position_notional_limit / raw_entry
                 sector_quantity = sector_notional_limit / raw_entry
                 participation_quantity = entry_tv * scenario.maximum_participation / raw_entry
@@ -424,8 +447,14 @@ def simulate_scenario(
                     "entry_participation": participation,
                     "entry_impact_bps": impact,
                     "cost_basis": cost,
-                    "fixed_stop": raw_entry * (1 - STOP_LOSS_PCT),
-                    "target_price": raw_entry * (1 + TARGET_GAIN_PCT),
+                    "exit_policy": exit_policy.name,
+                    "stop_loss_pct": exit_policy.stop_loss_pct,
+                    "target_gain_pct": exit_policy.target_gain_pct,
+                    "trailing_stop_pct": exit_policy.trailing_stop_pct,
+                    "maximum_holding_sessions": exit_policy.maximum_holding_sessions,
+                    "use_signal_exit": exit_policy.use_signal_exit,
+                    "fixed_stop": raw_entry * (1 - exit_policy.stop_loss_pct),
+                    "target_price": raw_entry * (1 + exit_policy.target_gain_pct),
                     "highest_close": float(price_row["adjusted_close"]),
                     "last_close": float(price_row["adjusted_close"]),
                     "holding_sessions": 1,
@@ -468,7 +497,16 @@ def simulate_scenario(
     skips_frame = pd.DataFrame(skips)
     positions_frame = pd.DataFrame(list(positions.values()))
     metrics = calculate_metrics(equity_frame, trades_frame, initial_capital, cumulative_turnover)
-    metrics.update({"scenario": scenario.name, **asdict(scenario)})
+    metrics.update({
+        "scenario": scenario.name,
+        **asdict(scenario),
+        "exit_policy": exit_policy.name,
+        "stop_loss_pct": exit_policy.stop_loss_pct,
+        "target_gain_pct": exit_policy.target_gain_pct,
+        "trailing_stop_pct": exit_policy.trailing_stop_pct,
+        "maximum_holding_sessions": exit_policy.maximum_holding_sessions,
+        "use_signal_exit": exit_policy.use_signal_exit,
+    })
     return {
         "trades": trades_frame,
         "equity": equity_frame,
