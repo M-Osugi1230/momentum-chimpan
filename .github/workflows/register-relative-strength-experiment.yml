@@ -31,10 +31,13 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Register exact strategy fingerprint
-        run: python .github/register_relative_strength_experiment.py
+        run: |
+          set -o pipefail
+          python .github/register_relative_strength_experiment.py 2>&1 | tee /tmp/register-relative-strength.log
 
       - name: Validate registry and strategy change
         run: |
+          set -o pipefail
           git fetch origin main
           mkdir -p /tmp/strategy-base
           git show origin/main:main.py > /tmp/strategy-base/main.py
@@ -44,15 +47,16 @@ jobs:
             --base-config /tmp/strategy-base/config.yaml \
             --current-main main.py \
             --current-config config.yaml \
-            --registry research/experiment_registry.yaml
+            --registry research/experiment_registry.yaml 2>&1 | tee -a /tmp/register-relative-strength.log
           python strategy_governance.py audit \
             --registry research/experiment_registry.yaml \
-            --output-dir /tmp/relative-strength-governance
+            --output-dir /tmp/relative-strength-governance 2>&1 | tee -a /tmp/register-relative-strength.log
 
       - name: Compile and focused validation
         run: |
+          set -o pipefail
           python -m py_compile main.py strategy_governance.py
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee -a /tmp/register-relative-strength.log
           import yaml
           from pathlib import Path
           import strategy_governance
@@ -68,6 +72,15 @@ jobs:
           assert registry['policy']['automatic_promotion'] is False
           print(current)
           PY
+
+      - name: Upload registration failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relative-strength-registration-log
+          path: /tmp/register-relative-strength.log
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Remove temporary files
         run: |
