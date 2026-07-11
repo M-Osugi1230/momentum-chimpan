@@ -35,7 +35,7 @@ jobs:
       - name: Compile application
         run: python -m py_compile main.py
 
-      - name: Import smoke test
+      - name: Import and safety smoke test
         run: |
           python - <<'PY'
           import importlib.util
@@ -48,7 +48,12 @@ jobs:
           spec.loader.exec_module(module)
 
           assert module.EXECUTION_MODE == "RESEARCH_AND_PAPER_ONLY"
-          assert module.APP_VERSION
+          assert module.APP_VERSION == "2026-07-11-dashboard-market-freshness-v17"
+
+          fresh = module.pd.DataFrame({"price_date": ["2026-07-13"] * 100})
+          stale = module.pd.DataFrame({"price_date": ["2026-07-10"] * 100})
+          assert module.evaluate_market_data_freshness("2026-07-13", fresh)["state_update_allowed"] is True
+          assert module.evaluate_market_data_freshness("2026-07-13", stale)["state_update_allowed"] is False
           print(module.APP_VERSION)
           PY
 
@@ -80,4 +85,16 @@ jobs:
           ]
           missing = [fragment for fragment in required_fragments if fragment not in daily_text]
           assert not missing, f"daily workflow missing durable-state controls: {missing}"
+
+          source = Path("main.py").read_text(encoding="utf-8")
+          freshness_fragments = [
+              "def evaluate_market_data_freshness(",
+              "def attach_market_data_freshness_health(",
+              "if state_update_allowed:\n        write_ranking_history",
+              "paper_result = load_existing_paper_state(regime, run_health)",
+              "state_snapshots = pd.DataFrame(columns=STATE_SNAPSHOT_COLUMNS)",
+              '"状態更新実行": "YES" if state_update_allowed else "NO"',
+          ]
+          missing_freshness = [fragment for fragment in freshness_fragments if fragment not in source]
+          assert not missing_freshness, f"market freshness guard regression: {missing_freshness}"
           PY
