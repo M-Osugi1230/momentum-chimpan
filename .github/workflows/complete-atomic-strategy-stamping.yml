@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: complete-atomic-strategy-stamping
@@ -22,6 +22,7 @@ jobs:
         with:
           ref: feature/atomic-strategy-stamping
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rebase working tree onto latest main
         run: |
@@ -98,11 +99,7 @@ jobs:
               --current-main main.py \
               --current-config config.yaml \
               --registry research/experiment_registry.yaml
-            rm -f .github/atomic_strategy_stamp_patch.py
-            rm -f .github/workflows/complete-atomic-strategy-stamping.yml
             git diff --check
-            tar --exclude=.git --exclude=output --exclude='*.pyc' --exclude=__pycache__ \
-              -czf /tmp/atomic-strategy-final-tree.tar.gz .
           } 2>&1 | tee /tmp/atomic-strategy-validation.log
 
       - name: Upload atomic stamping diagnostics
@@ -118,11 +115,27 @@ jobs:
         if: steps.validate.outcome == 'failure'
         run: exit 1
 
-      - name: Upload validated final tree
+      - name: Publish validated non-workflow changes
         if: steps.validate.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            main.py \
+            evidence_provenance.py \
+            .github/validate_workflows.py \
+            .github/test_atomic_strategy_stamp.py \
+            .github/test_evidence_provenance.py
+          if ! git diff --cached --quiet; then
+            git commit -m "Stamp strategy provenance before state snapshots"
+            git push --force-with-lease origin HEAD:feature/atomic-strategy-stamping
+          fi
+
+      - name: Upload validated final tree
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: atomic-strategy-final-tree
           path: /tmp/atomic-strategy-final-tree.tar.gz
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 1
