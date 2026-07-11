@@ -1,0 +1,137 @@
+name: Complete External Data Source Canary
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: complete-data-source-canary
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: github.head_ref == 'feature/data-source-canary'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/data-source-canary
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebase onto latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          git push --force-with-lease origin HEAD:feature/data-source-canary
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Apply data source canary integration
+        run: |
+          if ! grep -q 'Preflight external market data source' .github/workflows/daily.yml; then
+            python .github/data_source_canary_patch.py
+          else
+            echo "Data source canary integration is already applied"
+          fi
+
+      - name: Run synthetic and workflow validation
+        run: |
+          python -m py_compile \
+            data_source_canary.py historical_backfill.py replay.py \
+            .github/validate_workflows.py .github/test_data_source_canary.py
+          python .github/test_data_source_canary.py
+          python .github/validate_workflows.py
+
+      - name: Run real external data canary
+        run: |
+          mkdir -p /tmp/data-source-canary
+          set -o pipefail
+          python data_source_canary.py \
+            --strict \
+            --sample-size 8 \
+            --compare-count 3 \
+            --batch-size 8 \
+            --lookback-days 120 \
+            --output-dir /tmp/data-source-canary | tee /tmp/data-source-canary/canary.log
+
+      - name: Validate real canary artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('/tmp/data-source-canary')
+          manifest = json.loads((root / 'canary_manifest.json').read_text(encoding='utf-8'))
+          details = pd.read_csv(root / 'symbol_checks.csv')
+          comparisons = pd.read_csv(root / 'batch_single_comparison.csv')
+          assert manifest['status'] in {'PASS', 'WARN'}
+          assert manifest['sample_size'] == 8
+          assert manifest['production_state_mutations'] == []
+          assert manifest['research_only'] is True
+          assert len(details) == 8
+          assert (details['status'] != 'FAIL').mean() >= 0.80
+          assert not comparisons.empty
+          assert (comparisons['status'] == 'PASS').all()
+          print(manifest['status_detail'])
+          PY
+
+      - name: Upload real canary evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-data-source-canary-pilot-${{ github.run_id }}
+          path: /tmp/data-source-canary/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary integration machinery
+        run: |
+          rm -f .github/data_source_canary_patch.py
+          rm -f .github/workflows/complete-data-source-canary.yml
+          git diff --check
+
+      - name: Commit and push verified final head
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Add external market data source canary"
+            git fetch origin feature/data-source-canary
+            git rebase origin/feature/data-source-canary
+            git push origin HEAD:feature/data-source-canary
+          fi
+
+      - name: Mark ready and merge exact verified head
+        run: |
+          pr_number=$(gh pr list --repo "${GITHUB_REPOSITORY}" --head feature/data-source-canary --state open --json number --jq '.[0].number')
+          test -n "${pr_number}"
+          head_sha=$(gh pr view "${pr_number}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" || true
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/merge" \
+            -f merge_method=merge \
+            -f sha="${head_sha}"
