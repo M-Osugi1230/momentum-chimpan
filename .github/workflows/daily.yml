@@ -58,28 +58,39 @@ jobs:
           set -o pipefail
           python main.py 2>&1 | tee output/run.log
 
-      - name: Upload report and operational state
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: momentum-operations-${{ github.run_id }}
-          retention-days: 90
-          if-no-files-found: warn
-          path: |
-            output/daily_report.xlsx
-            output/run.log
-            data/momentum_daily_ranking.csv
-            data/market_temperature.csv
-            data/sector_leader_signal_history.csv
-            data/paper_portfolio.csv
-            data/paper_trade_history.csv
-            data/paper_equity_history.csv
-            data/execution_audit.csv
-            data/state_snapshots/**
+      - name: Write operational heartbeat
+        id: heartbeat
+        if: steps.report.outcome == 'success'
+        continue-on-error: true
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python operations.py heartbeat \
+            --report output/daily_report.xlsx \
+            --output data/operations_heartbeat.json \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-url "${RUN_URL}" \
+            --event-name "${GITHUB_EVENT_NAME}"
+
+      - name: Validate state and apply bounded retention
+        id: maintenance
+        if: steps.report.outcome == 'success' && steps.heartbeat.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python operations.py maintain \
+            --heartbeat data/operations_heartbeat.json \
+            --report output/state_maintenance.json \
+            --snapshot-root data/state_snapshots \
+            --daily-days 30 \
+            --monthly-months 12
 
       - name: Persist complete production state
+        id: persist
+        continue-on-error: true
         if: >-
           steps.report.outcome == 'success' &&
+          steps.heartbeat.outcome == 'success' &&
+          steps.maintenance.outcome == 'success' &&
           (github.event_name == 'schedule' || inputs.max_symbols == '0' || inputs.max_symbols == '')
         run: |
           git config user.name "github-actions[bot]"
@@ -93,6 +104,7 @@ jobs:
             data/paper_trade_history.csv \
             data/paper_equity_history.csv \
             data/execution_audit.csv \
+            data/operations_heartbeat.json \
             data/state_snapshots \
             data/jpx_list_cache.csv
 
@@ -120,8 +132,65 @@ jobs:
           echo "Failed to persist production state after three attempts" >&2
           exit 1
 
-      - name: Fail workflow when report generation failed
-        if: steps.report.outcome == 'failure'
+      - name: Notify operational failure
+        id: notify
+        if: >-
+          always() &&
+          (steps.report.outcome == 'failure' ||
+           steps.heartbeat.outcome == 'failure' ||
+           steps.maintenance.outcome == 'failure' ||
+           steps.persist.outcome == 'failure')
+        continue-on-error: true
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_OUTCOME: ${{ steps.report.outcome }}
+          HEARTBEAT_OUTCOME: ${{ steps.heartbeat.outcome }}
+          MAINTENANCE_OUTCOME: ${{ steps.maintenance.outcome }}
+          PERSIST_OUTCOME: ${{ steps.persist.outcome }}
         run: |
-          echo "main.py failed. Review the momentum-operations artifact and output/run.log." >&2
+          stage="report"
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
+          if [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
+          python operations.py notify \
+            --stage "${stage}" \
+            --log output/run.log \
+            --output output/ops_notification.txt \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-url "${RUN_URL}"
+
+      - name: Upload report and operational diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-operations-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            output/daily_report.xlsx
+            output/run.log
+            output/state_maintenance.json
+            output/ops_notification.txt
+            data/operations_heartbeat.json
+            data/momentum_daily_ranking.csv
+            data/market_temperature.csv
+            data/sector_leader_signal_history.csv
+            data/paper_portfolio.csv
+            data/paper_trade_history.csv
+            data/paper_equity_history.csv
+            data/execution_audit.csv
+            data/state_snapshots/**
+
+      - name: Enforce operational success
+        if: >-
+          always() &&
+          (steps.report.outcome == 'failure' ||
+           steps.heartbeat.outcome == 'failure' ||
+           steps.maintenance.outcome == 'failure' ||
+           steps.persist.outcome == 'failure')
+        run: |
+          echo "Daily workflow failed an operational gate. Review the momentum-operations artifact." >&2
           exit 1

@@ -32,8 +32,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Compile application and replay engine
-        run: python -m py_compile main.py replay.py .github/test_walk_forward_replay.py
+      - name: Compile application and operational tools
+        run: >-
+          python -m py_compile
+          main.py replay.py operations.py
+          .github/test_walk_forward_replay.py .github/test_operations.py
 
       - name: Import and safety smoke test
         run: |
@@ -78,12 +81,18 @@ jobs:
               "data/paper_trade_history.csv",
               "data/paper_equity_history.csv",
               "data/execution_audit.csv",
+              "data/operations_heartbeat.json",
               "data/state_snapshots",
-              "steps.report.outcome == 'success'",
+              "operations.py heartbeat",
+              "operations.py maintain",
+              "operations.py notify",
+              "output/state_maintenance.json",
+              "output/ops_notification.txt",
+              "steps.maintenance.outcome == 'success'",
               "git rebase origin/main",
           ]
           missing = [fragment for fragment in required_fragments if fragment not in daily_text]
-          assert not missing, f"daily workflow missing durable-state controls: {missing}"
+          assert not missing, f"daily workflow missing operational controls: {missing}"
 
           source = Path("main.py").read_text(encoding="utf-8")
           freshness_fragments = [
@@ -115,10 +124,17 @@ jobs:
           set -o pipefail
           python .github/test_walk_forward_replay.py 2>&1 | tee /tmp/walk-forward-replay-test.log
 
-      - name: Upload replay validation failure log
+      - name: Run operational controls validation
+        run: |
+          set -o pipefail
+          python .github/test_operations.py 2>&1 | tee /tmp/operations-test.log
+
+      - name: Upload validation failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: walk-forward-replay-test-log
-          path: /tmp/walk-forward-replay-test.log
+          name: momentum-validation-test-logs
+          path: |
+            /tmp/walk-forward-replay-test.log
+            /tmp/operations-test.log
           retention-days: 1
