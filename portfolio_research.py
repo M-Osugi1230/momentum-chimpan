@@ -23,7 +23,7 @@ import capacity_analysis
 import main
 import replay
 
-PORTFOLIO_RESEARCH_VERSION = "2026-07-11-execution-portfolio-v1"
+PORTFOLIO_RESEARCH_VERSION = "2026-07-11-execution-portfolio-v2-eligibility-calendar"
 DEFAULT_SIGNALS = "output/backfill/replay/replay_signals.csv"
 DEFAULT_PRICES = "output/backfill/historical_price_panel.csv"
 DEFAULT_PROVENANCE = "output/backfill/replay/evidence_provenance.json"
@@ -58,6 +58,16 @@ SCENARIOS: tuple[PortfolioScenario, ...] = (
 )
 
 PRIORITY_ORDER = {"最優先": 0, "優先": 1, "監視": 2, "見送り": 3}
+
+
+def signal_eligibility_mask(signals: pd.DataFrame) -> pd.Series:
+    """Return research eligibility while preserving the complete report calendar."""
+    if "portfolio_eligible" not in signals.columns:
+        return pd.Series(True, index=signals.index, dtype=bool)
+    values = signals["portfolio_eligible"]
+    if values.dtype == bool:
+        return values.fillna(False)
+    return values.astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "t"})
 
 
 def load_signals(path: str) -> pd.DataFrame:
@@ -248,12 +258,17 @@ def simulate_scenario(
     scenario: PortfolioScenario,
     initial_capital: float = INITIAL_CAPITAL,
 ) -> dict[str, pd.DataFrame | dict[str, Any]]:
-    events = build_entry_events(signals, prices)
-    report_dates = set(pd.to_datetime(signals["signal_date"], errors="coerce").dropna().dt.normalize())
-    active_codes_by_report = {
-        pd.Timestamp(date).normalize(): set(group["code"].map(main.normalize_code))
-        for date, group in signals.groupby(pd.to_datetime(signals["signal_date"], errors="coerce").dt.normalize())
-    }
+    signal_frame = signals.copy()
+    signal_frame["_report_date"] = pd.to_datetime(signal_frame["signal_date"], errors="coerce").dt.normalize()
+    report_dates = set(signal_frame["_report_date"].dropna())
+    eligible_mask = signal_eligibility_mask(signal_frame)
+    entry_signals = signal_frame.loc[eligible_mask].drop(columns=["_report_date"], errors="ignore")
+    events = build_entry_events(entry_signals, prices)
+    active_codes_by_report = {pd.Timestamp(report_date).normalize(): set() for report_date in report_dates}
+    for report_date, group in signal_frame.loc[eligible_mask].groupby("_report_date"):
+        if pd.isna(report_date):
+            continue
+        active_codes_by_report[pd.Timestamp(report_date).normalize()] = set(group["code"].map(main.normalize_code))
     price_by_date = {
         pd.Timestamp(date).normalize(): {
             main.normalize_code(row["code"]): row.to_dict()
