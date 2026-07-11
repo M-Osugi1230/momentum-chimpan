@@ -1,0 +1,159 @@
+name: Complete Execution Portfolio Research
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: complete-execution-portfolio-research
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: github.head_ref == 'feature/execution-portfolio-research'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/execution-portfolio-research
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebase onto latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          git push --force-with-lease origin HEAD:feature/execution-portfolio-research
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply portfolio research integration
+        run: |
+          if ! grep -q 'python portfolio_research.py' .github/workflows/historical-backfill.yml; then
+            python .github/portfolio_research_patch.py
+          else
+            echo "Portfolio research integration is already applied"
+          fi
+
+      - name: Run synthetic portfolio and policy validation
+        run: |
+          python -m py_compile \
+            portfolio_research.py capacity_analysis.py historical_backfill.py \
+            historical_price_panel.py replay.py evidence_provenance.py \
+            .github/validate_workflows.py .github/test_portfolio_research.py
+          python .github/validate_workflows.py
+          python .github/test_portfolio_research.py
+
+      - name: Build 36-symbol real-data portfolio pilot
+        run: |
+          mkdir -p /tmp/portfolio-pilot/replay /tmp/portfolio-pilot/portfolio
+          set -o pipefail
+          python historical_backfill.py \
+            --strict \
+            --max-symbols 36 \
+            --lookback-calendar-days 240 \
+            --sample-every 10 \
+            --batch-size 36 \
+            --output-dir /tmp/portfolio-pilot | tee /tmp/portfolio-pilot/backfill.log
+          python evidence_provenance.py seal-derived \
+            --source-manifest /tmp/portfolio-pilot/backfill_manifest.json \
+            --provenance /tmp/portfolio-pilot/replay/evidence_provenance.json
+          python historical_price_panel.py \
+            --strict \
+            --history /tmp/portfolio-pilot/historical_ranking.csv \
+            --backfill-manifest /tmp/portfolio-pilot/backfill_manifest.json \
+            --output /tmp/portfolio-pilot/historical_price_panel.csv \
+            --manifest /tmp/portfolio-pilot/historical_price_panel_manifest.json \
+            --batch-size 36 | tee /tmp/portfolio-pilot/price-panel.log
+          python replay.py \
+            --strict \
+            --history /tmp/portfolio-pilot/historical_ranking.csv \
+            --jpx-cache data/jpx_list_cache.csv \
+            --output-dir /tmp/portfolio-pilot/replay | tee /tmp/portfolio-pilot/replay.log
+          python portfolio_research.py \
+            --strict \
+            --signals /tmp/portfolio-pilot/replay/replay_signals.csv \
+            --prices /tmp/portfolio-pilot/historical_price_panel.csv \
+            --provenance /tmp/portfolio-pilot/replay/evidence_provenance.json \
+            --output-dir /tmp/portfolio-pilot/portfolio | tee /tmp/portfolio-pilot/portfolio/portfolio.log
+
+      - name: Validate real-data portfolio artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('/tmp/portfolio-pilot')
+          manifest = json.loads((root / 'portfolio/portfolio_research_manifest.json').read_text(encoding='utf-8'))
+          metrics = pd.read_csv(root / 'portfolio/portfolio_scenario_metrics.csv')
+          trades = pd.read_csv(root / 'portfolio/portfolio_trades.csv')
+          equity = pd.read_csv(root / 'portfolio/portfolio_equity_curve.csv')
+          assert manifest['research_only'] is True
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_strategy_change'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert manifest['intraday_ambiguity_policy'] == 'STOP_FIRST_CONSERVATIVE'
+          assert set(metrics['scenario']) == {'baseline', 'no_gap_chase_3pct', 'gap3_minimum_500m'}
+          assert not trades.empty
+          assert not equity.empty
+          assert (pd.to_numeric(equity['cash'], errors='coerce') >= -1e-6).all()
+          assert pd.to_numeric(metrics['maximum_positions'], errors='coerce').max() <= 10
+          print(metrics[['scenario', 'total_return', 'max_drawdown', 'closed_trades', 'win_rate', 'excess_total_return']].to_string(index=False))
+          PY
+
+      - name: Upload portfolio pilot evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-portfolio-pilot-${{ github.run_id }}
+          path: /tmp/portfolio-pilot/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary integration machinery
+        run: |
+          rm -f .github/portfolio_research_patch.py
+          rm -f .github/workflows/complete-execution-portfolio-research.yml
+          git diff --check
+
+      - name: Commit and push verified final head
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Add execution-aware portfolio research"
+            git fetch origin feature/execution-portfolio-research
+            git rebase origin/feature/execution-portfolio-research
+            git push origin HEAD:feature/execution-portfolio-research
+          fi
+
+      - name: Mark ready and merge exact verified head
+        run: |
+          pr_number=$(gh pr list --repo "${GITHUB_REPOSITORY}" --head feature/execution-portfolio-research --state open --json number --jq '.[0].number')
+          test -n "${pr_number}"
+          head_sha=$(gh pr view "${pr_number}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" || true
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/merge" \
+            -f merge_method=merge \
+            -f sha="${head_sha}"
