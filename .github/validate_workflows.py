@@ -95,6 +95,7 @@ def main() -> int:
         "python execution_realism.py",
         "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN",
         "execution_benchmarked_outcomes.csv",
+        "--base-cost-bps 0",
         "evidence_provenance.py governance-audit",
         "promotion_evidence_allowed",
         "contents: read",
