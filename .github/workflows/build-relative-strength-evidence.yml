@@ -98,6 +98,7 @@ jobs:
         run: |
           rm -f .github/build_relative_strength_evidence.py
           rm -f .github/workflows/build-relative-strength-evidence.yml
+          rm -f .github/workflows/relative-strength-evidence.yml
           git diff --check
 
       - name: Commit final evidence lab
