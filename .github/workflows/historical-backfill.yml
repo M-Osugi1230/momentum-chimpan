@@ -10,6 +10,7 @@ on:
       - research_scorecard.py
       - robustness_analysis.py
       - strategy_governance.py
+      - evidence_provenance.py
       - data/jpx_list_cache.csv
       - .github/workflows/historical-backfill.yml
   schedule:
@@ -97,7 +98,7 @@ jobs:
           BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
           RUN_MODE: ${{ steps.parameters.outputs.run_mode }}
         run: |
-          mkdir -p output/backfill
+          mkdir -p output/backfill/replay
           echo "run_mode=${RUN_MODE}" | tee output/backfill/workflow-mode.txt
           set -o pipefail
           python historical_backfill.py \
@@ -107,6 +108,12 @@ jobs:
             --sample-every "${SAMPLE_EVERY}" \
             --batch-size "${BATCH_SIZE}" \
             --output-dir output/backfill | tee output/backfill/backfill.log
+
+      - name: Seal derived evidence as permanently non-promotable
+        run: |
+          python evidence_provenance.py seal-derived \
+            --source-manifest output/backfill/backfill_manifest.json \
+            --provenance output/backfill/replay/evidence_provenance.json | tee output/backfill/replay/provenance.log
 
       - name: Replay backfilled research history
         run: |
@@ -135,11 +142,12 @@ jobs:
             --input output/backfill/replay/replay_benchmarked_outcomes.csv \
             --output-dir output/backfill/replay | tee output/backfill/robustness.log
 
-      - name: Audit governance without promotion eligibility
+      - name: Audit governance with non-promotable provenance
         run: |
           set -o pipefail
-          python strategy_governance.py audit \
+          python evidence_provenance.py governance-audit \
             --strict \
+            --provenance output/backfill/replay/evidence_provenance.json \
             --robustness output/backfill/replay/replay_robustness_summary.csv \
             --output-dir output/backfill/replay | tee output/backfill/governance.log
 
@@ -150,11 +158,16 @@ jobs:
           from pathlib import Path
 
           manifest = json.loads(Path('output/backfill/backfill_manifest.json').read_text(encoding='utf-8'))
+          provenance = json.loads(Path('output/backfill/replay/evidence_provenance.json').read_text(encoding='utf-8'))
+          audit = json.loads(Path('output/backfill/replay/evidence_provenance_audit.json').read_text(encoding='utf-8'))
           assert manifest['research_only'] is True
           assert manifest['promotion_evidence_allowed'] is False
           assert manifest['production_state_mutation_allowed'] is False
           assert manifest['production_state_mutations'] == []
           assert manifest['universe_bias'] == 'CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS'
+          assert provenance['evidence_origin'] == 'HISTORICAL_CURRENT_UNIVERSE_BACKFILL'
+          assert provenance['promotion_evidence_allowed'] is False
+          assert audit['provenance_valid'] is False
           PY
 
       - name: Upload historical research artifact
