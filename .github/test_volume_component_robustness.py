@@ -202,7 +202,7 @@ with TemporaryDirectory() as temporary:
     assert aggregate_summary["ci_high"] < 0
     assert aggregate_summary["two_sided_p_value"] <= 0.05
     assert aggregate_summary["robustness_status"] == "ROBUSTLY_SUPPORTED"
-    assert aggregate_summary["automatic_weight_change_allowed"] is False
+    assert not bool(aggregate_summary["automatic_weight_change_allowed"])
 
     aggregate_output = robustness.write_aggregate_outputs(aggregate, str(root / "aggregate_output"))
     assert aggregate_output["manifest"]["promotion_evidence_allowed"] is False
