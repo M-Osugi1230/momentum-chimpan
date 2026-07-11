@@ -41,7 +41,7 @@ jobs:
           strategy_governance.py evidence_provenance.py operations.py state_recovery.py
           smoke_validate.py historical_backfill.py historical_price_panel.py
           live_execution_panel.py execution_realism.py relative_strength_lifecycle.py
-          capacity_analysis.py portfolio_research.py portfolio_filter_lab.py
+          capacity_analysis.py portfolio_research.py portfolio_filter_lab.py portfolio_exit_lab.py
           .github/validate_workflows.py
           .github/test_walk_forward_replay.py .github/test_research_scorecard.py
           .github/test_robustness_analysis.py .github/test_strategy_governance.py
@@ -51,6 +51,7 @@ jobs:
           .github/test_execution_provenance.py .github/test_atomic_strategy_stamp.py
           .github/test_state_recovery.py .github/test_relative_strength_lifecycle.py
           .github/test_portfolio_research.py .github/test_portfolio_filter_lab.py
+          .github/test_portfolio_exit_lab.py
 
       - name: Import and safety smoke test
         run: |
@@ -158,6 +159,11 @@ jobs:
           set -o pipefail
           python .github/test_portfolio_filter_lab.py 2>&1 | tee /tmp/portfolio-filter-lab-test.log
 
+      - name: Run portfolio exit lab validation
+        run: |
+          set -o pipefail
+          python .github/test_portfolio_exit_lab.py 2>&1 | tee /tmp/portfolio-exit-lab-test.log
+
       - name: Run operational controls validation
         run: |
           set -o pipefail
@@ -193,6 +199,7 @@ jobs:
             /tmp/historical-relative-strength-test.log
             /tmp/portfolio-research-test.log
             /tmp/portfolio-filter-lab-test.log
+            /tmp/portfolio-exit-lab-test.log
             /tmp/operations-test.log
             /tmp/historical-backfill-test.log
             /tmp/execution-realism-test.log
