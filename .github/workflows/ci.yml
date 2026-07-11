@@ -38,10 +38,10 @@ jobs:
         run: >-
           python -m py_compile
           main.py replay.py research_scorecard.py robustness_analysis.py
-          strategy_governance.py operations.py smoke_validate.py
+          strategy_governance.py operations.py smoke_validate.py historical_backfill.py
           .github/test_walk_forward_replay.py .github/test_research_scorecard.py
           .github/test_robustness_analysis.py .github/test_strategy_governance.py
-          .github/test_operations.py
+          .github/test_operations.py .github/test_historical_backfill.py
 
       - name: Import and safety smoke test
         run: |
@@ -143,6 +143,27 @@ jobs:
           assert "git push" not in smoke_text
           assert "EMAIL_APP_PASSWORD" not in smoke_text
 
+          backfill_text = Path(".github/workflows/historical-backfill.yml").read_text(encoding="utf-8")
+          assert isinstance(yaml.safe_load(backfill_text), dict)
+          backfill_fragments = [
+              "python historical_backfill.py",
+              "--strict",
+              "--max-symbols",
+              "output/backfill/historical_ranking.csv",
+              "python replay.py",
+              "python research_scorecard.py",
+              "python robustness_analysis.py",
+              "python strategy_governance.py audit",
+              "promotion_evidence_allowed",
+              "CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS",
+              "contents: read",
+              "retention-days: 30",
+          ]
+          missing_backfill = [fragment for fragment in backfill_fragments if fragment not in backfill_text]
+          assert not missing_backfill, f"historical backfill workflow regression: {missing_backfill}"
+          assert "git push" not in backfill_text
+          assert "EMAIL_APP_PASSWORD" not in backfill_text
+
           registry = yaml.safe_load(Path("research/experiment_registry.yaml").read_text(encoding="utf-8"))
           assert registry["policy"]["automatic_promotion"] is False
           assert registry["policy"]["require_manual_approval"] is True
@@ -187,6 +208,11 @@ jobs:
           set -o pipefail
           python .github/test_operations.py 2>&1 | tee /tmp/operations-test.log
 
+      - name: Run historical backfill validation
+        run: |
+          set -o pipefail
+          python .github/test_historical_backfill.py 2>&1 | tee /tmp/historical-backfill-test.log
+
       - name: Upload validation failure logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -198,4 +224,5 @@ jobs:
             /tmp/robustness-analysis-test.log
             /tmp/strategy-governance-test.log
             /tmp/operations-test.log
+            /tmp/historical-backfill-test.log
           retention-days: 1
