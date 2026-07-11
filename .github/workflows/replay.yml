@@ -21,7 +21,7 @@ concurrency:
 jobs:
   replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +38,7 @@ jobs:
       - name: Prepare current-strategy live evidence history
         id: provenance
         run: |
-          mkdir -p output/replay
+          mkdir -p output/replay output/replay/execution
           python strategy_governance.py snapshot \
             --output output/replay/current_strategy_fingerprint.json
           python evidence_provenance.py prepare-live \
@@ -55,16 +55,16 @@ jobs:
           )
           echo "eligible_dates=${eligible_dates}" >> "${GITHUB_OUTPUT}"
 
-      - name: Record insufficient live evidence
+      - name: Record insufficient live history
         if: fromJSON(steps.provenance.outputs.eligible_dates) < 2
         run: |
           cat > output/replay/insufficient-live-evidence.txt <<EOF
           Current strategy has fewer than two fingerprint-stamped report dates.
-          Replay and statistical evidence are intentionally deferred.
+          Replay and execution evidence are intentionally deferred.
           Old-strategy and unstamped rows are not reused.
           EOF
 
-      - name: Run no-lookahead replay
+      - name: Run no-lookahead close-based diagnostic replay
         if: fromJSON(steps.provenance.outputs.eligible_dates) >= 2
         env:
           REPLAY_MAX_DATES: ${{ inputs.max_dates }}
@@ -75,30 +75,106 @@ jobs:
           fi
           python replay.py "${args[@]}" | tee output/replay/run.log
 
-      - name: Build benchmarked evidence scorecard
-        if: fromJSON(steps.provenance.outputs.eligible_dates) >= 2
+      - name: Inspect replay signals
+        id: replay_state
+        run: |
+          signal_count=$(python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          path = Path('output/replay/replay_signals.csv')
+          print(len(pd.read_csv(path)) if path.exists() else 0)
+          PY
+          )
+          echo "signal_count=${signal_count}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build close-based diagnostic evidence
+        if: fromJSON(steps.replay_state.outputs.signal_count) > 0
         run: |
           set -o pipefail
           python research_scorecard.py \
             --strict \
             --outcomes output/replay/replay_outcomes.csv \
             --history output/replay/live_strategy_history.csv \
-            --output-dir output/replay | tee output/replay/evidence.log
+            --output-dir output/replay | tee output/replay/close-evidence.log
+          python robustness_analysis.py --strict \
+            --input output/replay/replay_benchmarked_outcomes.csv \
+            --output-dir output/replay | tee output/replay/close-robustness.log
 
-      - name: Stress-test replay robustness
-        if: fromJSON(steps.provenance.outputs.eligible_dates) >= 2
+      - name: Download isolated live execution prices
+        if: fromJSON(steps.replay_state.outputs.signal_count) > 0
         run: |
           set -o pipefail
-          python robustness_analysis.py --strict | tee output/replay/robustness.log
+          python live_execution_panel.py \
+            --strict \
+            --signals output/replay/replay_signals.csv \
+            --provenance output/replay/evidence_provenance.json \
+            --output output/replay/live_execution_price_panel.csv \
+            --manifest output/replay/live_execution_price_panel_manifest.json | tee output/replay/execution-panel.log
 
-      - name: Audit strategy experiments with evidence provenance
+      - name: Simulate next-session executable evidence
+        if: fromJSON(steps.replay_state.outputs.signal_count) > 0
         run: |
           set -o pipefail
+          python execution_realism.py \
+            --signals output/replay/replay_signals.csv \
+            --prices output/replay/live_execution_price_panel.csv \
+            --ranking output/replay/live_strategy_history.csv \
+            --provenance output/replay/evidence_provenance.json \
+            --output-dir output/replay/execution | tee output/replay/execution/execution.log
+
+      - name: Inspect execution outcomes
+        id: execution_state
+        run: |
+          outcome_count=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('output/replay/execution/execution_realism_manifest.json')
+          payload = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+          print(int(payload.get('outcome_count', 0)))
+          PY
+          )
+          echo "outcome_count=${outcome_count}" >> "${GITHUB_OUTPUT}"
+
+      - name: Stress-test already-net execution evidence
+        if: fromJSON(steps.execution_state.outputs.outcome_count) > 0
+        run: |
+          set -o pipefail
+          python robustness_analysis.py --strict \
+            --base-cost-bps 0 \
+            --input output/replay/execution/execution_benchmarked_outcomes.csv \
+            --output-dir output/replay/execution | tee output/replay/execution/robustness.log
+
+      - name: Seal execution evidence provenance
+        run: |
+          if [ -f output/replay/execution/execution_realism_manifest.json ]; then
+            python evidence_provenance.py seal-execution \
+              --source-provenance output/replay/evidence_provenance.json \
+              --execution-manifest output/replay/execution/execution_realism_manifest.json \
+              --provenance output/replay/execution_evidence_provenance.json | tee output/replay/execution-provenance.log
+          else
+            cp output/replay/evidence_provenance.json output/replay/execution_evidence_provenance.json
+          fi
+
+      - name: Record insufficient executable evidence
+        if: fromJSON(steps.execution_state.outputs.outcome_count) < 100
+        run: |
+          cat > output/replay/insufficient-execution-evidence.txt <<EOF
+          Current strategy has fewer than 100 next-session executable outcomes.
+          Close-based diagnostics are not eligible for strategy promotion.
+          Promotion remains blocked until execution evidence meets policy.
+          EOF
+
+      - name: Audit strategy experiments using execution evidence only
+        run: |
+          robustness_path=output/replay/execution/replay_robustness_summary.csv
+          if [ ! -f "${robustness_path}" ]; then
+            robustness_path=output/replay/execution/no_robustness_available.csv
+          fi
           python evidence_provenance.py governance-audit \
             --strict \
-            --provenance output/replay/evidence_provenance.json \
-            --robustness output/replay/replay_robustness_summary.csv \
-            --output-dir output/replay | tee output/replay/strategy-governance.log
+            --provenance output/replay/execution_evidence_provenance.json \
+            --robustness "${robustness_path}" \
+            --output-dir output/replay/execution | tee output/replay/execution/strategy-governance.log
 
       - name: Upload replay research artifact
         if: always()
