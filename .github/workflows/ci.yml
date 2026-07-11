@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -35,9 +37,11 @@ jobs:
       - name: Compile application and research tools
         run: >-
           python -m py_compile
-          main.py replay.py research_scorecard.py robustness_analysis.py operations.py
+          main.py replay.py research_scorecard.py robustness_analysis.py
+          strategy_governance.py operations.py
           .github/test_walk_forward_replay.py .github/test_research_scorecard.py
-          .github/test_robustness_analysis.py .github/test_operations.py
+          .github/test_robustness_analysis.py .github/test_strategy_governance.py
+          .github/test_operations.py
 
       - name: Import and safety smoke test
         run: |
@@ -83,17 +87,17 @@ jobs:
               "data/paper_equity_history.csv",
               "data/execution_audit.csv",
               "data/operations_heartbeat.json",
+              "data/strategy_fingerprint.json",
               "data/state_snapshots",
               "operations.py heartbeat",
+              "strategy_governance.py snapshot",
               "operations.py maintain",
               "operations.py notify",
-              "output/state_maintenance.json",
-              "output/ops_notification.txt",
-              "steps.maintenance.outcome == 'success'",
+              "steps.strategy.outcome == 'success'",
               "git rebase origin/main",
           ]
           missing = [fragment for fragment in required_fragments if fragment not in daily_text]
-          assert not missing, f"daily workflow missing operational controls: {missing}"
+          assert not missing, f"daily workflow missing governed controls: {missing}"
 
           source = Path("main.py").read_text(encoding="utf-8")
           freshness_fragments = [
@@ -113,16 +117,33 @@ jobs:
               "python replay.py",
               "research_scorecard.py --strict",
               "robustness_analysis.py --strict",
+              "strategy_governance.py audit",
               "--strict",
               "retention-days: 90",
               "contents: read",
-              "output/replay/",
-              "evidence.log",
-              "robustness.log",
+              "strategy-governance.log",
           ]
           missing_replay = [fragment for fragment in replay_fragments if fragment not in replay_text]
           assert not missing_replay, f"replay workflow regression: {missing_replay}"
+
+          registry = yaml.safe_load(Path("research/experiment_registry.yaml").read_text(encoding="utf-8"))
+          assert registry["policy"]["automatic_promotion"] is False
+          assert registry["policy"]["require_manual_approval"] is True
           PY
+
+      - name: Enforce strategy experiment registration
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main
+          mkdir -p /tmp/strategy-base
+          git show origin/main:main.py > /tmp/strategy-base/main.py
+          git show origin/main:config.yaml > /tmp/strategy-base/config.yaml
+          python strategy_governance.py ci-check \
+            --base-main /tmp/strategy-base/main.py \
+            --base-config /tmp/strategy-base/config.yaml \
+            --current-main main.py \
+            --current-config config.yaml \
+            --registry research/experiment_registry.yaml
 
       - name: Run walk-forward replay validation
         run: |
@@ -139,6 +160,11 @@ jobs:
           set -o pipefail
           python .github/test_robustness_analysis.py 2>&1 | tee /tmp/robustness-analysis-test.log
 
+      - name: Run strategy governance validation
+        run: |
+          set -o pipefail
+          python .github/test_strategy_governance.py 2>&1 | tee /tmp/strategy-governance-test.log
+
       - name: Run operational controls validation
         run: |
           set -o pipefail
@@ -153,5 +179,6 @@ jobs:
             /tmp/walk-forward-replay-test.log
             /tmp/research-scorecard-test.log
             /tmp/robustness-analysis-test.log
+            /tmp/strategy-governance-test.log
             /tmp/operations-test.log
           retention-days: 1
