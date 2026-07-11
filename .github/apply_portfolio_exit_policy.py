@@ -128,7 +128,11 @@ replace_once(
     for report_date, group in signal_frame.loc[eligible_mask].groupby("_report_date"):
 ''',
     '''    entry_eligible_mask = signal_eligibility_mask(signal_frame, "portfolio_eligible")
-    hold_eligible_mask = signal_eligibility_mask(signal_frame, "portfolio_hold_eligible")
+    hold_eligible_mask = (
+        signal_eligibility_mask(signal_frame, "portfolio_hold_eligible")
+        if "portfolio_hold_eligible" in signal_frame.columns
+        else entry_eligible_mask.copy()
+    )
     entry_signals = signal_frame.loc[entry_eligible_mask].drop(columns=["_report_date"], errors="ignore")
     events = build_entry_events(entry_signals, prices)
     active_codes_by_report = {pd.Timestamp(report_date).normalize(): set() for report_date in report_dates}
