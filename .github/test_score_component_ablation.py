@@ -100,9 +100,10 @@ assert results["distribution_audit"]["score_multiset_equal"].all()
 assert results["rank_diagnostics"]["distribution_preserved_all_dates"].all()
 assert results["variant_signal_counts"]["lookahead_violations"].fillna(0).eq(0).all()
 assert not results["equity"].empty
+assert {"two_sided_p_value", "improvement_p_value", "harm_p_value"}.issubset(results["summary"].columns)
 assert set(results["summary"]["ablation_status"]).issubset({
     "BASELINE", "REMOVAL_IMPROVES_VALIDATED", "REMOVAL_IMPROVES_DIRECTIONAL",
-    "REMOVAL_HURTS_DIRECTIONAL", "MIXED", "INSUFFICIENT",
+    "REMOVAL_HURTS_VALIDATED", "REMOVAL_HURTS_DIRECTIONAL", "MIXED", "INSUFFICIENT",
 })
 baseline = results["summary"][results["summary"]["variant"] == "baseline"]
 assert len(baseline) == 1

@@ -198,7 +198,14 @@ def paired_sign_flip(
         - pd.to_numeric(merged["baseline"], errors="coerce").fillna(0.0)
     ).to_numpy(dtype=float)
     if len(differences) < max(10, block_length * 2):
-        return {"mean_daily_difference": None, "ci_low": None, "ci_high": None, "one_sided_p_value": None}
+        return {
+            "mean_daily_difference": None,
+            "ci_low": None,
+            "ci_high": None,
+            "two_sided_p_value": None,
+            "improvement_p_value": None,
+            "harm_p_value": None,
+        }
     observed = float(differences.mean())
     block_length = max(1, min(int(block_length), len(differences)))
     blocks = [differences[index : index + block_length] for index in range(0, len(differences), block_length)]
@@ -208,7 +215,9 @@ def paired_sign_flip(
     for iteration in range(iterations):
         signs = rng.choice(np.array([-1.0, 1.0]), size=len(block_means))
         null_means[iteration] = float(np.mean(block_means * signs))
-    p_value = float((1 + np.sum(null_means >= observed)) / (iterations + 1))
+    improvement_p_value = float((1 + np.sum(null_means >= observed)) / (iterations + 1))
+    harm_p_value = float((1 + np.sum(null_means <= observed)) / (iterations + 1))
+    two_sided_p_value = float((1 + np.sum(np.abs(null_means) >= abs(observed))) / (iterations + 1))
     # Moving-block bootstrap confidence interval for the observed mean.
     start_count = max(len(differences) - block_length + 1, 1)
     blocks_needed = int(np.ceil(len(differences) / block_length))
@@ -221,7 +230,9 @@ def paired_sign_flip(
         "mean_daily_difference": observed,
         "ci_low": float(np.quantile(boot_means, 0.025)),
         "ci_high": float(np.quantile(boot_means, 0.975)),
-        "one_sided_p_value": p_value,
+        "two_sided_p_value": two_sided_p_value,
+        "improvement_p_value": improvement_p_value,
+        "harm_p_value": harm_p_value,
     }
 
 
@@ -344,7 +355,14 @@ def run_ablation(
         early = period_metrics[(period_metrics["variant"] == variant) & (period_metrics["period"] == "early")].iloc[0]
         late = period_metrics[(period_metrics["variant"] == variant) & (period_metrics["period"] == "late")].iloc[0]
         test = (
-            {"mean_daily_difference": 0.0, "ci_low": 0.0, "ci_high": 0.0, "one_sided_p_value": None}
+            {
+                "mean_daily_difference": 0.0,
+                "ci_low": 0.0,
+                "ci_high": 0.0,
+                "two_sided_p_value": None,
+                "improvement_p_value": None,
+                "harm_p_value": None,
+            }
             if variant == "baseline"
             else paired_sign_flip(
                 simulation_results["baseline"]["full"]["equity"],
@@ -352,7 +370,7 @@ def run_ablation(
                 seed=20260711 + index,
             )
         )
-        p_values.append(test["one_sided_p_value"])
+        p_values.append(test["two_sided_p_value"])
         row = {
             "variant": variant,
             "removed_component": variant_component(variant) or "",
@@ -398,19 +416,27 @@ def run_ablation(
             and row["early_delta_excess"] <= 0
             and row["late_delta_excess"] <= 0
         )
-        statistically_supported = (
+        improvement_supported = (
             q_value is not None
             and q_value <= MAXIMUM_FDR_Q
             and row["ci_low"] is not None
             and row["ci_low"] > 0
         )
+        harm_supported = (
+            q_value is not None
+            and q_value <= MAXIMUM_FDR_Q
+            and row["ci_high"] is not None
+            and row["ci_high"] < 0
+        )
         row["sample_adequate"] = adequate
         if not adequate:
             row["ablation_status"] = "INSUFFICIENT"
-        elif removal_improves and statistically_supported:
+        elif removal_improves and improvement_supported:
             row["ablation_status"] = "REMOVAL_IMPROVES_VALIDATED"
         elif removal_improves:
             row["ablation_status"] = "REMOVAL_IMPROVES_DIRECTIONAL"
+        elif removal_hurts and harm_supported:
+            row["ablation_status"] = "REMOVAL_HURTS_VALIDATED"
         elif removal_hurts:
             row["ablation_status"] = "REMOVAL_HURTS_DIRECTIONAL"
         else:
@@ -424,9 +450,10 @@ def run_ablation(
         "REMOVAL_IMPROVES_VALIDATED": 0,
         "REMOVAL_IMPROVES_DIRECTIONAL": 1,
         "BASELINE": 2,
-        "MIXED": 3,
+        "REMOVAL_HURTS_VALIDATED": 3,
         "REMOVAL_HURTS_DIRECTIONAL": 4,
-        "INSUFFICIENT": 5,
+        "MIXED": 5,
+        "INSUFFICIENT": 6,
     }
     summary["_status_order"] = summary["ablation_status"].map(status_order).fillna(9)
     summary = summary.sort_values(
