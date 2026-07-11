@@ -32,11 +32,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Compile application and operational tools
+      - name: Compile application and research tools
         run: >-
           python -m py_compile
-          main.py replay.py operations.py
-          .github/test_walk_forward_replay.py .github/test_operations.py
+          main.py replay.py research_scorecard.py operations.py
+          .github/test_walk_forward_replay.py .github/test_research_scorecard.py
+          .github/test_operations.py
 
       - name: Import and safety smoke test
         run: |
@@ -110,10 +111,12 @@ jobs:
           assert isinstance(yaml.safe_load(replay_text), dict)
           replay_fragments = [
               "python replay.py",
+              "research_scorecard.py --strict",
               "--strict",
               "retention-days: 90",
               "contents: read",
               "output/replay/",
+              "evidence.log",
           ]
           missing_replay = [fragment for fragment in replay_fragments if fragment not in replay_text]
           assert not missing_replay, f"replay workflow regression: {missing_replay}"
@@ -123,6 +126,11 @@ jobs:
         run: |
           set -o pipefail
           python .github/test_walk_forward_replay.py 2>&1 | tee /tmp/walk-forward-replay-test.log
+
+      - name: Run benchmarked evidence validation
+        run: |
+          set -o pipefail
+          python .github/test_research_scorecard.py 2>&1 | tee /tmp/research-scorecard-test.log
 
       - name: Run operational controls validation
         run: |
@@ -136,5 +144,6 @@ jobs:
           name: momentum-validation-test-logs
           path: |
             /tmp/walk-forward-replay-test.log
+            /tmp/research-scorecard-test.log
             /tmp/operations-test.log
           retention-days: 1
