@@ -34,10 +34,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Apply portfolio eligibility calendar
+      - name: Apply portfolio eligibility calendar and permanent integration
         run: |
-          python -m py_compile .github/apply_portfolio_filter_engine.py
+          python -m py_compile \
+            .github/apply_portfolio_filter_engine.py \
+            .github/apply_portfolio_filter_integration.py
           python .github/apply_portfolio_filter_engine.py
+          python .github/apply_portfolio_filter_integration.py
 
       - name: Run synthetic and governed-system validation
         run: |
@@ -139,10 +142,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish validated engine and evidence status updates
+      - name: Publish validated permanent integration
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add portfolio_research.py portfolio_filter_lab.py
-          git commit -m "Refine portfolio filter evidence classification"
+          git add \
+            portfolio_research.py portfolio_filter_lab.py \
+            .github/workflows/ci.yml .github/workflows/historical-backfill.yml \
+            .github/validate_workflows.py
+          git commit -m "Integrate portfolio filter comparison research"
           git push origin HEAD:feature/portfolio-filter-lab
