@@ -97,7 +97,6 @@ def main() -> int:
         "execution_benchmarked_outcomes.csv",
         "evidence_provenance.py governance-audit",
         "promotion_evidence_allowed",
-        "CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS",
         "contents: read",
         "retention-days: 30",
     ])
