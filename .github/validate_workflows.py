@@ -62,9 +62,15 @@ def main() -> int:
         "python replay.py",
         "research_scorecard.py",
         "robustness_analysis.py --strict",
+        "python live_execution_panel.py",
+        "python execution_realism.py",
+        "--base-cost-bps 0",
+        "evidence_provenance.py seal-execution",
+        "execution_evidence_provenance.json",
         "evidence_provenance.py governance-audit",
         "evidence_provenance.json",
         "insufficient-live-evidence.txt",
+        "insufficient-execution-evidence.txt",
         "retention-days: 90",
         "contents: read",
     ])
@@ -122,6 +128,7 @@ def main() -> int:
     assert policy["automatic_promotion"] is False
     assert policy["require_manual_approval"] is True
     assert policy["allowed_promotion_evidence_origins"] == ["LIVE_FORWARD_RANKING_HISTORY"]
+    assert policy["required_promotion_execution_model"] == "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN"
 
     print("workflow policy validation passed")
     return 0

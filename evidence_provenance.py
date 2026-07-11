@@ -21,6 +21,8 @@ import strategy_governance
 PROVENANCE_VERSION = "2026-07-11-evidence-provenance-v1"
 LIVE_ORIGIN = "LIVE_FORWARD_RANKING_HISTORY"
 BACKFILL_ORIGIN = "HISTORICAL_CURRENT_UNIVERSE_BACKFILL"
+EXECUTION_ORIGIN = "LIVE_FORWARD_NEXT_OPEN_EXECUTION"
+REQUIRED_EXECUTION_MODEL = "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN"
 ALLOWED_LIVE_SOURCE = "data/momentum_daily_ranking.csv"
 PROVENANCE_AUDIT_COLUMNS = [
     "experiment_id",
@@ -218,6 +220,71 @@ def seal_derived_backfill(source_manifest_path: str, provenance_path: str) -> di
     return payload
 
 
+
+
+def _finite_number(value: Any) -> bool:
+    converted = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return pd.notna(converted) and float(converted) >= 0
+
+
+def seal_execution_evidence(
+    source_provenance_path: str,
+    execution_manifest_path: str,
+    provenance_path: str,
+) -> dict[str, Any]:
+    source = load_json(source_provenance_path)
+    execution = load_json(execution_manifest_path)
+    current = current_strategy_fingerprint()
+    source_fingerprint = str(source.get("strategy_fingerprint", ""))
+    execution_fingerprint = str(execution.get("strategy_fingerprint", source_fingerprint))
+    execution_model = str(execution.get("entry_model", ""))
+    same_day_allowed = execution.get("same_day_close_entry_allowed")
+    outcome_count = int(pd.to_numeric(pd.Series([execution.get("outcome_count")]), errors="coerce").fillna(0).iloc[0])
+    cost_fields = {
+        "entry_slippage_bps": execution.get("default_entry_slippage_bps"),
+        "exit_slippage_bps": execution.get("default_exit_slippage_bps"),
+        "fees_bps": execution.get("default_fees_bps"),
+    }
+    controls_valid = bool(
+        execution_model == REQUIRED_EXECUTION_MODEL
+        and same_day_allowed is False
+        and all(_finite_number(value) for value in cost_fields.values())
+        and outcome_count > 0
+    )
+    promotion_allowed = bool(
+        source.get("promotion_evidence_allowed") is True
+        and execution.get("promotion_evidence_allowed") is True
+        and source_fingerprint == current
+        and execution_fingerprint == current
+        and controls_valid
+    )
+    payload = {
+        "provenance_version": PROVENANCE_VERSION,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "evidence_origin": source.get("evidence_origin", ""),
+        "execution_origin": EXECUTION_ORIGIN,
+        "execution_evidence": True,
+        "promotion_evidence_allowed": promotion_allowed,
+        "strategy_fingerprint": source_fingerprint,
+        "source_path": source.get("source_path", ""),
+        "source_provenance_path": source_provenance_path,
+        "source_provenance_sha256": sha256_file(source_provenance_path),
+        "execution_manifest_path": execution_manifest_path,
+        "execution_manifest_sha256": sha256_file(execution_manifest_path),
+        "execution_model": execution_model,
+        "same_day_close_entry_allowed": same_day_allowed,
+        "entry_slippage_bps": cost_fields["entry_slippage_bps"],
+        "exit_slippage_bps": cost_fields["exit_slippage_bps"],
+        "fees_bps": cost_fields["fees_bps"],
+        "execution_outcome_count": outcome_count,
+        "execution_controls_valid": controls_valid,
+        "bias_flags": source.get("bias_flags", []),
+        "research_only": True,
+    }
+    atomic_write_json(payload, provenance_path)
+    return payload
+
+
 def provenance_valid(provenance: dict[str, Any], registry: dict[str, Any]) -> tuple[bool, str]:
     policy = registry.get("policy", {}) or {}
     allowed_origins = set(policy.get("allowed_promotion_evidence_origins", [LIVE_ORIGIN]))
@@ -230,6 +297,19 @@ def provenance_valid(provenance: dict[str, Any], registry: dict[str, Any]) -> tu
         return False, "evidence strategy fingerprint does not match current code"
     if origin == LIVE_ORIGIN and str(provenance.get("source_path", "")) != ALLOWED_LIVE_SOURCE:
         return False, "live evidence source path is not the governed ranking history"
+    required_execution_model = str(policy.get("required_promotion_execution_model", "")).strip()
+    if required_execution_model:
+        if provenance.get("execution_evidence") is not True:
+            return False, "promotion evidence is not sealed execution evidence"
+        if str(provenance.get("execution_model", "")) != required_execution_model:
+            return False, "execution model does not satisfy promotion policy"
+        if provenance.get("same_day_close_entry_allowed") is not False:
+            return False, "same-day close entry is not allowed for promotion"
+        for field in ("entry_slippage_bps", "exit_slippage_bps", "fees_bps"):
+            if not _finite_number(provenance.get(field)):
+                return False, f"execution cost control is missing or invalid: {field}"
+        if int(pd.to_numeric(pd.Series([provenance.get("execution_outcome_count")]), errors="coerce").fillna(0).iloc[0]) <= 0:
+            return False, "execution evidence has no outcomes"
     return True, "promotion provenance is valid"
 
 
@@ -327,6 +407,11 @@ def parse_args() -> argparse.Namespace:
     derived.add_argument("--source-manifest", required=True)
     derived.add_argument("--provenance", required=True)
 
+    execution = sub.add_parser("seal-execution")
+    execution.add_argument("--source-provenance", required=True)
+    execution.add_argument("--execution-manifest", required=True)
+    execution.add_argument("--provenance", required=True)
+
     audit = sub.add_parser("governance-audit")
     audit.add_argument("--output-dir", required=True)
     audit.add_argument("--registry", default=strategy_governance.DEFAULT_REGISTRY)
@@ -344,6 +429,10 @@ def main_cli() -> int:
         result = prepare_live_history(args.ranking, args.output, args.provenance, args.fingerprint)
     elif args.command == "seal-derived":
         result = seal_derived_backfill(args.source_manifest, args.provenance)
+    elif args.command == "seal-execution":
+        result = seal_execution_evidence(
+            args.source_provenance, args.execution_manifest, args.provenance
+        )
     else:
         result = governance_audit_with_provenance(
             args.output_dir, args.registry, args.robustness, args.provenance
