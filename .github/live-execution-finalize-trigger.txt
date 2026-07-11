@@ -1,0 +1,1 @@
+Trigger the finalized live execution evidence workflow after its definition is committed.
