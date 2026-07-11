@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       max_dates:
-        description: 'Replay the latest N stored report dates (blank = all)'
+        description: 'Replay the latest N eligible report dates (blank = all)'
         required: false
         type: string
 
@@ -35,31 +35,66 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Prepare current-strategy live evidence history
+        id: provenance
+        run: |
+          mkdir -p output/replay
+          python evidence_provenance.py prepare-live \
+            --ranking data/momentum_daily_ranking.csv \
+            --output output/replay/live_strategy_history.csv \
+            --provenance output/replay/evidence_provenance.json \
+            --fingerprint data/strategy_fingerprint.json | tee output/replay/provenance.log
+          eligible_dates=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('output/replay/evidence_provenance.json').read_text(encoding='utf-8'))
+          print(int(payload.get('eligible_date_count', 0)))
+          PY
+          )
+          echo "eligible_dates=${eligible_dates}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record insufficient live evidence
+        if: fromJSON(steps.provenance.outputs.eligible_dates) < 2
+        run: |
+          cat > output/replay/insufficient-live-evidence.txt <<EOF
+          Current strategy has fewer than two fingerprint-stamped report dates.
+          Replay and statistical evidence are intentionally deferred.
+          Old-strategy and unstamped rows are not reused.
+          EOF
+
       - name: Run no-lookahead replay
+        if: fromJSON(steps.provenance.outputs.eligible_dates) >= 2
         env:
           REPLAY_MAX_DATES: ${{ inputs.max_dates }}
         run: |
-          args=(--strict)
+          args=(--strict --history output/replay/live_strategy_history.csv)
           if [ -n "${REPLAY_MAX_DATES}" ]; then
             args+=(--max-dates "${REPLAY_MAX_DATES}")
           fi
           python replay.py "${args[@]}" | tee output/replay/run.log
 
       - name: Build benchmarked evidence scorecard
+        if: fromJSON(steps.provenance.outputs.eligible_dates) >= 2
         run: |
           set -o pipefail
-          python research_scorecard.py --strict | tee output/replay/evidence.log
+          python research_scorecard.py \
+            --strict \
+            --outcomes output/replay/replay_outcomes.csv \
+            --history output/replay/live_strategy_history.csv \
+            --output-dir output/replay | tee output/replay/evidence.log
 
       - name: Stress-test replay robustness
+        if: fromJSON(steps.provenance.outputs.eligible_dates) >= 2
         run: |
           set -o pipefail
           python robustness_analysis.py --strict | tee output/replay/robustness.log
 
-      - name: Audit strategy experiment governance
+      - name: Audit strategy experiments with evidence provenance
         run: |
           set -o pipefail
-          python strategy_governance.py audit \
+          python evidence_provenance.py governance-audit \
             --strict \
+            --provenance output/replay/evidence_provenance.json \
             --robustness output/replay/replay_robustness_summary.csv \
             --output-dir output/replay | tee output/replay/strategy-governance.log
 
