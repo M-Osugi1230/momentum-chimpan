@@ -53,6 +53,54 @@ jobs:
           {
             if ! grep -q '^def seal_execution_evidence' evidence_provenance.py; then
               test -f .github/live_execution_evidence_patch.py
+              python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/live_execution_evidence_patch.py')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          fixed = []
+          repairs = 0
+          index = 0
+          backslash = chr(92)
+          while index < len(lines):
+              line = lines[index]
+              stripped = line.strip()
+              if (
+                  stripped.startswith("'--provenance output/backfill/replay/evidence_provenance.json")
+                  and index + 1 < len(lines)
+                  and '--robustness output/backfill/execution/replay_robustness_summary.csv' in lines[index + 1]
+              ):
+                  indent = line[: len(line) - len(line.lstrip())]
+                  fixed.append(
+                      indent
+                      + "'--provenance output/backfill/replay/evidence_provenance.json "
+                      + backslash * 3
+                      + "n            --robustness output/backfill/execution/replay_robustness_summary.csv',"
+                  )
+                  index += 2
+                  repairs += 1
+                  continue
+              if (
+                  stripped.startswith("'--provenance output/backfill/execution/execution_evidence_provenance.json")
+                  and index + 1 < len(lines)
+                  and '--robustness output/backfill/execution/replay_robustness_summary.csv' in lines[index + 1]
+              ):
+                  indent = line[: len(line) - len(line.lstrip())]
+                  fixed.append(
+                      indent
+                      + "'--provenance output/backfill/execution/execution_evidence_provenance.json "
+                      + backslash * 3
+                      + "n            --robustness output/backfill/execution/replay_robustness_summary.csv',"
+                  )
+                  index += 2
+                  repairs += 1
+                  continue
+              fixed.append(line)
+              index += 1
+          if repairs != 2:
+              raise SystemExit(f'expected two quoting repairs, found {repairs}')
+          path.write_text('\n'.join(fixed) + '\n', encoding='utf-8')
+          PY
               python -m py_compile .github/live_execution_evidence_patch.py
               python .github/live_execution_evidence_patch.py
             fi
