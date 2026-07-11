@@ -46,8 +46,9 @@ jobs:
 
       - name: Apply relative strength batch
         run: |
-          python -m py_compile .github/relative_strength_patch.py
-          python .github/relative_strength_patch.py
+          set -o pipefail
+          python -m py_compile .github/relative_strength_patch.py 2>&1 | tee /tmp/relative-strength-patch.log
+          python .github/relative_strength_patch.py 2>&1 | tee -a /tmp/relative-strength-patch.log
 
       - name: Compile application
         run: python -m py_compile main.py
@@ -62,7 +63,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: relative-strength-test-log
-          path: /tmp/relative-strength-test.log
+          path: |
+            /tmp/relative-strength-patch.log
+            /tmp/relative-strength-test.log
+          if-no-files-found: ignore
           retention-days: 1
 
       - name: Clean temporary implementation files
