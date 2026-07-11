@@ -1,0 +1,73 @@
+name: Build Live Execution Evidence
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-validate:
+    if: github.head_ref == 'feature/live-execution-evidence'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/live-execution-evidence
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply live execution evidence patch
+        run: |
+          python -m py_compile .github/live_execution_evidence_patch.py
+          python .github/live_execution_evidence_patch.py
+
+      - name: Compile affected modules and tests
+        run: >-
+          python -m py_compile
+          execution_realism.py evidence_provenance.py live_execution_panel.py
+          .github/validate_workflows.py .github/test_live_execution_panel.py
+          .github/test_execution_provenance.py .github/test_evidence_provenance.py
+          .github/test_execution_realism.py
+
+      - name: Validate workflow policy
+        run: python .github/validate_workflows.py
+
+      - name: Validate live execution panel
+        run: python .github/test_live_execution_panel.py
+
+      - name: Validate execution provenance
+        run: python .github/test_execution_provenance.py
+
+      - name: Re-run existing evidence provenance tests
+        run: python .github/test_evidence_provenance.py
+
+      - name: Re-run execution realism tests
+        run: python .github/test_execution_realism.py
+
+      - name: Clean temporary implementation files
+        run: |
+          rm -f .github/live_execution_evidence_patch.py
+          rm -f .github/workflows/build-live-execution-evidence.yml
+          git diff --check
+
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Require next-session execution evidence for promotion"
+          git push origin HEAD:feature/live-execution-evidence
