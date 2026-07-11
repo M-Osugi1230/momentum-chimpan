@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import logging
 import os
@@ -25,7 +26,7 @@ import yfinance as yf
 import yaml
 from dotenv import load_dotenv
 
-APP_VERSION = "2026-07-11-dashboard-sector-momentum-v12"
+APP_VERSION = "2026-07-11-dashboard-release-readiness-v16"
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
 DISCLAIMER = "本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。"
 
@@ -562,6 +563,1496 @@ def html_sector_momentum_section(sector_momentum: pd.DataFrame, limit: int = 5) 
     )
 
 
+SECTOR_ROTATION_ORDER = {
+    "加速": 0,
+    "主導": 1,
+    "改善": 2,
+    "履歴開始": 3,
+    "減速": 4,
+    "底上げ": 5,
+    "低迷": 6,
+}
+
+SECTOR_LEADER_COLUMNS = [
+    "overall_leader_rank", "sector_leader_rank", "sector33", "sector_rank",
+    "sector_momentum_score", "sector_strength", "sector_rotation", "sector_score_delta",
+    "code", "name", "close", "price_date", "momentum_rank", "momentum_score", "sector_leader_score", "sector_leader_grade",
+    "sector_research_priority", "action_priority", "action_score", "expectancy_score",
+    "expectancy_confidence", "return_20d", "return_60d", "volume_ratio", "trading_value",
+    "ma20_deviation", "leader_reasons", "leader_cautions",
+]
+
+
+def sector_rotation_values(row: pd.Series) -> dict[str, Any]:
+    score = row_number(row, "sector_momentum_score")
+    delta_value = row.get("sector_score_delta")
+    rank_change_value = row.get("sector_rank_change")
+    has_history = delta_value is not None and not pd.isna(delta_value)
+    delta = 0.0 if not has_history else float(delta_value)
+    rank_change = 0 if rank_change_value is None or pd.isna(rank_change_value) else int(float(rank_change_value))
+
+    if not has_history:
+        state = "履歴開始"
+    elif score >= 60 and (delta >= 3 or rank_change >= 3):
+        state = "加速"
+    elif score >= 60 and delta > -3 and rank_change > -3:
+        state = "主導"
+    elif score >= 45 and (delta >= 3 or rank_change >= 3):
+        state = "改善"
+    elif score >= 45 and (delta <= -3 or rank_change <= -3):
+        state = "減速"
+    elif score < 45 and (delta >= 3 or rank_change >= 3):
+        state = "底上げ"
+    else:
+        state = "低迷"
+
+    base = min(max(score, 0.0), 100.0)
+    rotation_score = base
+    rotation_score += min(max(delta, -15.0), 15.0) * 1.3
+    rotation_score += min(max(rank_change, -10), 10) * 1.2
+    rotation_score = round(min(max(rotation_score, 0.0), 100.0), 1)
+
+    if state == "加速":
+        reason = "業種スコアまたは順位が上向き、かつ業種の絶対強度も高い"
+    elif state == "主導":
+        reason = "高い業種強度を維持"
+    elif state == "改善":
+        reason = "中立圏から順位またはスコアが改善"
+    elif state == "減速":
+        reason = "業種強度は残るが順位またはスコアが悪化"
+    elif state == "底上げ":
+        reason = "弱い水準から改善の兆し"
+    elif state == "履歴開始":
+        reason = "比較履歴を開始"
+    else:
+        reason = "業種強度と改善度がともに低い"
+
+    return {
+        "sector_rotation": state,
+        "sector_rotation_score": rotation_score,
+        "sector_rotation_reason": reason,
+    }
+
+
+def attach_sector_rotation(sector_momentum: pd.DataFrame) -> pd.DataFrame:
+    if sector_momentum is None or sector_momentum.empty:
+        columns = list(SECTOR_MOMENTUM_COLUMNS) + ["sector_rotation", "sector_rotation_score", "sector_rotation_reason"]
+        return pd.DataFrame(columns=columns)
+    result = sector_momentum.copy()
+    rotation = result.apply(lambda row: pd.Series(sector_rotation_values(row)), axis=1)
+    for column in rotation.columns:
+        result[column] = rotation[column].values
+    return result.sort_values("sector_rank").reset_index(drop=True)
+
+
+def build_sector_rotation_table(sector_momentum: pd.DataFrame, sector_leaders: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "sector_rank", "sector33", "sector_momentum_score", "sector_strength", "sector_rotation",
+        "sector_rotation_score", "sector_rotation_reason", "previous_sector_rank", "sector_rank_change",
+        "previous_sector_score", "sector_score_delta", "top100_count", "top30_count", "above_ma20_ratio",
+        "above_ma60_ratio", "top_sector_leader", "top_sector_leader_score",
+    ]
+    if sector_momentum is None or sector_momentum.empty:
+        return pd.DataFrame(columns=columns)
+    result = sector_momentum.copy()
+    if sector_leaders is not None and not sector_leaders.empty:
+        first = sector_leaders.sort_values(["sector33", "sector_leader_rank"]).drop_duplicates("sector33")
+        first = first.assign(
+            top_sector_leader=first["code"].astype(str) + " " + first["name"].astype(str),
+            top_sector_leader_score=first["sector_leader_score"],
+        )[["sector33", "top_sector_leader", "top_sector_leader_score"]]
+        result = result.merge(first, on="sector33", how="left")
+    else:
+        result["top_sector_leader"] = ""
+        result["top_sector_leader_score"] = None
+    result["sector_rotation_order"] = result["sector_rotation"].map(SECTOR_ROTATION_ORDER).fillna(99)
+    result = result.sort_values(
+        ["sector_rotation_order", "sector_rotation_score", "sector_rank"],
+        ascending=[True, False, True],
+    ).drop(columns=["sector_rotation_order"])
+    return result[[column for column in columns if column in result.columns]]
+
+
+def leader_action_priority_points(value: Any) -> int:
+    return {"A": 10, "B": 6, "C": 2, "見送り": -8}.get(optional_text(value), 0)
+
+
+def sector_leader_values(row: pd.Series) -> dict[str, Any]:
+    momentum_score = row_number(row, "score")
+    momentum_rank = int(row_number(row, "rank", 999.0))
+    sector_score = row_number(row, "sector_momentum_score")
+    rotation = optional_text(row.get("sector_rotation"))
+    trading_value = row_number(row, "trading_value")
+    volume_ratio = row_number(row, "volume_ratio")
+    return_20d = row_number(row, "return_20d")
+    ma20_deviation = row_number(row, "ma20_deviation")
+    action_priority = optional_text(row.get("action_priority"))
+    expectancy_score = row_number(row, "expectancy_score", 50.0)
+    confidence = optional_text(row.get("expectancy_confidence")) or "蓄積中"
+
+    reasons: list[str] = []
+    cautions: list[str] = []
+    score = momentum_score * 0.38 + sector_score * 0.27
+
+    if momentum_rank <= 10:
+        score += 12
+        reasons.append("Momentum上位10位")
+    elif momentum_rank <= 30:
+        score += 9
+        reasons.append("Momentum上位30位")
+    elif momentum_rank <= 60:
+        score += 6
+    elif momentum_rank <= 100:
+        score += 3
+
+    rotation_points = {"加速": 10, "主導": 7, "改善": 6, "履歴開始": 2, "減速": -3, "底上げ": 1, "低迷": -6}
+    score += rotation_points.get(rotation, 0)
+    if rotation in {"加速", "主導", "改善"}:
+        reasons.append(f"業種{rotation}")
+    elif rotation in {"減速", "低迷"}:
+        cautions.append(f"業種{rotation}")
+
+    score += leader_action_priority_points(action_priority)
+    if action_priority in {"A", "B"}:
+        reasons.append(f"既存調査優先度{action_priority}")
+    elif action_priority == "見送り":
+        cautions.append("既存調査優先度は見送り")
+
+    if expectancy_score >= 70 and confidence in {"高", "中"}:
+        score += 6
+        reasons.append(f"期待値{expectancy_score:.1f}点・信頼度{confidence}")
+    elif expectancy_score < 50:
+        score -= 3
+        cautions.append("期待値50点未満")
+
+    if trading_value >= 5_000_000_000:
+        score += 7
+        reasons.append("売買代金50億円以上")
+    elif trading_value >= 1_000_000_000:
+        score += 5
+        reasons.append("売買代金10億円以上")
+    elif trading_value >= 300_000_000:
+        score += 3
+    elif trading_value < 100_000_000:
+        score -= 15
+        cautions.append("売買代金1億円未満")
+
+    if volume_ratio >= 3:
+        score += 6
+        reasons.append(f"出来高{volume_ratio:.1f}倍")
+    elif volume_ratio >= 2:
+        score += 4
+    elif volume_ratio < 1:
+        cautions.append("出来高倍率1倍未満")
+
+    overheat = ma20_deviation >= 0.25 or return_20d >= 0.50
+    if overheat:
+        score -= 12
+        cautions.append("過熱水準")
+    elif ma20_deviation >= 0.18:
+        score -= 5
+        cautions.append(f"20日線乖離{ma20_deviation:.1%}")
+
+    score = round(min(max(score, 0.0), 100.0), 1)
+    if score >= 84 and trading_value >= 300_000_000 and not overheat and rotation in {"加速", "主導"}:
+        priority = "最優先"
+    elif score >= 72 and trading_value >= 100_000_000 and not overheat:
+        priority = "優先"
+    elif score >= 58 and trading_value >= 100_000_000:
+        priority = "監視"
+    else:
+        priority = "見送り"
+
+    grade = "S" if score >= 88 else "A" if score >= 78 else "B" if score >= 68 else "C"
+    return {
+        "sector_leader_score": score,
+        "sector_leader_grade": grade,
+        "sector_research_priority": priority,
+        "leader_reasons": " / ".join(dict.fromkeys(reasons)),
+        "leader_cautions": " / ".join(dict.fromkeys(cautions)),
+    }
+
+
+def build_sector_leaders(all_ranked: pd.DataFrame, sector_momentum: pd.DataFrame, action_priority: pd.DataFrame, limit_per_sector: int = 3) -> pd.DataFrame:
+    columns = list(SECTOR_LEADER_COLUMNS)
+    if all_ranked is None or all_ranked.empty or sector_momentum is None or sector_momentum.empty:
+        return pd.DataFrame(columns=columns)
+    sector_cols = [
+        "sector33", "sector_rank", "sector_momentum_score", "sector_strength", "sector_rotation", "sector_score_delta",
+    ]
+    candidates = all_ranked.copy()
+    candidates["sector33"] = candidates["sector33"].map(normalize_sector33)
+    candidates = candidates[(candidates["sector33"] != "") & (numeric_series(candidates, "rank") <= 100)].copy()
+    candidates = candidates.merge(sector_momentum[sector_cols].drop_duplicates("sector33"), on="sector33", how="left")
+
+    if action_priority is not None and not action_priority.empty:
+        action_cols = [
+            "code", "action_priority", "action_score", "expectancy_score", "expectancy_confidence",
+            "expectancy_evidence_count", "positive_reasons", "caution_reasons",
+        ]
+        available = [column for column in action_cols if column in action_priority.columns]
+        candidates = candidates.merge(action_priority[available].drop_duplicates("code"), on="code", how="left")
+
+    scored = candidates.apply(lambda row: pd.Series(sector_leader_values(row)), axis=1)
+    for column in scored.columns:
+        candidates[column] = scored[column].values
+    candidates = candidates[numeric_series(candidates, "trading_value") >= 50_000_000].copy()
+    candidates = candidates.sort_values(
+        ["sector33", "sector_leader_score", "rank"],
+        ascending=[True, False, True],
+    )
+    candidates["sector_leader_rank"] = candidates.groupby("sector33").cumcount() + 1
+    candidates = candidates[candidates["sector_leader_rank"] <= limit_per_sector].copy()
+    candidates = candidates.sort_values(
+        ["sector_leader_score", "sector_momentum_score", "rank"],
+        ascending=[False, False, True],
+    ).reset_index(drop=True)
+    candidates.insert(0, "overall_leader_rank", range(1, len(candidates) + 1))
+    candidates = candidates.rename(columns={"rank": "momentum_rank", "score": "momentum_score"})
+    return candidates[[column for column in columns if column in candidates.columns]]
+
+
+def sector_research_priority_count(leaders: pd.DataFrame, priority: str) -> int:
+    if leaders is None or leaders.empty or "sector_research_priority" not in leaders.columns:
+        return 0
+    return int((leaders["sector_research_priority"] == priority).sum())
+
+
+def plain_sector_rotation_section(sector_rotation: pd.DataFrame, limit: int = 8) -> list[str]:
+    if sector_rotation is None or sector_rotation.empty:
+        return ["【業種ローテーション】", "比較可能な業種履歴がありません。", ""]
+    lines = [
+        "【業種ローテーション】",
+        "業種の絶対強度と前回からのスコア・順位変化を組み合わせています。",
+    ]
+    for _, row in sector_rotation.head(limit).iterrows():
+        delta = row.get("sector_score_delta")
+        delta_text = "履歴開始" if delta is None or pd.isna(delta) else f"スコア差 {float(delta):+.1f}"
+        rank_text = sector_rank_change_text(row.get("sector_rank_change"))
+        lines.append(
+            f"#{int(row['sector_rank'])} {row['sector33']}｜{row['sector_rotation']}｜"
+            f"業種{float(row['sector_momentum_score']):.1f}点｜{delta_text}"
+            + (f"｜{rank_text}" if rank_text else "")
+        )
+        leader = optional_text(row.get("top_sector_leader"))
+        if leader:
+            lines.append(f"   リーダー: {leader} / {row_number(row, 'top_sector_leader_score'):.1f}点")
+    lines.append("")
+    return lines
+
+
+def plain_sector_leaders_section(leaders: pd.DataFrame, limit: int = 10) -> list[str]:
+    if leaders is None or leaders.empty:
+        return ["【業種リーダー候補】", "該当候補はありません。", ""]
+    counts = {value: sector_research_priority_count(leaders, value) for value in ["最優先", "優先", "監視", "見送り"]}
+    lines = [
+        "【業種リーダー候補】",
+        "売買推奨ではなく、強い・改善中の業種内で優先的に調査する銘柄です。",
+        f"最優先 {counts['最優先']}件 / 優先 {counts['優先']}件 / 監視 {counts['監視']}件 / 見送り {counts['見送り']}件",
+    ]
+    subset = leaders[leaders["sector_research_priority"].isin(["最優先", "優先", "監視"])].head(limit)
+    for _, row in subset.iterrows():
+        lines.extend([
+            f"#{int(row['overall_leader_rank'])} {row['code']} {row['name']}｜{row['sector33']} #{int(row['sector_rank'])} {row['sector_rotation']}",
+            f"   業種リーダー {row_number(row, 'sector_leader_score'):.1f}点 / 調査 {row['sector_research_priority']} / Momentum #{int(row_number(row, 'momentum_rank'))}",
+            f"   理由：{optional_text(row.get('leader_reasons')) or '-'}",
+            f"   注意：{optional_text(row.get('leader_cautions')) or '特記事項なし'}",
+            "",
+        ])
+    return lines
+
+
+def html_sector_rotation_section(sector_rotation: pd.DataFrame, limit: int = 8) -> str:
+    if sector_rotation is None or sector_rotation.empty:
+        return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>業種ローテーション</b><div style="font-size:12px;color:#64748b;margin-top:5px">比較可能な業種履歴がありません。</div></div>'
+    colors = {"加速": "#15803d", "主導": "#1d4ed8", "改善": "#0f766e", "減速": "#b45309", "底上げ": "#7c3aed", "低迷": "#64748b", "履歴開始": "#475569"}
+    items = []
+    for _, row in sector_rotation.head(limit).iterrows():
+        state = optional_text(row.get("sector_rotation"))
+        color = colors.get(state, "#475569")
+        delta = row.get("sector_score_delta")
+        delta_text = "履歴開始" if delta is None or pd.isna(delta) else f"スコア差 {float(delta):+.1f}"
+        leader = optional_text(row.get("top_sector_leader"))
+        leader_html = f'<div style="font-size:10px;color:#64748b;margin-top:3px">リーダー: {html_text(leader)} / {row_number(row, "top_sector_leader_score"):.1f}点</div>' if leader else ""
+        items.append(f'''<div style="border-top:1px solid #e5e7eb;padding:9px 0">
+<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(row["sector_rank"])} {html_text(row["sector33"])} <span style="float:right;color:{color}">{html_text(state)}</span></div>
+<div style="clear:both;font-size:11px;color:#475569">業種 {row_number(row, "sector_momentum_score"):.1f}点 ・ {html_text(delta_text)} ・ {html_text(sector_rank_change_text(row.get("sector_rank_change")))}</div>
+{leader_html}</div>''')
+    return f'''<div style="background:#fff;border:2px solid #0f766e;border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:#115e59">業種ローテーション</div>
+<div style="font-size:12px;color:#64748b;margin-top:4px">絶対強度と前回からの変化を組み合わせています。</div>
+{"".join(items)}</div>'''
+
+
+def html_sector_leaders_section(leaders: pd.DataFrame, limit: int = 10) -> str:
+    if leaders is None or leaders.empty:
+        return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>業種リーダー候補</b><div style="font-size:12px;color:#64748b;margin-top:5px">該当候補はありません。</div></div>'
+    priority_colors = {"最優先": "#14532d", "優先": "#1d4ed8", "監視": "#a16207", "見送り": "#64748b"}
+    subset = leaders[leaders["sector_research_priority"].isin(["最優先", "優先", "監視"])].head(limit)
+    items = []
+    for _, row in subset.iterrows():
+        priority = optional_text(row.get("sector_research_priority"))
+        color = priority_colors.get(priority, "#475569")
+        caution = optional_text(row.get("leader_cautions")) or "特記事項なし"
+        items.append(f'''<div style="border-top:1px solid #e5e7eb;padding:10px 0">
+<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(row["overall_leader_rank"])} {html_text(row["code"])} {html_text(row["name"])} <span style="float:right;color:{color}">{html_text(priority)} / {row_number(row, "sector_leader_score"):.1f}点</span></div>
+<div style="clear:both;font-size:11px;color:#475569">{html_text(row["sector33"])} #{int(row["sector_rank"])} {html_text(row["sector_rotation"])} ・ Momentum #{int(row_number(row, "momentum_rank"))}</div>
+<div style="font-size:11px;color:#15803d;font-weight:800;margin-top:3px">理由：{html_text(optional_text(row.get("leader_reasons")) or "-")}</div>
+<div style="font-size:11px;color:#b45309;margin-top:3px">注意：{html_text(caution)}</div>
+</div>''')
+    counts = {value: sector_research_priority_count(leaders, value) for value in ["最優先", "優先", "監視", "見送り"]}
+    return f'''<div style="background:#fff;border:2px solid #334155;border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:#0f172a">業種リーダー候補</div>
+<div style="font-size:12px;color:#64748b;margin-top:4px">強い・改善中の業種内で優先的に調査する銘柄です。売買推奨ではありません。</div>
+<div style="font-size:13px;font-weight:800;color:#334155;margin-top:8px">最優先 {counts['最優先']}件 ・ 優先 {counts['優先']}件 ・ 監視 {counts['監視']}件 ・ 見送り {counts['見送り']}件</div>
+{"".join(items)}</div>'''
+
+
+SECTOR_SIGNAL_HISTORY_COLUMNS = [
+    "signal_date", "entry_price_date", "code", "name", "sector33", "entry_close",
+    "sector_research_priority", "sector_leader_score", "sector_leader_grade",
+    "sector_rotation", "sector_momentum_score", "momentum_rank", "momentum_score",
+    "action_priority", "action_score", "expectancy_score", "expectancy_confidence",
+]
+
+SECTOR_OUTCOME_COLUMNS = [
+    "signal_date", "entry_price_date", "exit_price_date", "code", "name", "sector33",
+    "sector_research_priority", "sector_leader_grade", "sector_rotation",
+    "sector_leader_score", "horizon_days", "entry_close", "exit_close",
+    "forward_return", "win", "calendar_days",
+]
+
+
+def load_sector_signal_history(path: str) -> pd.DataFrame:
+    history_path = Path(path)
+    if not history_path.exists():
+        return pd.DataFrame(columns=SECTOR_SIGNAL_HISTORY_COLUMNS)
+    try:
+        history = pd.read_csv(history_path)
+    except Exception as exc:
+        logger.warning("Sector leader signal history could not be read: %s", exc)
+        return pd.DataFrame(columns=SECTOR_SIGNAL_HISTORY_COLUMNS)
+    if "code" in history.columns:
+        history["code"] = history["code"].map(normalize_code)
+    for column in SECTOR_SIGNAL_HISTORY_COLUMNS:
+        if column not in history.columns:
+            history[column] = None
+    return history[SECTOR_SIGNAL_HISTORY_COLUMNS]
+
+
+def current_sector_signal_snapshot(today: str, sector_leaders: pd.DataFrame) -> pd.DataFrame:
+    if sector_leaders is None or sector_leaders.empty:
+        return pd.DataFrame(columns=SECTOR_SIGNAL_HISTORY_COLUMNS)
+    rows = []
+    for _, row in sector_leaders.iterrows():
+        rows.append({
+            "signal_date": today,
+            "entry_price_date": optional_text(row.get("price_date")) or today,
+            "code": normalize_code(row.get("code")),
+            "name": optional_text(row.get("name")),
+            "sector33": optional_text(row.get("sector33")),
+            "entry_close": row_number(row, "close"),
+            "sector_research_priority": optional_text(row.get("sector_research_priority")),
+            "sector_leader_score": row_number(row, "sector_leader_score"),
+            "sector_leader_grade": optional_text(row.get("sector_leader_grade")),
+            "sector_rotation": optional_text(row.get("sector_rotation")),
+            "sector_momentum_score": row_number(row, "sector_momentum_score"),
+            "momentum_rank": int(row_number(row, "momentum_rank", 999)),
+            "momentum_score": row_number(row, "momentum_score"),
+            "action_priority": optional_text(row.get("action_priority")),
+            "action_score": row_number(row, "action_score"),
+            "expectancy_score": row_number(row, "expectancy_score", 50),
+            "expectancy_confidence": optional_text(row.get("expectancy_confidence")) or "蓄積中",
+        })
+    return pd.DataFrame(rows, columns=SECTOR_SIGNAL_HISTORY_COLUMNS)
+
+
+def update_sector_signal_history(path: str, current: pd.DataFrame) -> pd.DataFrame:
+    old = load_sector_signal_history(path)
+    frames = [frame for frame in (old, current) if frame is not None and not frame.empty]
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SECTOR_SIGNAL_HISTORY_COLUMNS)
+    if not combined.empty:
+        combined["code"] = combined["code"].map(normalize_code)
+        combined = combined.drop_duplicates(["signal_date", "code"], keep="last")
+        combined = combined.sort_values(["signal_date", "sector_leader_score", "code"], ascending=[True, False, True])
+    history_path = Path(path)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(history_path, index=False)
+    return combined[SECTOR_SIGNAL_HISTORY_COLUMNS]
+
+
+def calculate_sector_leader_outcomes(signal_history: pd.DataFrame, price_history: pd.DataFrame, horizons: tuple[int, ...] = (5, 10, 20)) -> pd.DataFrame:
+    if signal_history is None or signal_history.empty or price_history is None or price_history.empty:
+        return pd.DataFrame(columns=SECTOR_OUTCOME_COLUMNS)
+    required = {"date", "code", "close"}
+    if not required.issubset(price_history.columns):
+        return pd.DataFrame(columns=SECTOR_OUTCOME_COLUMNS)
+    prices = price_history[["date", "code", "close"]].copy()
+    prices["code"] = prices["code"].map(normalize_code)
+    prices["date_sort"] = pd.to_datetime(prices["date"], errors="coerce")
+    prices["close"] = pd.to_numeric(prices["close"], errors="coerce")
+    prices = prices.dropna(subset=["date_sort", "close"]).drop_duplicates(["code", "date_sort"], keep="last")
+    price_groups = {code: group.sort_values("date_sort") for code, group in prices.groupby("code")}
+    outcomes: list[dict[str, Any]] = []
+    for _, signal_row in signal_history.iterrows():
+        code = normalize_code(signal_row.get("code"))
+        if code not in price_groups:
+            continue
+        entry_date = pd.to_datetime(signal_row.get("entry_price_date") or signal_row.get("signal_date"), errors="coerce")
+        entry_close = pd.to_numeric(pd.Series([signal_row.get("entry_close")]), errors="coerce").iloc[0]
+        if pd.isna(entry_date) or pd.isna(entry_close) or float(entry_close) <= 0:
+            continue
+        future = price_groups[code][price_groups[code]["date_sort"] > entry_date]
+        for horizon in horizons:
+            if len(future) < horizon:
+                continue
+            exit_row = future.iloc[horizon - 1]
+            exit_close = float(exit_row["close"])
+            forward_return = exit_close / float(entry_close) - 1
+            outcomes.append({
+                "signal_date": signal_row.get("signal_date"),
+                "entry_price_date": entry_date.date().isoformat(),
+                "exit_price_date": exit_row["date_sort"].date().isoformat(),
+                "code": code,
+                "name": signal_row.get("name"),
+                "sector33": signal_row.get("sector33"),
+                "sector_research_priority": signal_row.get("sector_research_priority"),
+                "sector_leader_grade": signal_row.get("sector_leader_grade"),
+                "sector_rotation": signal_row.get("sector_rotation"),
+                "sector_leader_score": signal_row.get("sector_leader_score"),
+                "horizon_days": horizon,
+                "entry_close": float(entry_close),
+                "exit_close": exit_close,
+                "forward_return": forward_return,
+                "win": bool(forward_return > 0),
+                "calendar_days": int((exit_row["date_sort"] - entry_date).days),
+            })
+    return pd.DataFrame(outcomes, columns=SECTOR_OUTCOME_COLUMNS)
+
+
+def sector_performance_record(group_type: str, group_value: str, horizon: int, subset: pd.DataFrame) -> dict[str, Any]:
+    returns = pd.to_numeric(subset.get("forward_return", pd.Series(dtype=float)), errors="coerce").dropna()
+    wins = subset.get("win", pd.Series(dtype=bool)).fillna(False).astype(bool)
+    return {
+        "group_type": group_type,
+        "group_value": group_value,
+        "horizon_days": horizon,
+        "count": int(len(returns)),
+        "win_rate": float(wins.mean()) if len(wins) else None,
+        "average_return": float(returns.mean()) if not returns.empty else None,
+        "median_return": float(returns.median()) if not returns.empty else None,
+        "best_return": float(returns.max()) if not returns.empty else None,
+        "worst_return": float(returns.min()) if not returns.empty else None,
+        "average_leader_score": float(pd.to_numeric(subset.get("sector_leader_score", pd.Series(dtype=float)), errors="coerce").mean()) if len(subset) else None,
+    }
+
+
+def build_sector_leader_performance_summary(outcomes: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "group_type", "group_value", "horizon_days", "count", "win_rate",
+        "average_return", "median_return", "best_return", "worst_return", "average_leader_score",
+    ]
+    if outcomes is None or outcomes.empty:
+        return pd.DataFrame(columns=columns)
+    records: list[dict[str, Any]] = []
+    for horizon, horizon_rows in outcomes.groupby("horizon_days"):
+        records.append(sector_performance_record("overall", "ALL", int(horizon), horizon_rows))
+        for group_type, column in [
+            ("priority", "sector_research_priority"),
+            ("rotation", "sector_rotation"),
+            ("grade", "sector_leader_grade"),
+            ("sector", "sector33"),
+        ]:
+            for value, subset in horizon_rows.groupby(column, dropna=False):
+                value_text = optional_text(value) or "未分類"
+                records.append(sector_performance_record(group_type, value_text, int(horizon), subset))
+    result = pd.DataFrame(records, columns=columns)
+    return result.sort_values(["horizon_days", "group_type", "count", "group_value"], ascending=[True, True, False, True])
+
+
+def performance_overall_stats(summary: pd.DataFrame, horizon: int) -> dict[str, Any]:
+    if summary is None or summary.empty:
+        return {}
+    rows = summary[(summary["group_type"] == "overall") & (summary["horizon_days"] == horizon)]
+    return {} if rows.empty else rows.iloc[0].to_dict()
+
+
+def build_signal_governance(outcomes: pd.DataFrame, recent_limit: int = 20) -> pd.DataFrame:
+    columns = [
+        "scope_type", "scope_value", "horizon_days", "evidence_count", "recent_count",
+        "baseline_average_return", "recent_average_return", "return_delta",
+        "baseline_win_rate", "recent_win_rate", "win_rate_delta",
+        "status", "health_score", "recommendation",
+    ]
+    if outcomes is None or outcomes.empty:
+        return pd.DataFrame(columns=columns)
+    scopes: list[tuple[str, str, pd.DataFrame]] = [("overall", "ALL", outcomes)]
+    for scope_type, column, allowed in [
+        ("priority", "sector_research_priority", ["最優先", "優先", "監視"]),
+        ("rotation", "sector_rotation", ["加速", "主導", "改善", "減速"]),
+    ]:
+        for value in allowed:
+            subset = outcomes[outcomes.get(column, pd.Series(index=outcomes.index, dtype=str)) == value]
+            if not subset.empty:
+                scopes.append((scope_type, value, subset))
+    records: list[dict[str, Any]] = []
+    for scope_type, scope_value, scope_rows in scopes:
+        for horizon in (5, 10, 20):
+            subset = scope_rows[scope_rows["horizon_days"] == horizon].copy()
+            subset["signal_sort"] = pd.to_datetime(subset["signal_date"], errors="coerce")
+            subset = subset.sort_values("signal_sort")
+            count = len(subset)
+            if count == 0:
+                continue
+            recent = subset.tail(min(recent_limit, count))
+            baseline = subset.iloc[:-len(recent)] if count > len(recent) else subset
+            baseline_return = float(pd.to_numeric(baseline["forward_return"], errors="coerce").mean())
+            recent_return = float(pd.to_numeric(recent["forward_return"], errors="coerce").mean())
+            baseline_win = float(baseline["win"].fillna(False).astype(bool).mean())
+            recent_win = float(recent["win"].fillna(False).astype(bool).mean())
+            return_delta = recent_return - baseline_return
+            win_delta = recent_win - baseline_win
+            if count < 8:
+                status = "実績蓄積中"
+                recommendation = "判定変更を行わず、実績を蓄積"
+                health_score = 50
+            elif (recent_return < 0 <= baseline_return) or return_delta <= -0.03 or win_delta <= -0.15:
+                status = "劣化警戒"
+                recommendation = "閾値を厳格化し、対象範囲を縮小"
+                health_score = max(0, int(50 + return_delta * 500 + win_delta * 100))
+            elif return_delta >= 0.03 and win_delta >= 0.10:
+                status = "改善"
+                recommendation = "十分な実績があれば対象範囲の拡張を検討"
+                health_score = min(100, int(65 + return_delta * 300 + win_delta * 80))
+            else:
+                status = "安定"
+                recommendation = "現行閾値を維持"
+                health_score = min(100, max(0, int(60 + recent_return * 250 + (recent_win - 0.5) * 60)))
+            records.append({
+                "scope_type": scope_type,
+                "scope_value": scope_value,
+                "horizon_days": horizon,
+                "evidence_count": count,
+                "recent_count": len(recent),
+                "baseline_average_return": baseline_return,
+                "recent_average_return": recent_return,
+                "return_delta": return_delta,
+                "baseline_win_rate": baseline_win,
+                "recent_win_rate": recent_win,
+                "win_rate_delta": win_delta,
+                "status": status,
+                "health_score": health_score,
+                "recommendation": recommendation,
+            })
+    result = pd.DataFrame(records, columns=columns)
+    status_order = {"劣化警戒": 0, "実績蓄積中": 1, "安定": 2, "改善": 3}
+    result["status_order"] = result["status"].map(status_order).fillna(9)
+    return result.sort_values(["status_order", "scope_type", "horizon_days", "scope_value"]).drop(columns=["status_order"])
+
+
+def build_adaptive_threshold_recommendations(governance: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "mode", "threshold_name", "current_value", "recommended_value", "change",
+        "evidence_count", "governance_status", "reason", "activation_condition",
+    ]
+    current = {"最優先": 84, "優先": 72, "監視": 58}
+    overall = pd.DataFrame()
+    if governance is not None and not governance.empty:
+        overall = governance[(governance["scope_type"] == "overall") & (governance["horizon_days"] == 10)]
+        if overall.empty:
+            overall = governance[(governance["scope_type"] == "overall") & (governance["horizon_days"] == 5)]
+    status = "実績蓄積中" if overall.empty else optional_text(overall.iloc[0].get("status"))
+    evidence = 0 if overall.empty else int(row_number(overall.iloc[0], "evidence_count"))
+    recent_return = None if overall.empty else overall.iloc[0].get("recent_average_return")
+    recent_win = None if overall.empty else overall.iloc[0].get("recent_win_rate")
+    if status == "劣化警戒":
+        adjustments = {"最優先": 4, "優先": 4, "監視": 3}
+        reason = "直近実績の劣化を検知したため、候補抽出を厳格化"
+    elif status == "改善" and evidence >= 30 and recent_return is not None and recent_win is not None and float(recent_return) > 0.03 and float(recent_win) >= 0.60:
+        adjustments = {"最優先": -2, "優先": -2, "監視": -1}
+        reason = "十分な実績を伴う改善を確認したため、限定的な対象拡張を提案"
+    else:
+        adjustments = {"最優先": 0, "優先": 0, "監視": 0}
+        reason = "現行閾値を維持し、追加実績を蓄積"
+    records = []
+    for name, value in current.items():
+        recommended = value + adjustments[name]
+        records.append({
+            "mode": "shadow_only",
+            "threshold_name": name,
+            "current_value": value,
+            "recommended_value": recommended,
+            "change": recommended - value,
+            "evidence_count": evidence,
+            "governance_status": status,
+            "reason": reason,
+            "activation_condition": "30件以上の実績、再現テスト合格、手動レビュー後にのみ本番反映",
+        })
+    return pd.DataFrame(records, columns=columns)
+
+
+def run_health_overall(run_health: pd.DataFrame) -> str:
+    if run_health is None or run_health.empty:
+        return "UNKNOWN"
+    overall = run_health[run_health["check_name"] == "overall"]
+    return "UNKNOWN" if overall.empty else optional_text(overall.iloc[0].get("status"))
+
+
+def build_run_health(today: str, all_ranked: pd.DataFrame, top100: pd.DataFrame, sector_momentum: pd.DataFrame, sector_leaders: pd.DataFrame, errors: list[dict[str, Any]], scan_target: int, success: int) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+
+    def add(name: str, status: str, actual: Any, expected: str, detail: str) -> None:
+        rows.append({"check_name": name, "status": status, "actual": actual, "expected": expected, "detail": detail})
+
+    coverage = success / scan_target if scan_target else 0.0
+    add("scan_coverage", "PASS" if coverage >= 0.95 else "WARN" if coverage >= 0.85 else "FAIL", coverage, ">=95%", "取得成功率")
+    duplicate_codes = int(all_ranked["code"].duplicated().sum()) if all_ranked is not None and not all_ranked.empty and "code" in all_ranked.columns else 0
+    add("duplicate_codes", "PASS" if duplicate_codes == 0 else "FAIL", duplicate_codes, "0", "同一実行内の重複コード")
+    missing_sector_ratio = float((all_ranked.get("sector33", pd.Series(index=all_ranked.index, dtype=str)).fillna("").astype(str).str.strip() == "").mean()) if all_ranked is not None and not all_ranked.empty else 1.0
+    add("missing_sector_ratio", "PASS" if missing_sector_ratio <= 0.05 else "WARN" if missing_sector_ratio <= 0.15 else "FAIL", missing_sector_ratio, "<=5%", "33業種分類の欠損率")
+    latest = pd.to_datetime(all_ranked.get("price_date", pd.Series(dtype=str)), errors="coerce").max() if all_ranked is not None and not all_ranked.empty else pd.NaT
+    age_days = None if pd.isna(latest) else int((pd.to_datetime(today) - latest.normalize()).days)
+    stale_status = "FAIL" if age_days is None or age_days > 5 else "WARN" if age_days > 3 else "PASS"
+    add("price_freshness", stale_status, age_days, "<=3 calendar days", "最新株価データからの経過日数")
+    expected_top100 = min(100, len(all_ranked)) if all_ranked is not None else 0
+    top100_count = len(top100) if top100 is not None else 0
+    add("top100_count", "PASS" if top100_count == expected_top100 else "WARN", top100_count, str(expected_top100), "Momentum Top100件数")
+    sector_count = len(sector_momentum) if sector_momentum is not None else 0
+    add("sector_coverage", "PASS" if sector_count >= 25 else "WARN" if sector_count >= 15 else "FAIL", sector_count, ">=25", "集計できた33業種数")
+    leader_count = len(sector_leaders) if sector_leaders is not None else 0
+    add("sector_leader_count", "PASS" if leader_count >= 5 else "WARN" if leader_count > 0 else "FAIL", leader_count, ">=5", "業種リーダー候補数")
+    error_rate = len(errors) / scan_target if scan_target else 1.0
+    add("error_rate", "PASS" if error_rate <= 0.05 else "WARN" if error_rate <= 0.15 else "FAIL", error_rate, "<=5%", "取得失敗率")
+    invalid_scores = 0
+    if all_ranked is not None and not all_ranked.empty and "score" in all_ranked.columns:
+        scores = pd.to_numeric(all_ranked["score"], errors="coerce")
+        invalid_scores = int(((scores < 0) | (scores > 100) | scores.isna()).sum())
+    add("score_bounds", "PASS" if invalid_scores == 0 else "FAIL", invalid_scores, "0", "Momentumスコアの範囲外・欠損")
+    statuses = [row["status"] for row in rows]
+    overall = "FAIL" if "FAIL" in statuses else "WARN" if "WARN" in statuses else "PASS"
+    rows.insert(0, {"check_name": "overall", "status": overall, "actual": overall, "expected": "PASS", "detail": f"PASS {statuses.count('PASS')} / WARN {statuses.count('WARN')} / FAIL {statuses.count('FAIL')}"})
+    return pd.DataFrame(rows, columns=["check_name", "status", "actual", "expected", "detail"])
+
+
+def plain_governance_section(performance: pd.DataFrame, governance: pd.DataFrame, thresholds: pd.DataFrame, run_health: pd.DataFrame) -> list[str]:
+    lines = ["【実績検証・運用品質】", f"Run Health: {run_health_overall(run_health)}"]
+    for horizon in (5, 10, 20):
+        stats = performance_overall_stats(performance, horizon)
+        if stats:
+            lines.append(f"業種リーダー {horizon}日実績: {int(stats.get('count', 0))}件 / 勝率 {fmt_pct(stats.get('win_rate'))} / 平均 {fmt_pct(stats.get('average_return'))}")
+    alerts = governance[governance["status"] == "劣化警戒"] if governance is not None and not governance.empty else pd.DataFrame()
+    lines.append(f"劣化警戒: {len(alerts)}件")
+    for _, row in alerts.head(3).iterrows():
+        lines.append(f"  {row['scope_type']} {row['scope_value']} {int(row['horizon_days'])}日 / 直近 {fmt_pct(row.get('recent_average_return'))} / {row['recommendation']}")
+    if thresholds is not None and not thresholds.empty:
+        first = thresholds.iloc[0]
+        change_text = ", ".join(f"{row['threshold_name']} {int(row['current_value'])}→{int(row['recommended_value'])}" for _, row in thresholds.iterrows())
+        lines.append(f"閾値提案（shadow only）: {change_text} / {first['reason']}")
+    warnings = run_health[run_health["status"].isin(["WARN", "FAIL"])] if run_health is not None and not run_health.empty else pd.DataFrame()
+    for _, row in warnings.head(4).iterrows():
+        lines.append(f"  品質 {row['status']}: {row['check_name']} / 実績 {row['actual']} / 基準 {row['expected']}")
+    lines.append("")
+    return lines
+
+
+def html_governance_section(performance: pd.DataFrame, governance: pd.DataFrame, thresholds: pd.DataFrame, run_health: pd.DataFrame) -> str:
+    overall = run_health_overall(run_health)
+    health_color = "#15803d" if overall == "PASS" else "#b45309" if overall == "WARN" else "#b91c1c"
+    metrics = []
+    for horizon in (5, 10, 20):
+        stats = performance_overall_stats(performance, horizon)
+        if stats:
+            metrics.append(f'<div style="font-size:12px;color:#334155">{horizon}日: <b>{int(stats.get("count", 0))}件</b> ・ 勝率 <b>{fmt_pct(stats.get("win_rate"))}</b> ・ 平均 <b>{fmt_pct(stats.get("average_return"))}</b></div>')
+    alerts = governance[governance["status"] == "劣化警戒"] if governance is not None and not governance.empty else pd.DataFrame()
+    alert_html = "".join(f'<div style="font-size:11px;color:#b91c1c;margin-top:4px">{html_text(row["scope_type"])} {html_text(row["scope_value"])} {int(row["horizon_days"])}日 ・ 直近 {fmt_pct(row.get("recent_average_return"))} ・ {html_text(row["recommendation"])}</div>' for _, row in alerts.head(3).iterrows())
+    threshold_html = ""
+    if thresholds is not None and not thresholds.empty:
+        threshold_text = " / ".join(f'{row["threshold_name"]} {int(row["current_value"])}→{int(row["recommended_value"])}' for _, row in thresholds.iterrows())
+        threshold_html = f'<div style="font-size:11px;color:#475569;margin-top:8px"><b>閾値提案（shadow only）:</b> {html_text(threshold_text)}</div>'
+    warnings = run_health[run_health["status"].isin(["WARN", "FAIL"])] if run_health is not None and not run_health.empty else pd.DataFrame()
+    warning_html = "".join(f'<div style="font-size:11px;color:#b45309;margin-top:3px">品質 {html_text(row["status"])}: {html_text(row["check_name"])} ・ 実績 {html_text(row["actual"])} ・ 基準 {html_text(row["expected"])}</div>' for _, row in warnings.head(4).iterrows())
+    return f'''<div style="background:#fff;border:2px solid {health_color};border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:#0f172a">実績検証・運用品質 <span style="float:right;color:{health_color}">{html_text(overall)}</span></div>
+<div style="clear:both;font-size:12px;color:#64748b;margin:5px 0">業種リーダーの実績、シグナル劣化、閾値提案、データ品質を監視します。</div>
+{"".join(metrics)}<div style="font-size:12px;font-weight:800;color:#334155;margin-top:7px">劣化警戒 {len(alerts)}件</div>{alert_html}{threshold_html}{warning_html}</div>'''
+
+
+PAPER_INITIAL_CAPITAL = 10_000_000.0
+PAPER_MAX_POSITIONS = 10
+PAPER_MAX_POSITION_WEIGHT = 0.12
+PAPER_MAX_SECTOR_WEIGHT = 0.25
+PAPER_RISK_PER_TRADE = 0.01
+PAPER_LOT_SIZE = 100
+PAPER_MAX_HOLDING_DAYS = 20
+
+PAPER_POSITION_COLUMNS = [
+    "position_id", "status", "code", "name", "sector33", "entry_date", "entry_price",
+    "quantity", "cost_basis", "current_price", "market_value", "highest_close",
+    "stop_price", "target_price", "trailing_stop_pct", "holding_days",
+    "sector_research_priority", "sector_leader_score", "sector_rotation",
+    "unrealized_pnl", "unrealized_return",
+]
+
+PAPER_TRADE_HISTORY_COLUMNS = PAPER_POSITION_COLUMNS + [
+    "exit_date", "exit_price", "exit_reason", "realized_pnl", "realized_return",
+]
+
+PAPER_PLAN_COLUMNS = [
+    "plan_date", "action", "code", "name", "sector33", "entry_reference_price",
+    "quantity", "planned_value", "portfolio_weight", "stop_price", "target_price",
+    "risk_per_share", "planned_risk", "sector_research_priority", "sector_leader_score",
+    "sector_rotation", "reason", "blocked_reason",
+]
+
+PAPER_EQUITY_COLUMNS = [
+    "date", "initial_capital", "cash", "invested_cost", "market_value", "equity",
+    "realized_pnl", "unrealized_pnl", "exposure_ratio", "peak_equity", "drawdown",
+    "open_positions", "closed_trades", "win_rate",
+]
+
+RISK_BUDGET_COLUMNS = [
+    "budget_type", "label", "current_value", "limit_value", "utilization", "status", "detail",
+]
+
+
+def atomic_write_csv(frame: pd.DataFrame, path: str) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    frame.to_csv(temporary, index=False)
+    temporary.replace(target)
+
+
+def load_csv_with_columns(path: str, columns: list[str]) -> pd.DataFrame:
+    target = Path(path)
+    if not target.exists():
+        return pd.DataFrame(columns=columns)
+    try:
+        frame = pd.read_csv(target)
+    except Exception as exc:
+        logger.warning("Could not read %s: %s", path, exc)
+        return pd.DataFrame(columns=columns)
+    for column in columns:
+        if column not in frame.columns:
+            frame[column] = None
+    if "code" in frame.columns:
+        frame["code"] = frame["code"].map(normalize_code)
+    return frame[columns]
+
+
+def paper_target_exposure(regime_label: str, health_status: str) -> float:
+    base = {
+        "強気": 0.80,
+        "やや強気": 0.65,
+        "中立": 0.45,
+        "弱気": 0.20,
+        "過熱警戒": 0.30,
+    }.get(optional_text(regime_label), 0.35)
+    health = optional_text(health_status)
+    if health == "FAIL":
+        return 0.0
+    if health == "WARN":
+        return round(base * 0.50, 4)
+    return base
+
+
+def business_holding_days(entry_date: Any, current_date: Any) -> int:
+    entry = pd.to_datetime(entry_date, errors="coerce")
+    current = pd.to_datetime(current_date, errors="coerce")
+    if pd.isna(entry) or pd.isna(current) or current <= entry:
+        return 0
+    return max(len(pd.bdate_range(entry.normalize(), current.normalize())) - 1, 0)
+
+
+def current_price_lookup(all_ranked: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if all_ranked is None or all_ranked.empty or "code" not in all_ranked.columns:
+        return {}
+    lookup: dict[str, dict[str, Any]] = {}
+    for _, row in all_ranked.iterrows():
+        lookup[normalize_code(row.get("code"))] = row.to_dict()
+    return lookup
+
+
+def mark_paper_positions(
+    today: str,
+    portfolio: pd.DataFrame,
+    all_ranked: pd.DataFrame,
+    eligible_codes: set[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if portfolio is None or portfolio.empty:
+        return pd.DataFrame(columns=PAPER_POSITION_COLUMNS), pd.DataFrame(columns=PAPER_TRADE_HISTORY_COLUMNS)
+    prices = current_price_lookup(all_ranked)
+    active_rows: list[dict[str, Any]] = []
+    closed_rows: list[dict[str, Any]] = []
+    for _, source in portfolio.iterrows():
+        row = source.to_dict()
+        code = normalize_code(row.get("code"))
+        price_data = prices.get(code, {})
+        current_price = row_number(pd.Series(price_data), "close", row_number(source, "current_price", row_number(source, "entry_price")))
+        entry_price = row_number(source, "entry_price")
+        quantity = int(row_number(source, "quantity"))
+        highest_close = max(row_number(source, "highest_close", entry_price), current_price)
+        holding_days = business_holding_days(source.get("entry_date"), today)
+        stop_price = row_number(source, "stop_price", entry_price * 0.92)
+        target_price = row_number(source, "target_price", entry_price * 1.16)
+        trailing_stop_pct = row_number(source, "trailing_stop_pct", 0.10)
+        trailing_price = highest_close * (1 - trailing_stop_pct)
+        exit_reason = ""
+        if current_price <= stop_price:
+            exit_reason = "STOP_LOSS"
+        elif current_price >= target_price:
+            exit_reason = "TAKE_PROFIT"
+        elif holding_days >= 5 and current_price <= trailing_price:
+            exit_reason = "TRAILING_STOP"
+        elif holding_days >= PAPER_MAX_HOLDING_DAYS:
+            exit_reason = "TIME_EXIT"
+        elif holding_days >= 5 and code not in eligible_codes:
+            exit_reason = "SIGNAL_EXIT"
+        market_value = current_price * quantity
+        cost_basis = entry_price * quantity
+        unrealized_pnl = market_value - cost_basis
+        common = {
+            **row,
+            "code": code,
+            "status": "OPEN" if not exit_reason else "CLOSED",
+            "current_price": current_price,
+            "market_value": market_value,
+            "highest_close": highest_close,
+            "holding_days": holding_days,
+            "unrealized_pnl": unrealized_pnl if not exit_reason else 0.0,
+            "unrealized_return": current_price / entry_price - 1 if entry_price else None,
+        }
+        if exit_reason:
+            realized_pnl = (current_price - entry_price) * quantity
+            closed_rows.append({
+                **common,
+                "exit_date": today,
+                "exit_price": current_price,
+                "exit_reason": exit_reason,
+                "realized_pnl": realized_pnl,
+                "realized_return": current_price / entry_price - 1 if entry_price else None,
+            })
+        else:
+            active_rows.append(common)
+    active = pd.DataFrame(active_rows)
+    closed = pd.DataFrame(closed_rows)
+    for column in PAPER_POSITION_COLUMNS:
+        if column not in active.columns:
+            active[column] = None
+    for column in PAPER_TRADE_HISTORY_COLUMNS:
+        if column not in closed.columns:
+            closed[column] = None
+    return active[PAPER_POSITION_COLUMNS], closed[PAPER_TRADE_HISTORY_COLUMNS]
+
+
+def paper_portfolio_totals(
+    portfolio: pd.DataFrame,
+    trade_history: pd.DataFrame,
+    initial_capital: float = PAPER_INITIAL_CAPITAL,
+) -> dict[str, float]:
+    realized = float(pd.to_numeric(trade_history.get("realized_pnl", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if trade_history is not None and not trade_history.empty else 0.0
+    cost = float(pd.to_numeric(portfolio.get("cost_basis", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if portfolio is not None and not portfolio.empty else 0.0
+    market_value = float(pd.to_numeric(portfolio.get("market_value", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if portfolio is not None and not portfolio.empty else 0.0
+    unrealized = market_value - cost
+    cash = initial_capital + realized - cost
+    equity = cash + market_value
+    return {
+        "initial_capital": initial_capital,
+        "realized_pnl": realized,
+        "invested_cost": cost,
+        "market_value": market_value,
+        "unrealized_pnl": unrealized,
+        "cash": cash,
+        "equity": equity,
+        "exposure_ratio": market_value / equity if equity > 0 else 0.0,
+    }
+
+
+def build_paper_trade_plan(
+    today: str,
+    sector_leaders: pd.DataFrame,
+    portfolio: pd.DataFrame,
+    trade_history: pd.DataFrame,
+    regime: dict[str, Any],
+    run_health: pd.DataFrame,
+    blocked_codes: set[str] | None = None,
+    initial_capital: float = PAPER_INITIAL_CAPITAL,
+) -> pd.DataFrame:
+    if sector_leaders is None or sector_leaders.empty:
+        return pd.DataFrame(columns=PAPER_PLAN_COLUMNS)
+    health_status = run_health_overall(run_health)
+    target_exposure = paper_target_exposure(optional_text(regime.get("label")), health_status)
+    if target_exposure <= 0:
+        return pd.DataFrame(columns=PAPER_PLAN_COLUMNS)
+    totals = paper_portfolio_totals(portfolio, trade_history, initial_capital)
+    equity = totals["equity"]
+    target_market_value = max(equity * target_exposure, 0.0)
+    available_value = max(target_market_value - totals["market_value"], 0.0)
+    slots = max(PAPER_MAX_POSITIONS - len(portfolio), 0)
+    if slots <= 0 or available_value <= 0:
+        return pd.DataFrame(columns=PAPER_PLAN_COLUMNS)
+    existing_codes = set(portfolio.get("code", pd.Series(dtype=str)).map(normalize_code)) if portfolio is not None and not portfolio.empty else set()
+    blocked = {normalize_code(code) for code in (blocked_codes or set())}
+    sector_used: dict[str, float] = {}
+    if portfolio is not None and not portfolio.empty:
+        for sector, group in portfolio.groupby("sector33"):
+            sector_used[optional_text(sector)] = float(pd.to_numeric(group["market_value"], errors="coerce").fillna(0).sum())
+    candidates = sector_leaders[sector_leaders["sector_research_priority"].isin(["最優先", "優先"])].copy()
+    candidates = candidates.sort_values(["sector_research_priority", "sector_leader_score", "momentum_rank"], ascending=[True, False, True])
+    rows: list[dict[str, Any]] = []
+    planned_total = 0.0
+    for _, candidate in candidates.iterrows():
+        if len(rows) >= slots:
+            break
+        code = normalize_code(candidate.get("code"))
+        if code in existing_codes or code in blocked:
+            continue
+        entry = row_number(candidate, "close")
+        if entry <= 0:
+            continue
+        sector = optional_text(candidate.get("sector33")) or "未分類"
+        max_position_value = equity * PAPER_MAX_POSITION_WEIGHT
+        sector_remaining = max(equity * PAPER_MAX_SECTOR_WEIGHT - sector_used.get(sector, 0.0), 0.0)
+        remaining_target = max(available_value - planned_total, 0.0)
+        allocation_cap = min(max_position_value, sector_remaining, remaining_target)
+        if allocation_cap < entry * PAPER_LOT_SIZE:
+            continue
+        stop_pct = 0.07 if optional_text(regime.get("label")) in {"強気", "やや強気"} else 0.08
+        if optional_text(regime.get("label")) == "過熱警戒":
+            stop_pct = 0.06
+        stop_price = round(entry * (1 - stop_pct), 2)
+        risk_per_share = entry - stop_price
+        risk_budget = equity * PAPER_RISK_PER_TRADE
+        quantity_by_value = int(allocation_cap // (entry * PAPER_LOT_SIZE)) * PAPER_LOT_SIZE
+        quantity_by_risk = int(risk_budget // (risk_per_share * PAPER_LOT_SIZE)) * PAPER_LOT_SIZE if risk_per_share > 0 else 0
+        quantity = min(quantity_by_value, quantity_by_risk)
+        if quantity < PAPER_LOT_SIZE:
+            continue
+        planned_value = entry * quantity
+        planned_risk = risk_per_share * quantity
+        target_price = round(entry + risk_per_share * 2.0, 2)
+        rows.append({
+            "plan_date": today,
+            "action": "PAPER_OPEN",
+            "code": code,
+            "name": optional_text(candidate.get("name")),
+            "sector33": sector,
+            "entry_reference_price": entry,
+            "quantity": quantity,
+            "planned_value": planned_value,
+            "portfolio_weight": planned_value / equity if equity > 0 else 0.0,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "risk_per_share": risk_per_share,
+            "planned_risk": planned_risk,
+            "sector_research_priority": optional_text(candidate.get("sector_research_priority")),
+            "sector_leader_score": row_number(candidate, "sector_leader_score"),
+            "sector_rotation": optional_text(candidate.get("sector_rotation")),
+            "reason": f"業種{optional_text(candidate.get('sector_rotation'))} / リーダー{row_number(candidate, 'sector_leader_score'):.1f}点 / Run Health {health_status}",
+            "blocked_reason": "",
+        })
+        planned_total += planned_value
+        sector_used[sector] = sector_used.get(sector, 0.0) + planned_value
+    return pd.DataFrame(rows, columns=PAPER_PLAN_COLUMNS)
+
+
+def apply_paper_trade_plan(today: str, portfolio: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
+    active = portfolio.copy() if portfolio is not None else pd.DataFrame(columns=PAPER_POSITION_COLUMNS)
+    if plan is None or plan.empty:
+        return active[PAPER_POSITION_COLUMNS]
+    new_rows: list[dict[str, Any]] = []
+    for _, row in plan.iterrows():
+        entry = row_number(row, "entry_reference_price")
+        quantity = int(row_number(row, "quantity"))
+        code = normalize_code(row.get("code"))
+        new_rows.append({
+            "position_id": f"{today}-{code}",
+            "status": "OPEN",
+            "code": code,
+            "name": optional_text(row.get("name")),
+            "sector33": optional_text(row.get("sector33")),
+            "entry_date": today,
+            "entry_price": entry,
+            "quantity": quantity,
+            "cost_basis": entry * quantity,
+            "current_price": entry,
+            "market_value": entry * quantity,
+            "highest_close": entry,
+            "stop_price": row_number(row, "stop_price"),
+            "target_price": row_number(row, "target_price"),
+            "trailing_stop_pct": 0.10,
+            "holding_days": 0,
+            "sector_research_priority": optional_text(row.get("sector_research_priority")),
+            "sector_leader_score": row_number(row, "sector_leader_score"),
+            "sector_rotation": optional_text(row.get("sector_rotation")),
+            "unrealized_pnl": 0.0,
+            "unrealized_return": 0.0,
+        })
+    combined = pd.concat([active, pd.DataFrame(new_rows)], ignore_index=True)
+    combined = combined.drop_duplicates("position_id", keep="last")
+    return combined[PAPER_POSITION_COLUMNS]
+
+
+def append_paper_trade_history(history: pd.DataFrame, closed: pd.DataFrame) -> pd.DataFrame:
+    frames = [frame for frame in (history, closed) if frame is not None and not frame.empty]
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=PAPER_TRADE_HISTORY_COLUMNS)
+    if not combined.empty:
+        combined = combined.drop_duplicates("position_id", keep="last").sort_values(["exit_date", "position_id"])
+    for column in PAPER_TRADE_HISTORY_COLUMNS:
+        if column not in combined.columns:
+            combined[column] = None
+    return combined[PAPER_TRADE_HISTORY_COLUMNS]
+
+
+def build_risk_budget(
+    portfolio: pd.DataFrame,
+    totals: dict[str, float],
+    regime: dict[str, Any],
+    run_health: pd.DataFrame,
+) -> pd.DataFrame:
+    health = run_health_overall(run_health)
+    target_exposure = paper_target_exposure(optional_text(regime.get("label")), health)
+    rows: list[dict[str, Any]] = []
+
+    def add(kind: str, label: str, current: float, limit: float, detail: str) -> None:
+        utilization = current / limit if limit > 0 else 0.0
+        status = "PASS" if current <= limit + 1e-9 else "FAIL"
+        rows.append({
+            "budget_type": kind,
+            "label": label,
+            "current_value": current,
+            "limit_value": limit,
+            "utilization": utilization,
+            "status": status,
+            "detail": detail,
+        })
+
+    equity = totals.get("equity", PAPER_INITIAL_CAPITAL)
+    add("portfolio", "投資比率", totals.get("exposure_ratio", 0.0), target_exposure, f"Market Regime {optional_text(regime.get('label'))} / Run Health {health}")
+    add("portfolio", "保有銘柄数", float(len(portfolio)), float(PAPER_MAX_POSITIONS), "最大10銘柄")
+    if portfolio is not None and not portfolio.empty and equity > 0:
+        for sector, group in portfolio.groupby("sector33"):
+            sector_value = float(pd.to_numeric(group["market_value"], errors="coerce").fillna(0).sum())
+            add("sector", optional_text(sector) or "未分類", sector_value / equity, PAPER_MAX_SECTOR_WEIGHT, "1業種25%上限")
+        for _, row in portfolio.iterrows():
+            add("position", normalize_code(row.get("code")), row_number(row, "market_value") / equity, PAPER_MAX_POSITION_WEIGHT, "1銘柄12%上限")
+    return pd.DataFrame(rows, columns=RISK_BUDGET_COLUMNS)
+
+
+def update_paper_equity_history(
+    path: str,
+    today: str,
+    totals: dict[str, float],
+    portfolio: pd.DataFrame,
+    trade_history: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    old = load_csv_with_columns(path, PAPER_EQUITY_COLUMNS)
+    closed_count = len(trade_history) if trade_history is not None else 0
+    wins = int((pd.to_numeric(trade_history.get("realized_pnl", pd.Series(dtype=float)), errors="coerce").fillna(0) > 0).sum()) if trade_history is not None and not trade_history.empty else 0
+    win_rate = wins / closed_count if closed_count else None
+    prior_peak = float(pd.to_numeric(old.get("equity", pd.Series(dtype=float)), errors="coerce").max()) if not old.empty else totals["equity"]
+    peak = max(prior_peak, totals["equity"])
+    drawdown = totals["equity"] / peak - 1 if peak > 0 else 0.0
+    current = pd.DataFrame([{
+        "date": today,
+        **totals,
+        "peak_equity": peak,
+        "drawdown": drawdown,
+        "open_positions": len(portfolio),
+        "closed_trades": closed_count,
+        "win_rate": win_rate,
+    }], columns=PAPER_EQUITY_COLUMNS)
+    combined = pd.concat([old, current], ignore_index=True).drop_duplicates("date", keep="last").sort_values("date")
+    atomic_write_csv(combined, path)
+    return combined, current.iloc[0].to_dict()
+
+
+def run_paper_portfolio(
+    today: str,
+    all_ranked: pd.DataFrame,
+    sector_leaders: pd.DataFrame,
+    regime: dict[str, Any],
+    run_health: pd.DataFrame,
+    portfolio_path: str = "data/paper_portfolio.csv",
+    trade_history_path: str = "data/paper_trade_history.csv",
+    equity_history_path: str = "data/paper_equity_history.csv",
+    initial_capital: float = PAPER_INITIAL_CAPITAL,
+) -> dict[str, Any]:
+    portfolio = load_csv_with_columns(portfolio_path, PAPER_POSITION_COLUMNS)
+    trade_history = load_csv_with_columns(trade_history_path, PAPER_TRADE_HISTORY_COLUMNS)
+    eligible_codes = set(
+        sector_leaders[sector_leaders["sector_research_priority"].isin(["最優先", "優先"])]["code"].map(normalize_code)
+    ) if sector_leaders is not None and not sector_leaders.empty else set()
+    marked, closed_today = mark_paper_positions(today, portfolio, all_ranked, eligible_codes)
+    trade_history = append_paper_trade_history(trade_history, closed_today)
+    blocked_codes = set(closed_today.get("code", pd.Series(dtype=str)).map(normalize_code)) if not closed_today.empty else set()
+    plan = build_paper_trade_plan(today, sector_leaders, marked, trade_history, regime, run_health, blocked_codes, initial_capital)
+    portfolio = apply_paper_trade_plan(today, marked, plan)
+    totals = paper_portfolio_totals(portfolio, trade_history, initial_capital)
+    risk_budget = build_risk_budget(portfolio, totals, regime, run_health)
+    equity_history, performance = update_paper_equity_history(equity_history_path, today, totals, portfolio, trade_history)
+    atomic_write_csv(portfolio, portfolio_path)
+    atomic_write_csv(trade_history, trade_history_path)
+    return {
+        "portfolio": portfolio,
+        "plan": plan,
+        "trade_history": trade_history,
+        "risk_budget": risk_budget,
+        "equity_history": equity_history,
+        "performance": pd.DataFrame([performance]),
+        "closed_today": closed_today,
+    }
+
+
+def plain_paper_portfolio_section(
+    portfolio: pd.DataFrame,
+    plan: pd.DataFrame,
+    performance: pd.DataFrame,
+    risk_budget: pd.DataFrame,
+) -> list[str]:
+    perf = {} if performance is None or performance.empty else performance.iloc[0].to_dict()
+    lines = [
+        "【ペーパーポートフォリオ】",
+        "実注文は行いません。終値ベースの仮想検証で、売買推奨ではありません。",
+        f"資産 {fmt_num(perf.get('equity'), 0)}円 / 現金 {fmt_num(perf.get('cash'), 0)}円 / 投資比率 {fmt_pct(perf.get('exposure_ratio'))}",
+        f"実現損益 {fmt_num(perf.get('realized_pnl'), 0)}円 / 含み損益 {fmt_num(perf.get('unrealized_pnl'), 0)}円 / DD {fmt_pct(perf.get('drawdown'))}",
+        f"保有 {len(portfolio) if portfolio is not None else 0}件 / 本日の新規計画 {len(plan) if plan is not None else 0}件",
+    ]
+    if plan is not None and not plan.empty:
+        for _, row in plan.head(5).iterrows():
+            lines.append(f"  OPEN {row['code']} {row['name']} / {int(row['quantity'])}株 / {fmt_price(row['entry_reference_price'])} / 損切 {fmt_price(row['stop_price'])} / 目標 {fmt_price(row['target_price'])}")
+    failures = risk_budget[risk_budget["status"] == "FAIL"] if risk_budget is not None and not risk_budget.empty else pd.DataFrame()
+    for _, row in failures.head(3).iterrows():
+        lines.append(f"  リスク超過: {row['label']} {fmt_pct(row['current_value'])} > {fmt_pct(row['limit_value'])}")
+    lines.append("")
+    return lines
+
+
+def html_paper_portfolio_section(
+    portfolio: pd.DataFrame,
+    plan: pd.DataFrame,
+    performance: pd.DataFrame,
+    risk_budget: pd.DataFrame,
+) -> str:
+    perf = {} if performance is None or performance.empty else performance.iloc[0].to_dict()
+    failures = risk_budget[risk_budget["status"] == "FAIL"] if risk_budget is not None and not risk_budget.empty else pd.DataFrame()
+    plan_items = "".join(
+        f'<div style="border-top:1px solid #e5e7eb;padding:8px 0;font-size:11px;color:#334155"><b>OPEN {html_text(row["code"])} {html_text(row["name"])}</b> ・ {int(row["quantity"])}株 ・ {fmt_price(row["entry_reference_price"])} ・ 損切 {fmt_price(row["stop_price"])} ・ 目標 {fmt_price(row["target_price"])}</div>'
+        for _, row in (plan.head(5).iterrows() if plan is not None and not plan.empty else [])
+    )
+    fail_html = "".join(
+        f'<div style="font-size:11px;color:#b91c1c;margin-top:3px">リスク超過: {html_text(row["label"])} {fmt_pct(row["current_value"])} &gt; {fmt_pct(row["limit_value"])}</div>'
+        for _, row in failures.head(3).iterrows()
+    )
+    return f'''<div style="background:#fff;border:2px solid #7c3aed;border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:#581c87">ペーパーポートフォリオ</div>
+<div style="font-size:11px;color:#64748b;margin-top:4px">実注文は行わない終値ベースの仮想検証です。売買推奨ではありません。</div>
+<div style="font-size:13px;color:#334155;margin-top:8px">資産 <b>{fmt_num(perf.get('equity'), 0)}円</b> ・ 現金 <b>{fmt_num(perf.get('cash'), 0)}円</b> ・ 投資比率 <b>{fmt_pct(perf.get('exposure_ratio'))}</b></div>
+<div style="font-size:12px;color:#475569">実現損益 {fmt_num(perf.get('realized_pnl'), 0)}円 ・ 含み損益 {fmt_num(perf.get('unrealized_pnl'), 0)}円 ・ DD {fmt_pct(perf.get('drawdown'))}</div>
+<div style="font-size:12px;font-weight:800;color:#334155;margin-top:6px">保有 {len(portfolio) if portfolio is not None else 0}件 ・ 本日の新規計画 {len(plan) if plan is not None else 0}件</div>{plan_items}{fail_html}</div>'''
+
+
+STATE_SCHEMA_VERSION = "1.0"
+EXECUTION_MODE = "RESEARCH_AND_PAPER_ONLY"
+
+RELEASE_READINESS_COLUMNS = [
+    "release_status", "execution_mode", "criterion", "actual", "required",
+    "passed", "blocking", "detail",
+]
+
+OPERATIONAL_ALERT_COLUMNS = [
+    "severity", "category", "title", "status", "actual", "required", "action",
+]
+
+STATE_INVENTORY_COLUMNS = [
+    "state_name", "path", "exists", "size_bytes", "row_count", "column_count",
+    "modified_at", "sha256", "schema_version", "status",
+]
+
+STATE_SNAPSHOT_COLUMNS = [
+    "snapshot_date", "state_name", "source_path", "snapshot_path", "status", "size_bytes", "sha256",
+]
+
+EXECUTION_AUDIT_COLUMNS = [
+    "run_id", "date", "app_version", "execution_mode", "release_status", "run_health",
+    "p0_alerts", "p1_alerts", "p2_alerts", "state_files_ok", "state_files_total",
+    "snapshots_created", "manifest_sha256",
+]
+
+
+def sha256_file(path: str) -> str:
+    target = Path(path)
+    if not target.exists() or not target.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with target.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def csv_shape(path: str) -> tuple[int | None, int | None]:
+    target = Path(path)
+    if not target.exists() or target.stat().st_size == 0:
+        return (0, 0) if target.exists() else (None, None)
+    try:
+        frame = pd.read_csv(target)
+        return len(frame), len(frame.columns)
+    except Exception:
+        return None, None
+
+
+def build_state_inventory(state_paths: dict[str, str]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for name, raw_path in state_paths.items():
+        target = Path(raw_path)
+        exists = target.exists()
+        row_count, column_count = csv_shape(str(target))
+        size = target.stat().st_size if exists else 0
+        if not exists:
+            status = "MISSING"
+        elif row_count is None:
+            status = "UNREADABLE"
+        elif size == 0:
+            status = "EMPTY"
+        else:
+            status = "OK"
+        rows.append({
+            "state_name": name,
+            "path": str(target),
+            "exists": exists,
+            "size_bytes": size,
+            "row_count": row_count,
+            "column_count": column_count,
+            "modified_at": datetime.fromtimestamp(target.stat().st_mtime).isoformat(timespec="seconds") if exists else "",
+            "sha256": sha256_file(str(target)),
+            "schema_version": STATE_SCHEMA_VERSION,
+            "status": status,
+        })
+    return pd.DataFrame(rows, columns=STATE_INVENTORY_COLUMNS)
+
+
+def snapshot_state_files(
+    today: str,
+    state_paths: dict[str, str],
+    snapshot_root: str = "data/state_snapshots",
+) -> pd.DataFrame:
+    destination = Path(snapshot_root) / today
+    destination.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for name, raw_path in state_paths.items():
+        source = Path(raw_path)
+        suffix = source.suffix or ".dat"
+        snapshot_path = destination / f"{name}{suffix}"
+        if source.exists() and source.is_file():
+            shutil.copy2(source, snapshot_path)
+            status = "SNAPSHOT_CREATED"
+            size = snapshot_path.stat().st_size
+            checksum = sha256_file(str(snapshot_path))
+        else:
+            status = "SOURCE_MISSING"
+            size = 0
+            checksum = ""
+        rows.append({
+            "snapshot_date": today,
+            "state_name": name,
+            "source_path": str(source),
+            "snapshot_path": str(snapshot_path),
+            "status": status,
+            "size_bytes": size,
+            "sha256": checksum,
+        })
+    return pd.DataFrame(rows, columns=STATE_SNAPSHOT_COLUMNS)
+
+
+def release_status_value(readiness: pd.DataFrame) -> str:
+    if readiness is None or readiness.empty or "release_status" not in readiness.columns:
+        return "UNKNOWN"
+    return optional_text(readiness.iloc[0].get("release_status")) or "UNKNOWN"
+
+
+def build_release_readiness(
+    run_health: pd.DataFrame,
+    signal_governance: pd.DataFrame,
+    sector_leader_performance: pd.DataFrame,
+    paper_performance: pd.DataFrame,
+    paper_trade_history: pd.DataFrame,
+    paper_risk_budget: pd.DataFrame,
+) -> pd.DataFrame:
+    health = run_health_overall(run_health)
+    degradation_count = int((signal_governance.get("status", pd.Series(dtype=str)) == "劣化警戒").sum()) if signal_governance is not None and not signal_governance.empty else 0
+    ten_day_stats = performance_overall_stats(sector_leader_performance, 10)
+    leader_evidence = int(ten_day_stats.get("count", 0) or 0)
+    paper_trades = len(paper_trade_history) if paper_trade_history is not None else 0
+    perf = {} if paper_performance is None or paper_performance.empty else paper_performance.iloc[0].to_dict()
+    paper_win_rate = perf.get("win_rate")
+    paper_equity = float(perf.get("equity", PAPER_INITIAL_CAPITAL) or PAPER_INITIAL_CAPITAL)
+    paper_return = paper_equity / PAPER_INITIAL_CAPITAL - 1
+    paper_drawdown = float(perf.get("drawdown", 0.0) or 0.0)
+    risk_failures = int((paper_risk_budget.get("status", pd.Series(dtype=str)) == "FAIL").sum()) if paper_risk_budget is not None and not paper_risk_budget.empty else 0
+
+    criteria = [
+        ("Run Health", health, "PASS", health == "PASS", True, "全データ品質ゲートがPASS"),
+        ("シグナル劣化", degradation_count, "0件", degradation_count == 0, True, "Signal Governanceの劣化警戒がない"),
+        ("業種リーダー10日実績", leader_evidence, "30件以上", leader_evidence >= 30, False, "十分なアウトオブサンプル実績"),
+        ("ペーパー決済実績", paper_trades, "20件以上", paper_trades >= 20, False, "出口ルールを含む運用実績"),
+        ("ペーパー勝率", paper_win_rate, "50%以上", paper_win_rate is not None and not pd.isna(paper_win_rate) and float(paper_win_rate) >= 0.50, False, "決済済み取引の勝率"),
+        ("ペーパー累積収益", paper_return, "0%超", paper_return > 0, False, "仮想元本に対する累積収益"),
+        ("最大ドローダウン", paper_drawdown, "-10%以上", paper_drawdown >= -0.10, True, "ピーク資産からの下落を10%以内に制御"),
+        ("リスク予算超過", risk_failures, "0件", risk_failures == 0, True, "銘柄・業種・総投資比率の上限遵守"),
+    ]
+    blocking_failure = any(blocking and not passed for _, _, _, passed, blocking, _ in criteria)
+    all_passed = all(passed for _, _, _, passed, _, _ in criteria)
+    if blocking_failure:
+        release_status = "HOLD"
+    elif all_passed:
+        release_status = "READY_FOR_MANUAL_REVIEW"
+    elif paper_trades == 0:
+        release_status = "RESEARCH"
+    else:
+        release_status = "PAPER_VALIDATION"
+    rows = [{
+        "release_status": release_status,
+        "execution_mode": EXECUTION_MODE,
+        "criterion": criterion,
+        "actual": actual,
+        "required": required,
+        "passed": passed,
+        "blocking": blocking,
+        "detail": detail,
+    } for criterion, actual, required, passed, blocking, detail in criteria]
+    return pd.DataFrame(rows, columns=RELEASE_READINESS_COLUMNS)
+
+
+def build_operational_alerts(readiness: pd.DataFrame) -> pd.DataFrame:
+    if readiness is None or readiness.empty:
+        return pd.DataFrame([{
+            "severity": "P0",
+            "category": "release",
+            "title": "リリース判定を生成できません",
+            "status": "OPEN",
+            "actual": "UNKNOWN",
+            "required": "readiness available",
+            "action": "新規ペーパーエントリーを停止し、状態ファイルを確認",
+        }], columns=OPERATIONAL_ALERT_COLUMNS)
+    alerts: list[dict[str, Any]] = []
+    for _, row in readiness[readiness["passed"] != True].iterrows():
+        criterion = optional_text(row.get("criterion"))
+        blocking = bool(row.get("blocking"))
+        if criterion in {"Run Health", "最大ドローダウン", "リスク予算超過"}:
+            severity = "P0"
+            action = "新規ペーパーエントリーを停止し、原因解消までHOLD"
+        elif criterion == "シグナル劣化":
+            severity = "P1"
+            action = "対象シグナルを縮小し、劣化原因をレビュー"
+        elif blocking:
+            severity = "P1"
+            action = "ブロッキング条件を解消"
+        else:
+            severity = "P2"
+            action = "実績を蓄積し、昇格条件を再評価"
+        alerts.append({
+            "severity": severity,
+            "category": "release_readiness",
+            "title": criterion,
+            "status": "OPEN",
+            "actual": row.get("actual"),
+            "required": row.get("required"),
+            "action": action,
+        })
+    if not alerts:
+        alerts.append({
+            "severity": "INFO",
+            "category": "release_readiness",
+            "title": "全昇格条件を充足",
+            "status": "CLOSED",
+            "actual": release_status_value(readiness),
+            "required": "READY_FOR_MANUAL_REVIEW",
+            "action": "手動レビューを実施。自動発注は引き続き無効",
+        })
+    order = {"P0": 0, "P1": 1, "P2": 2, "INFO": 3}
+    result = pd.DataFrame(alerts, columns=OPERATIONAL_ALERT_COLUMNS)
+    result["severity_order"] = result["severity"].map(order).fillna(9)
+    return result.sort_values(["severity_order", "title"]).drop(columns=["severity_order"])
+
+
+def build_execution_audit(
+    today: str,
+    readiness: pd.DataFrame,
+    alerts: pd.DataFrame,
+    inventory: pd.DataFrame,
+    snapshots: pd.DataFrame,
+    run_health: pd.DataFrame,
+) -> pd.DataFrame:
+    manifest_material = "|".join(
+        inventory.sort_values("state_name").get("sha256", pd.Series(dtype=str)).fillna("").astype(str).tolist()
+    )
+    manifest_sha = hashlib.sha256(manifest_material.encode("utf-8")).hexdigest()
+    return pd.DataFrame([{
+        "run_id": f"{today}-{APP_VERSION}",
+        "date": today,
+        "app_version": APP_VERSION,
+        "execution_mode": EXECUTION_MODE,
+        "release_status": release_status_value(readiness),
+        "run_health": run_health_overall(run_health),
+        "p0_alerts": int((alerts.get("severity", pd.Series(dtype=str)) == "P0").sum()) if alerts is not None and not alerts.empty else 0,
+        "p1_alerts": int((alerts.get("severity", pd.Series(dtype=str)) == "P1").sum()) if alerts is not None and not alerts.empty else 0,
+        "p2_alerts": int((alerts.get("severity", pd.Series(dtype=str)) == "P2").sum()) if alerts is not None and not alerts.empty else 0,
+        "state_files_ok": int((inventory.get("status", pd.Series(dtype=str)) == "OK").sum()) if inventory is not None and not inventory.empty else 0,
+        "state_files_total": len(inventory) if inventory is not None else 0,
+        "snapshots_created": int((snapshots.get("status", pd.Series(dtype=str)) == "SNAPSHOT_CREATED").sum()) if snapshots is not None and not snapshots.empty else 0,
+        "manifest_sha256": manifest_sha,
+    }], columns=EXECUTION_AUDIT_COLUMNS)
+
+
+def append_execution_audit(path: str, current: pd.DataFrame) -> pd.DataFrame:
+    old = load_csv_with_columns(path, EXECUTION_AUDIT_COLUMNS)
+    frames = [frame for frame in (old, current) if frame is not None and not frame.empty]
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=EXECUTION_AUDIT_COLUMNS)
+    if not combined.empty:
+        combined = combined.drop_duplicates("run_id", keep="last").sort_values(["date", "run_id"])
+    atomic_write_csv(combined, path)
+    return combined[EXECUTION_AUDIT_COLUMNS]
+
+
+def plain_release_readiness_section(readiness: pd.DataFrame, alerts: pd.DataFrame, inventory: pd.DataFrame) -> list[str]:
+    status = release_status_value(readiness)
+    lines = [
+        "【リリース準備状況】",
+        f"判定: {status} / 実行モード: {EXECUTION_MODE}",
+        "証券会社への自動発注は無効です。昇格は手動レビューまでです。",
+    ]
+    failed = readiness[readiness["passed"] != True] if readiness is not None and not readiness.empty else pd.DataFrame()
+    for _, row in failed.head(5).iterrows():
+        lines.append(f"  未達: {row['criterion']} / 実績 {row['actual']} / 条件 {row['required']}")
+    if alerts is not None and not alerts.empty:
+        counts = {severity: int((alerts["severity"] == severity).sum()) for severity in ["P0", "P1", "P2"]}
+        lines.append(f"アラート: P0 {counts['P0']} / P1 {counts['P1']} / P2 {counts['P2']}")
+    if inventory is not None and not inventory.empty:
+        lines.append(f"状態ファイル: OK {int((inventory['status'] == 'OK').sum())}/{len(inventory)}")
+    lines.append("")
+    return lines
+
+
+def html_release_readiness_section(readiness: pd.DataFrame, alerts: pd.DataFrame, inventory: pd.DataFrame) -> str:
+    status = release_status_value(readiness)
+    color = "#15803d" if status == "READY_FOR_MANUAL_REVIEW" else "#b91c1c" if status == "HOLD" else "#a16207"
+    failed = readiness[readiness["passed"] != True] if readiness is not None and not readiness.empty else pd.DataFrame()
+    items = "".join(
+        f'<div style="font-size:11px;color:#b45309;margin-top:3px">未達: {html_text(row["criterion"])} ・ 実績 {html_text(row["actual"])} ・ 条件 {html_text(row["required"])}</div>'
+        for _, row in failed.head(5).iterrows()
+    )
+    alert_text = ""
+    if alerts is not None and not alerts.empty:
+        alert_text = " / ".join(f'{severity} {int((alerts["severity"] == severity).sum())}' for severity in ["P0", "P1", "P2"])
+    state_ok = int((inventory.get("status", pd.Series(dtype=str)) == "OK").sum()) if inventory is not None and not inventory.empty else 0
+    state_total = len(inventory) if inventory is not None else 0
+    return f'''<div style="background:#fff;border:2px solid {color};border-radius:18px;padding:16px;margin-top:14px">
+<div style="font-size:18px;font-weight:900;color:{color}">リリース準備状況 <span style="float:right">{html_text(status)}</span></div>
+<div style="clear:both;font-size:11px;color:#64748b;margin-top:5px">実行モード {html_text(EXECUTION_MODE)}。証券会社への自動発注は無効です。</div>
+<div style="font-size:12px;color:#334155;margin-top:7px">アラート {html_text(alert_text)} ・ 状態ファイル OK {state_ok}/{state_total}</div>{items}</div>'''
+
+
 def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFrame, previous_temperature: pd.DataFrame) -> pd.DataFrame:
     cols = [
         "date", "ytd_high_count", "top100_avg_score", "top100_avg_return_20d", "top100_avg_volume_ratio",
@@ -598,11 +2089,29 @@ def market_temperature(today: str, all_ranked: pd.DataFrame, top100: pd.DataFram
     return pd.DataFrame([{**current, **deltas}], columns=cols)
 
 
-def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, sector_momentum: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
+def excel_report(path: str, summary: dict[str, Any], top100: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_signal_history: pd.DataFrame, sector_leader_outcomes: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_trade_history: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, state_snapshots: pd.DataFrame, execution_audit: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, priority_changes: pd.DataFrame, priority_lifecycle: pd.DataFrame, priority_expectancy: pd.DataFrame, action_priority: pd.DataFrame, priority_performance: pd.DataFrame, signal_performance: pd.DataFrame, temperature: pd.DataFrame, errors: list[dict[str, Any]], universe: pd.DataFrame) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         pd.DataFrame([summary]).to_excel(w, sheet_name="Summary", index=False)
         top100.to_excel(w, sheet_name="Momentum Top100", index=False)
         sector_momentum.to_excel(w, sheet_name="Sector Momentum", index=False)
+        sector_rotation.to_excel(w, sheet_name="Sector Rotation", index=False)
+        sector_leaders.to_excel(w, sheet_name="Sector Leaders", index=False)
+        sector_signal_history.to_excel(w, sheet_name="Sector Leader History", index=False)
+        sector_leader_outcomes.to_excel(w, sheet_name="Sector Leader Outcomes", index=False)
+        sector_leader_performance.to_excel(w, sheet_name="Sector Leader Performance", index=False)
+        signal_governance.to_excel(w, sheet_name="Signal Governance", index=False)
+        adaptive_thresholds.to_excel(w, sheet_name="Adaptive Thresholds", index=False)
+        run_health.to_excel(w, sheet_name="Run Health", index=False)
+        paper_portfolio.to_excel(w, sheet_name="Paper Portfolio", index=False)
+        paper_trade_plan.to_excel(w, sheet_name="Paper Trade Plan", index=False)
+        paper_trade_history.to_excel(w, sheet_name="Paper Trade History", index=False)
+        paper_risk_budget.to_excel(w, sheet_name="Risk Budget", index=False)
+        paper_performance.to_excel(w, sheet_name="Paper Performance", index=False)
+        release_readiness.to_excel(w, sheet_name="Release Readiness", index=False)
+        operational_alerts.to_excel(w, sheet_name="Operational Alerts", index=False)
+        state_inventory.to_excel(w, sheet_name="State Inventory", index=False)
+        state_snapshots.to_excel(w, sheet_name="State Snapshots", index=False)
+        execution_audit.to_excel(w, sheet_name="Execution Audit", index=False)
         new_entries.to_excel(w, sheet_name="New Entries", index=False)
         rising_fast.to_excel(w, sheet_name="Rising Fast", index=False)
         top30_streak.to_excel(w, sheet_name="Top30 Streak", index=False)
@@ -2344,7 +3853,7 @@ def html_market_regime(regime: dict[str, Any]) -> str:
 </div>"""
 
 
-def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -2377,6 +3886,11 @@ def build_plain_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries
     ]
     lines += plain_market_regime(regime)
     lines += plain_sector_momentum_section(sector_momentum)
+    lines += plain_sector_rotation_section(sector_rotation)
+    lines += plain_sector_leaders_section(sector_leaders)
+    lines += plain_governance_section(sector_leader_performance, signal_governance, adaptive_thresholds, run_health)
+    lines += plain_paper_portfolio_section(paper_portfolio, paper_trade_plan, paper_performance, paper_risk_budget)
+    lines += plain_release_readiness_section(release_readiness, operational_alerts, state_inventory)
     lines += plain_action_priority_section(priority_changes.get("action_priority", pd.DataFrame()))
     lines += plain_performance_scorecard(summary.get("_signal_performance", pd.DataFrame()))
     lines += plain_priority_section(priority)
@@ -2403,7 +3917,7 @@ def html_section(title: str, df: pd.DataFrame, limit: int, show_empty: bool = Fa
     return f"<h2>{html_text(title)}</h2>{cards}"
 
 
-def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
+def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> str:
     top_n = cfg["ranking"]["email_top_n"]
     temp = {} if temperature.empty else temperature.iloc[0].to_dict()
     long_streak = top30_streak[top30_streak["top30_streak"] >= 10].copy() if not top30_streak.empty and "top30_streak" in top30_streak.columns else pd.DataFrame()
@@ -2422,6 +3936,11 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     sections = "".join([
         html_market_regime(regime),
         html_sector_momentum_section(sector_momentum),
+        html_sector_rotation_section(sector_rotation),
+        html_sector_leaders_section(sector_leaders),
+        html_governance_section(sector_leader_performance, signal_governance, adaptive_thresholds, run_health),
+        html_paper_portfolio_section(paper_portfolio, paper_trade_plan, paper_performance, paper_risk_budget),
+        html_release_readiness_section(release_readiness, operational_alerts, state_inventory),
         html_action_priority_section(priority_changes.get("action_priority", pd.DataFrame())),
         html_performance_scorecard(summary.get("_signal_performance", pd.DataFrame())),
         html_priority_section(priority),
@@ -2437,7 +3956,7 @@ def build_html_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries:
     return f'''<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#111827"><div style="max-width:720px;margin:0 auto;padding:16px"><div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px"><div style="font-size:13px;color:#cbd5e1">モメンタムチンパン ダッシュボード</div><div style="font-size:24px;font-weight:900">{html_text(summary.get('実行日', ''))}</div><div style="margin-top:8px;color:#e2e8f0">株価データ日: {html_text(price_date)} / 売買指示ではなく、モメンタム確認用の自動スクリーニングです。</div></div><table width="100%" style="margin-top:12px;border-collapse:collapse"><tr>{cards[0]}{cards[1]}</tr><tr>{cards[2]}{cards[3]}</tr><tr>{cards[4]}{cards[5]}</tr></table><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>今日の読み方</b><div style="font-size:13px;line-height:1.8;color:#334155">{html_text(reading_summary(summary))}</div></div><div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:16px;margin-top:14px"><b>Market Temperature</b><div style="font-size:13px;line-height:1.8;color:#334155">YTD高値 {fmt_int(temp.get('ytd_high_count'))} ({fmt_delta(temp.get('delta_ytd_high_count'), 0)}) / Top100平均スコア {fmt_num(temp.get('top100_avg_score'), 2)} ({fmt_delta(temp.get('delta_top100_avg_score'), 2)})<br>Top100平均20日騰落率 {fmt_pct(temp.get('top100_avg_return_20d'))}（前回比 {fmt_pct_point(temp.get('delta_top100_avg_return_20d'))}） / Top100平均出来高倍率 {fmt_num(temp.get('top100_avg_volume_ratio'), 2)} ({fmt_delta(temp.get('delta_top100_avg_volume_ratio'), 2)})</div></div>{sections}<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:16px">詳細はGitHub Actions artifactのdaily_report.xlsxを確認してください。<br>{html_text(DISCLAIMER)}</div></div></body></html>'''
 
 
-def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
+def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.DataFrame, rising_fast: pd.DataFrame, top30_streak: pd.DataFrame, ytd_high_ranking: pd.DataFrame, temperature: pd.DataFrame, sector_momentum: pd.DataFrame, sector_rotation: pd.DataFrame, sector_leaders: pd.DataFrame, sector_leader_performance: pd.DataFrame, signal_governance: pd.DataFrame, adaptive_thresholds: pd.DataFrame, run_health: pd.DataFrame, paper_portfolio: pd.DataFrame, paper_trade_plan: pd.DataFrame, paper_risk_budget: pd.DataFrame, paper_performance: pd.DataFrame, release_readiness: pd.DataFrame, operational_alerts: pd.DataFrame, state_inventory: pd.DataFrame, priority_changes: dict[str, Any], cfg: dict[str, Any]) -> None:
     load_dotenv()
     sender, to, pw = os.getenv("EMAIL_FROM"), os.getenv("EMAIL_TO"), os.getenv("EMAIL_APP_PASSWORD")
     if not sender or not to or not pw:
@@ -2447,8 +3966,8 @@ def send_email(summary: dict[str, Any], top100: pd.DataFrame, new_entries: pd.Da
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"【モメンタムチンパン】{summary['実行日']} 引け後レポート"
     msg["From"], msg["To"] = sender, to
-    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg), "html", "utf-8"))
+    msg.attach(MIMEText(build_plain_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg), "html", "utf-8"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, pw)
         smtp.send_message(msg)
@@ -2513,7 +4032,7 @@ def main() -> None:
     top30_streak = top100[top100["top30_streak"] > 0].sort_values(["top30_streak", "rank"], ascending=[False, True]).copy() if not top100.empty else top100.copy()
     top30_streak_10 = top100[top100["top30_streak"] >= 10].copy() if not top100.empty else top100.copy()
     ytd_high_ranking = all_ranked[all_ranked["ytd_high_flag"] == True].sort_values(["ytd_high_streak", "ytd_high_count", "score"], ascending=[False, False, False]).copy() if not all_ranked.empty else all_ranked.copy()
-    sector_momentum = calculate_sector_momentum(all_ranked, history, today, top_limit)
+    sector_momentum = attach_sector_rotation(calculate_sector_momentum(all_ranked, history, today, top_limit))
     priority_changes = compare_priority_candidates(top100, history, today, top_limit)
     priority_changes = attach_priority_candidate_lifecycle(priority_changes, history, top100, today, top_limit)
     performance_history = combined_ranking_history(history, all_ranked, today)
@@ -2529,7 +4048,37 @@ def main() -> None:
     regime = enrich_regime_from_temperature(regime, temperature)
     priority_changes = attach_action_priority(priority_changes, regime)
     action_priority = priority_changes.get("action_priority", pd.DataFrame())
+    sector_leaders = build_sector_leaders(all_ranked, sector_momentum, action_priority)
+    sector_rotation = build_sector_rotation_table(sector_momentum, sector_leaders)
+    sector_history_path = "data/sector_leader_signal_history.csv"
+    current_sector_signals = current_sector_signal_snapshot(today, sector_leaders)
+    sector_signal_history = update_sector_signal_history(sector_history_path, current_sector_signals)
+    sector_leader_outcomes = calculate_sector_leader_outcomes(sector_signal_history, performance_history)
+    sector_leader_performance = build_sector_leader_performance_summary(sector_leader_outcomes)
+    signal_governance = build_signal_governance(sector_leader_outcomes)
+    adaptive_thresholds = build_adaptive_threshold_recommendations(signal_governance)
+    run_health = build_run_health(today, all_ranked, top100, sector_momentum, sector_leaders, errors, len(stocks), success)
+    paper_result = run_paper_portfolio(today, all_ranked, sector_leaders, regime, run_health)
+    paper_portfolio = paper_result["portfolio"]
+    paper_trade_plan = paper_result["plan"]
+    paper_trade_history = paper_result["trade_history"]
+    paper_risk_budget = paper_result["risk_budget"]
+    paper_performance = paper_result["performance"]
     pd.concat([old_temp, temperature], ignore_index=True).drop_duplicates(["date"], keep="last").to_csv(temp_path, index=False)
+    state_paths = {
+        "ranking_history": cfg["data"]["ranking_history_path"],
+        "market_temperature": temp_path,
+        "sector_leader_signals": sector_history_path,
+        "paper_portfolio": "data/paper_portfolio.csv",
+        "paper_trade_history": "data/paper_trade_history.csv",
+        "paper_equity_history": "data/paper_equity_history.csv",
+    }
+    state_inventory = build_state_inventory(state_paths)
+    state_snapshots = snapshot_state_files(today, state_paths)
+    release_readiness = build_release_readiness(run_health, signal_governance, sector_leader_performance, paper_performance, paper_trade_history, paper_risk_budget)
+    operational_alerts = build_operational_alerts(release_readiness)
+    current_audit = build_execution_audit(today, release_readiness, operational_alerts, state_inventory, state_snapshots, run_health)
+    execution_audit = append_execution_audit("data/execution_audit.csv", current_audit)
 
     elapsed = round(perf_counter() - started_at, 1)
     limited_mode = max_symbols > 0 and max_symbols < full_universe_count
@@ -2537,7 +4086,7 @@ def main() -> None:
     summary = {
         "実行日": today,
         "アプリ版": APP_VERSION,
-        "レポート形式": "dashboard_sector_momentum_v12",
+        "レポート形式": "dashboard_release_readiness_v16",
         "株価データ日": latest_price_date(top100),
         "JPX上場銘柄数": universe_stats.get("jpx_listed_count", 0),
         "通常株ユニバース数": full_universe_count,
@@ -2552,6 +4101,46 @@ def main() -> None:
         "やや強い業種数": int((sector_momentum.get("sector_strength", pd.Series(dtype=str)) == "やや強い").sum()) if not sector_momentum.empty else 0,
         "最上位業種": str(sector_momentum.iloc[0]["sector33"]) if not sector_momentum.empty else "",
         "最上位業種スコア": float(sector_momentum.iloc[0]["sector_momentum_score"]) if not sector_momentum.empty else None,
+        "加速業種数": int((sector_momentum.get("sector_rotation", pd.Series(dtype=str)) == "加速").sum()) if not sector_momentum.empty else 0,
+        "主導業種数": int((sector_momentum.get("sector_rotation", pd.Series(dtype=str)) == "主導").sum()) if not sector_momentum.empty else 0,
+        "改善業種数": int((sector_momentum.get("sector_rotation", pd.Series(dtype=str)) == "改善").sum()) if not sector_momentum.empty else 0,
+        "業種リーダー候補数": len(sector_leaders),
+        "業種リーダー最優先": sector_research_priority_count(sector_leaders, "最優先"),
+        "業種リーダー優先": sector_research_priority_count(sector_leaders, "優先"),
+        "最上位業種リーダー": (str(sector_leaders.iloc[0]["code"]) + " " + str(sector_leaders.iloc[0]["name"])) if not sector_leaders.empty else "",
+        "最上位業種リーダースコア": float(sector_leaders.iloc[0]["sector_leader_score"]) if not sector_leaders.empty else None,
+        "業種リーダー履歴件数": len(sector_signal_history),
+        "業種リーダー5日実績件数": int(performance_overall_stats(sector_leader_performance, 5).get("count", 0) or 0),
+        "業種リーダー5日勝率": performance_overall_stats(sector_leader_performance, 5).get("win_rate"),
+        "業種リーダー5日平均騰落率": performance_overall_stats(sector_leader_performance, 5).get("average_return"),
+        "業種リーダー10日実績件数": int(performance_overall_stats(sector_leader_performance, 10).get("count", 0) or 0),
+        "業種リーダー10日勝率": performance_overall_stats(sector_leader_performance, 10).get("win_rate"),
+        "業種リーダー10日平均騰落率": performance_overall_stats(sector_leader_performance, 10).get("average_return"),
+        "業種リーダー20日実績件数": int(performance_overall_stats(sector_leader_performance, 20).get("count", 0) or 0),
+        "業種リーダー20日勝率": performance_overall_stats(sector_leader_performance, 20).get("win_rate"),
+        "業種リーダー20日平均騰落率": performance_overall_stats(sector_leader_performance, 20).get("average_return"),
+        "シグナル劣化警戒数": int((signal_governance.get("status", pd.Series(dtype=str)) == "劣化警戒").sum()) if not signal_governance.empty else 0,
+        "閾値調整モード": "shadow_only",
+        "Run Health": run_health_overall(run_health),
+        "Run Health WARN": int((run_health.get("status", pd.Series(dtype=str)) == "WARN").sum()) if not run_health.empty else 0,
+        "Run Health FAIL": int((run_health.get("status", pd.Series(dtype=str)) == "FAIL").sum()) if not run_health.empty else 0,
+        "ペーパー元本": PAPER_INITIAL_CAPITAL,
+        "ペーパー資産": float(paper_performance.iloc[0]["equity"]) if not paper_performance.empty else PAPER_INITIAL_CAPITAL,
+        "ペーパー現金": float(paper_performance.iloc[0]["cash"]) if not paper_performance.empty else PAPER_INITIAL_CAPITAL,
+        "ペーパー投資比率": float(paper_performance.iloc[0]["exposure_ratio"]) if not paper_performance.empty else 0.0,
+        "ペーパー実現損益": float(paper_performance.iloc[0]["realized_pnl"]) if not paper_performance.empty else 0.0,
+        "ペーパー含み損益": float(paper_performance.iloc[0]["unrealized_pnl"]) if not paper_performance.empty else 0.0,
+        "ペーパードローダウン": float(paper_performance.iloc[0]["drawdown"]) if not paper_performance.empty else 0.0,
+        "ペーパー保有数": len(paper_portfolio),
+        "ペーパー新規計画数": len(paper_trade_plan),
+        "ペーパー決済数": len(paper_trade_history),
+        "リリース判定": release_status_value(release_readiness),
+        "実行モード": EXECUTION_MODE,
+        "運用P0アラート": int((operational_alerts.get("severity", pd.Series(dtype=str)) == "P0").sum()) if not operational_alerts.empty else 0,
+        "運用P1アラート": int((operational_alerts.get("severity", pd.Series(dtype=str)) == "P1").sum()) if not operational_alerts.empty else 0,
+        "状態ファイルOK": int((state_inventory.get("status", pd.Series(dtype=str)) == "OK").sum()) if not state_inventory.empty else 0,
+        "状態ファイル総数": len(state_inventory),
+        "状態スナップショット数": int((state_snapshots.get("status", pd.Series(dtype=str)) == "SNAPSHOT_CREATED").sum()) if not state_snapshots.empty else 0,
         "重点候補数": priority_change_count(priority_changes, "current"),
         "重点候補新規": priority_change_count(priority_changes, "new"),
         "重点候補継続": priority_change_count(priority_changes, "continued"),
@@ -2604,10 +4193,10 @@ def main() -> None:
         "注意事項": DISCLAIMER,
     }
     summary["_signal_performance"] = signal_performance
-    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, sector_momentum, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
+    excel_report(cfg["data"]["output_path"], {k: v for k, v in summary.items() if not str(k).startswith("_")}, top100, sector_momentum, sector_rotation, sector_leaders, sector_signal_history, sector_leader_outcomes, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_trade_history, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, state_snapshots, execution_audit, new_entries, rising_fast, top30_streak, ytd_high_ranking, priority_changes["table"], priority_changes["lifecycle"], priority_changes["expectancy"], action_priority, priority_performance, signal_performance, temperature, errors, universe_df)
     backup_error_artifacts(errors, cfg, cfg["data"]["output_path"])
     try:
-        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, priority_changes, cfg)
+        send_email(summary, top100, new_entries, rising_fast, top30_streak, ytd_high_ranking, temperature, sector_momentum, sector_rotation, sector_leaders, sector_leader_performance, signal_governance, adaptive_thresholds, run_health, paper_portfolio, paper_trade_plan, paper_risk_budget, paper_performance, release_readiness, operational_alerts, state_inventory, priority_changes, cfg)
     except Exception as exc:
         logger.exception("Email sending failed: %s", exc)
 
