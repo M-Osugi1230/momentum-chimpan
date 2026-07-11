@@ -45,10 +45,11 @@ jobs:
           .github/test_walk_forward_replay.py .github/test_research_scorecard.py
           .github/test_robustness_analysis.py .github/test_strategy_governance.py
           .github/test_evidence_provenance.py .github/test_operations.py
-          .github/test_historical_backfill.py .github/test_execution_realism.py
-          .github/test_live_execution_panel.py .github/test_execution_provenance.py
-          .github/test_atomic_strategy_stamp.py .github/test_state_recovery.py
-          .github/test_relative_strength_lifecycle.py .github/test_portfolio_research.py
+          .github/test_historical_backfill.py .github/test_historical_relative_strength.py
+          .github/test_execution_realism.py .github/test_live_execution_panel.py
+          .github/test_execution_provenance.py .github/test_atomic_strategy_stamp.py
+          .github/test_state_recovery.py .github/test_relative_strength_lifecycle.py
+          .github/test_portfolio_research.py
 
       - name: Import and safety smoke test
         run: |
@@ -141,6 +142,11 @@ jobs:
           set -o pipefail
           python .github/test_relative_strength_lifecycle.py 2>&1 | tee /tmp/relative-strength-lifecycle-test.log
 
+      - name: Run historical relative strength validation
+        run: |
+          set -o pipefail
+          python .github/test_historical_relative_strength.py 2>&1 | tee /tmp/historical-relative-strength-test.log
+
       - name: Run execution-aware portfolio research validation
         run: |
           set -o pipefail
@@ -178,6 +184,7 @@ jobs:
             /tmp/atomic-strategy-stamp-test.log
             /tmp/state-recovery-test.log
             /tmp/relative-strength-lifecycle-test.log
+            /tmp/historical-relative-strength-test.log
             /tmp/portfolio-research-test.log
             /tmp/operations-test.log
             /tmp/historical-backfill-test.log
