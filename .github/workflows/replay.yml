@@ -39,11 +39,13 @@ jobs:
         id: provenance
         run: |
           mkdir -p output/replay
+          python strategy_governance.py snapshot \
+            --output output/replay/current_strategy_fingerprint.json
           python evidence_provenance.py prepare-live \
             --ranking data/momentum_daily_ranking.csv \
             --output output/replay/live_strategy_history.csv \
             --provenance output/replay/evidence_provenance.json \
-            --fingerprint data/strategy_fingerprint.json | tee output/replay/provenance.log
+            --fingerprint output/replay/current_strategy_fingerprint.json | tee output/replay/provenance.log
           eligible_dates=$(python - <<'PY'
           import json
           from pathlib import Path
