@@ -1,0 +1,155 @@
+name: Complete Portfolio Exit Lab
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: complete-portfolio-exit-lab
+  cancel-in-progress: true
+
+jobs:
+  complete:
+    if: github.head_ref == 'feature/portfolio-exit-lab'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/portfolio-exit-lab
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply configurable exit policy
+        run: |
+          python -m py_compile .github/apply_portfolio_exit_policy.py
+          python .github/apply_portfolio_exit_policy.py
+
+      - name: Run synthetic and governed-system validation
+        run: |
+          python -m py_compile \
+            portfolio_research.py portfolio_filter_lab.py portfolio_exit_lab.py \
+            historical_backfill.py relative_strength_lifecycle.py replay.py main.py \
+            strategy_governance.py evidence_provenance.py \
+            .github/test_portfolio_exit_lab.py .github/test_portfolio_filter_lab.py \
+            .github/test_portfolio_research.py .github/test_historical_relative_strength.py \
+            .github/validate_workflows.py
+          python .github/test_portfolio_exit_lab.py
+          python .github/test_portfolio_filter_lab.py
+          python .github/test_portfolio_research.py
+          python .github/test_historical_relative_strength.py
+          python .github/validate_workflows.py
+          python .github/test_walk_forward_replay.py
+          python .github/test_strategy_governance.py
+          python .github/test_evidence_provenance.py
+          python .github/test_state_recovery.py
+
+      - name: Confirm strategy fingerprint is unchanged
+        run: |
+          mkdir -p /tmp/strategy-base
+          git show origin/main:main.py > /tmp/strategy-base/main.py
+          git show origin/main:config.yaml > /tmp/strategy-base/config.yaml
+          python strategy_governance.py ci-check \
+            --base-main /tmp/strategy-base/main.py \
+            --base-config /tmp/strategy-base/config.yaml \
+            --current-main main.py \
+            --current-config config.yaml \
+            --registry research/experiment_registry.yaml
+
+      - name: Build 72-symbol real-data exit comparison
+        run: |
+          mkdir -p /tmp/exit-pilot/replay /tmp/exit-pilot/exit_lab
+          set -o pipefail
+          python historical_backfill.py \
+            --strict \
+            --max-symbols 72 \
+            --lookback-calendar-days 420 \
+            --sample-every 5 \
+            --batch-size 36 \
+            --output-dir /tmp/exit-pilot | tee /tmp/exit-pilot/backfill.log
+          python evidence_provenance.py seal-derived \
+            --source-manifest /tmp/exit-pilot/backfill_manifest.json \
+            --provenance /tmp/exit-pilot/replay/evidence_provenance.json
+          python historical_price_panel.py \
+            --strict \
+            --history /tmp/exit-pilot/historical_ranking.csv \
+            --backfill-manifest /tmp/exit-pilot/backfill_manifest.json \
+            --output /tmp/exit-pilot/historical_price_panel.csv \
+            --manifest /tmp/exit-pilot/historical_price_panel_manifest.json \
+            --batch-size 36 | tee /tmp/exit-pilot/price-panel.log
+          python replay.py \
+            --strict \
+            --history /tmp/exit-pilot/historical_ranking.csv \
+            --jpx-cache data/jpx_list_cache.csv \
+            --output-dir /tmp/exit-pilot/replay | tee /tmp/exit-pilot/replay.log
+          python portfolio_exit_lab.py \
+            --strict \
+            --signals /tmp/exit-pilot/replay/replay_signals.csv \
+            --history /tmp/exit-pilot/historical_ranking.csv \
+            --prices /tmp/exit-pilot/historical_price_panel.csv \
+            --provenance /tmp/exit-pilot/replay/evidence_provenance.json \
+            --output-dir /tmp/exit-pilot/exit_lab | tee /tmp/exit-pilot/exit_lab/exit-lab.log
+
+      - name: Validate real-data exit evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('/tmp/exit-pilot/exit_lab')
+          summary = pd.read_csv(root / 'portfolio_exit_summary.csv')
+          periods = pd.read_csv(root / 'portfolio_exit_period_metrics.csv')
+          coverage = pd.read_csv(root / 'portfolio_exit_context_coverage.csv')
+          manifest = json.loads((root / 'portfolio_exit_manifest.json').read_text(encoding='utf-8'))
+          assert len(summary) == 28
+          assert set(periods['period']) == {'full', 'early', 'late'}
+          assert len(periods) == 84
+          assert coverage.iloc[0]['relative_strength_score_coverage'] >= 0.99
+          assert coverage.iloc[0]['lifecycle_coverage'] >= 0.99
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_exit_activation'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['same_day_close_entry_allowed'] is False
+          allowed = {
+              'BASELINE', 'INSUFFICIENT', 'ROBUST_OUTPERFORMANCE',
+              'ROBUST_IMPROVEMENT_ONLY', 'FULL_PERIOD_IMPROVEMENT_ONLY',
+              'NOT_IMPROVED',
+          }
+          assert set(summary['evidence_status']).issubset(allowed)
+          print(summary[[
+              'experiment', 'closed_trades', 'total_return', 'max_drawdown',
+              'excess_total_return', 'early_total_return', 'late_total_return',
+              'evidence_status',
+          ]].to_string(index=False))
+          PY
+
+      - name: Upload exit comparison evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-exit-lab-${{ github.run_id }}
+          path: /tmp/exit-pilot/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish validated exit-policy engine
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add portfolio_research.py
+          git commit -m "Add configurable portfolio exit policies"
+          git push origin HEAD:feature/portfolio-exit-lab
