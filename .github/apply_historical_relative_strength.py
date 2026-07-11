@@ -51,9 +51,9 @@ replace_once(
     "manifest relative strength metadata",
 )
 replace_once(
-    '        if history.duplicated(["date", "code"]).any():\n            raise RuntimeError("historical ranking contains duplicate date/code rows")\n',
+    '        if history.duplicated(["date", "code"]).any():\n            raise RuntimeError("duplicate date/code rows in historical ranking")\n',
     '        if history.duplicated(["date", "code"]).any():\n'
-    '            raise RuntimeError("historical ranking contains duplicate date/code rows")\n'
+    '            raise RuntimeError("duplicate date/code rows in historical ranking")\n'
     '        relative_score = pd.to_numeric(history.get("relative_strength_score"), errors="coerce")\n'
     '        if relative_score.isna().any():\n'
     '            raise RuntimeError("historical ranking contains missing relative strength scores")\n'
