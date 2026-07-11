@@ -1,0 +1,67 @@
+name: Build Market Data Freshness Guard
+
+on:
+  pull_request:
+    branches:
+      - feature/durable-daily-operations
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-validate:
+    if: github.head_ref == 'feature/market-data-freshness'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/market-data-freshness
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Apply freshness guard
+        run: |
+          python -m py_compile .github/market_freshness_patch.py
+          python .github/market_freshness_patch.py
+
+      - name: Compile application
+        run: python -m py_compile main.py
+
+      - name: Validate fresh, partial, stale, and read-only paths
+        run: |
+          set -o pipefail
+          python .github/test_market_freshness.py 2>&1 | tee /tmp/market-freshness-test.log
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-freshness-test-log
+          path: /tmp/market-freshness-test.log
+          retention-days: 1
+
+      - name: Clean temporary implementation files
+        run: |
+          rm -f .github/market_freshness_patch.py
+          rm -f .github/test_market_freshness.py
+          rm -f .github/workflows/build-market-freshness.yml
+          git diff --check
+
+      - name: Commit final implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add holiday-safe market data freshness guard"
+          git push origin HEAD:feature/market-data-freshness
