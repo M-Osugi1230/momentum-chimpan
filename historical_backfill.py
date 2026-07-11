@@ -20,9 +20,10 @@ import yfinance as yf
 import yaml
 
 import main
+import relative_strength_lifecycle as rs_lifecycle
 import replay
 
-BACKFILL_VERSION = "2026-07-11-historical-backfill-v1"
+BACKFILL_VERSION = "2026-07-11-historical-relative-strength-v2"
 DEFAULT_OUTPUT_DIR = "output/backfill"
 DEFAULT_CACHE = "data/jpx_list_cache.csv"
 DEFAULT_CONFIG = "config.yaml"
@@ -293,6 +294,8 @@ def build_historical_ranking(
         base = base.sort_values(["score", "return_20d", "volume_ratio"], ascending=[False, False, False], na_position="last")
         day = evaluation_date.date().isoformat()
         ranked = main.enrich_ranking_features(base, historical, day, top_limit)
+        ranked = main.attach_relative_strength(ranked)
+        ranked = rs_lifecycle.attach(ranked, historical, day)
         columns = [column for column in main.ranking_history_columns() if column in ranked.columns]
         columns += [column for column in ranked.columns if column not in columns]
         ranked = ranked[columns]
@@ -351,6 +354,20 @@ def write_outputs(
         "sufficient_history_symbol_count": int((quality["status"] == "OK").sum()) if not quality.empty else 0,
         "ranking_date_count": int(history["date"].nunique()) if not history.empty else 0,
         "ranking_row_count": len(history),
+        "relative_strength_enabled": True,
+        "relative_strength_non_null_ratio": (
+            float(pd.to_numeric(history.get("relative_strength_score"), errors="coerce").notna().mean())
+            if not history.empty else 0.0
+        ),
+        "relative_strength_grade_count": (
+            int(history.get("relative_strength_grade", pd.Series(dtype=str)).replace("", pd.NA).dropna().nunique())
+            if not history.empty else 0
+        ),
+        "relative_strength_lifecycle_enabled": True,
+        "relative_strength_lifecycle_non_null_ratio": (
+            float(history.get("relative_strength_lifecycle", pd.Series(dtype=str)).replace("", pd.NA).notna().mean())
+            if not history.empty else 0.0
+        ),
         "jpx_cache_sha256": cache_hash,
         "price_adjustment": "ADJUSTED_OHLC_WITH_RAW_CLOSE_VOLUME_FOR_TRADING_VALUE",
         "universe_bias": "CURRENT_LIST_ONLY_SURVIVORSHIP_AND_DELISTING_BIAS",
@@ -429,6 +446,12 @@ def main_cli() -> int:
             raise RuntimeError("historical ranking did not produce at least two dates")
         if history.duplicated(["date", "code"]).any():
             raise RuntimeError("duplicate date/code rows in historical ranking")
+        relative_score = pd.to_numeric(history.get("relative_strength_score"), errors="coerce")
+        if relative_score.isna().any():
+            raise RuntimeError("historical ranking contains missing relative strength scores")
+        lifecycle = history.get("relative_strength_lifecycle", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+        if lifecycle.eq("").any():
+            raise RuntimeError("historical ranking contains missing relative strength lifecycle states")
         sufficient_ratio = float((quality["status"] == "OK").mean()) if len(quality) else 0.0
         if sufficient_ratio < 0.50:
             raise RuntimeError(f"less than 50% of selected symbols have sufficient history: {sufficient_ratio:.1%}")
