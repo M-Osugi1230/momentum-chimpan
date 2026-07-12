@@ -1,0 +1,288 @@
+name: Volume Component Robustness
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - volume_component_robustness.py
+      - volume_component_aggregate_guard.py
+      - research/volume_component_robustness.yaml
+      - .github/test_volume_component_robustness.py
+      - .github/test_volume_component_aggregate_guard.py
+      - .github/workflows/volume-component-robustness.yml
+      - score_component_ablation.py
+      - historical_backfill.py
+      - historical_price_panel.py
+      - replay.py
+      - portfolio_research.py
+      - portfolio_exit_lab.py
+      - portfolio_regime_attribution.py
+      - main.py
+  workflow_dispatch:
+    inputs:
+      fold_count:
+        description: 'Number of disjoint sector-stratified folds'
+        required: false
+        default: '5'
+        type: string
+      symbols_per_fold:
+        description: 'Symbols in each fold'
+        required: false
+        default: '60'
+        type: string
+      lookback_calendar_days:
+        description: 'Calendar-day historical lookback'
+        required: false
+        default: '500'
+        type: string
+      sample_every:
+        description: 'Ranking snapshot interval in trading days'
+        required: false
+        default: '5'
+        type: string
+  schedule:
+    # Monthly, fifth day at 11:30 JST after component ablation research.
+    - cron: '30 2 5 * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: volume-component-robustness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile robustness tools
+        run: |
+          python -m py_compile \
+            volume_component_robustness.py volume_component_aggregate_guard.py \
+            score_component_ablation.py historical_backfill.py historical_price_panel.py replay.py \
+            portfolio_research.py portfolio_exit_lab.py portfolio_regime_attribution.py main.py \
+            .github/test_volume_component_robustness.py \
+            .github/test_volume_component_aggregate_guard.py
+      - name: Run synthetic cross-fold validation
+        run: |
+          set -o pipefail
+          {
+            python .github/test_volume_component_robustness.py
+            python .github/test_volume_component_aggregate_guard.py
+          } 2>&1 | tee /tmp/volume-component-robustness-test.log
+      - name: Validate registry and read-only workflow policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          workflow_path = Path('.github/workflows/volume-component-robustness.yml')
+          workflow = yaml.safe_load(workflow_path.read_text(encoding='utf-8'))
+          registry = yaml.safe_load(Path('research/volume_component_robustness.yaml').read_text(encoding='utf-8'))
+          assert workflow['permissions']['contents'] == 'read'
+          text = workflow_path.read_text(encoding='utf-8')
+          assert ('git' + ' push') not in text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          assert registry['comparison']['preserved_daily_score_distribution'] is True
+          assert registry['governance']['promotion_evidence_allowed'] is False
+          assert registry['governance']['automatic_weight_change'] is False
+          assert registry['governance']['automatic_strategy_change'] is False
+          assert registry['validation_gate']['minimum_evaluable_folds'] >= 3
+          PY
+      - name: Upload validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-component-robustness-test-log
+          path: /tmp/volume-component-robustness-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  analyze:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Resolve pilot or scheduled parameters
+        id: parameters
+        env:
+          INPUT_FOLD_COUNT: ${{ inputs.fold_count }}
+          INPUT_SYMBOLS_PER_FOLD: ${{ inputs.symbols_per_fold }}
+          INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_calendar_days }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            fold_count=3
+            symbols_per_fold=48
+            lookback_days=420
+            sample_every=5
+            batch_size=48
+            run_mode=pull_request_pilot
+          else
+            fold_count="${INPUT_FOLD_COUNT:-5}"
+            symbols_per_fold="${INPUT_SYMBOLS_PER_FOLD:-60}"
+            lookback_days="${INPUT_LOOKBACK_DAYS:-500}"
+            sample_every="${INPUT_SAMPLE_EVERY:-5}"
+            batch_size=50
+            run_mode=scheduled_or_manual
+          fi
+          echo "fold_count=${fold_count}" >> "${GITHUB_OUTPUT}"
+          echo "symbols_per_fold=${symbols_per_fold}" >> "${GITHUB_OUTPUT}"
+          echo "lookback_days=${lookback_days}" >> "${GITHUB_OUTPUT}"
+          echo "sample_every=${sample_every}" >> "${GITHUB_OUTPUT}"
+          echo "batch_size=${batch_size}" >> "${GITHUB_OUTPUT}"
+          echo "run_mode=${run_mode}" >> "${GITHUB_OUTPUT}"
+      - name: Prepare disjoint sector-stratified folds
+        run: |
+          mkdir -p output/volume_component/folds output/volume_component/report
+          echo "run_mode=${{ steps.parameters.outputs.run_mode }}" > output/volume_component/run-mode.txt
+          python volume_component_robustness.py prepare-folds \
+            --cache data/jpx_list_cache.csv \
+            --config config.yaml \
+            --output-dir output/volume_component/folds \
+            --fold-count "${{ steps.parameters.outputs.fold_count }}" \
+            --symbols-per-fold "${{ steps.parameters.outputs.symbols_per_fold }}"
+      - name: Build and analyze each fold
+        env:
+          LOOKBACK_DAYS: ${{ steps.parameters.outputs.lookback_days }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+          BATCH_SIZE: ${{ steps.parameters.outputs.batch_size }}
+        run: |
+          set -euo pipefail
+          for fold_dir in output/volume_component/folds/fold_*; do
+            [ -d "${fold_dir}" ] || continue
+            fold_id="$(basename "${fold_dir}")"
+            mkdir -p "${fold_dir}/backfill/replay" "${fold_dir}/analysis"
+            echo "Analyzing ${fold_id}"
+            python historical_backfill.py \
+              --strict \
+              --cache "${fold_dir}/jpx_fold_cache.csv" \
+              --max-symbols 0 \
+              --lookback-calendar-days "${LOOKBACK_DAYS}" \
+              --sample-every "${SAMPLE_EVERY}" \
+              --batch-size "${BATCH_SIZE}" \
+              --output-dir "${fold_dir}/backfill" | tee "${fold_dir}/backfill/backfill.log"
+            python evidence_provenance.py seal-derived \
+              --source-manifest "${fold_dir}/backfill/backfill_manifest.json" \
+              --provenance "${fold_dir}/backfill/replay/evidence_provenance.json"
+            python historical_price_panel.py \
+              --strict \
+              --history "${fold_dir}/backfill/historical_ranking.csv" \
+              --backfill-manifest "${fold_dir}/backfill/backfill_manifest.json" \
+              --output "${fold_dir}/backfill/historical_price_panel.csv" \
+              --manifest "${fold_dir}/backfill/historical_price_panel_manifest.json" \
+              --batch-size "${BATCH_SIZE}" | tee "${fold_dir}/backfill/price-panel.log"
+            python volume_component_robustness.py analyze-fold \
+              --strict \
+              --history "${fold_dir}/backfill/historical_ranking.csv" \
+              --prices "${fold_dir}/backfill/historical_price_panel.csv" \
+              --provenance "${fold_dir}/backfill/replay/evidence_provenance.json" \
+              --fold-manifest "${fold_dir}/fold_manifest.json" \
+              --registry research/volume_component_robustness.yaml \
+              --output-dir "${fold_dir}/analysis" \
+              --top-limit 100 | tee "${fold_dir}/analysis/analysis.log"
+          done
+      - name: Aggregate cross-fold evidence
+        run: |
+          set -o pipefail
+          python volume_component_aggregate_guard.py \
+            --strict \
+            --fold-root output/volume_component/folds \
+            --registry research/volume_component_robustness.yaml \
+            --output-dir output/volume_component/report | tee output/volume_component/report/aggregate.log
+      - name: Validate cross-fold evidence
+        env:
+          EXPECTED_FOLDS: ${{ steps.parameters.outputs.fold_count }}
+          EXPECTED_SYMBOLS_PER_FOLD: ${{ steps.parameters.outputs.symbols_per_fold }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/volume_component')
+          folds_root = root / 'folds'
+          report = root / 'report'
+          expected_folds = int(os.environ['EXPECTED_FOLDS'])
+          expected_symbols = int(os.environ['EXPECTED_SYMBOLS_PER_FOLD'])
+          folds_manifest = json.loads((folds_root / 'folds_manifest.json').read_text(encoding='utf-8'))
+          fold_index = pd.read_csv(folds_root / 'fold_index.csv')
+          overlap = pd.read_csv(folds_root / 'fold_overlap_matrix.csv')
+          summary = pd.read_csv(report / 'volume_component_robustness_summary.csv')
+          fold_summary = pd.read_csv(report / 'volume_cross_fold_summary.csv')
+          manifest = json.loads((report / 'volume_component_robustness_manifest.json').read_text(encoding='utf-8'))
+
+          assert folds_manifest['fold_count'] == expected_folds
+          assert folds_manifest['selected_symbol_count'] == expected_folds * expected_symbols
+          assert folds_manifest['cross_fold_overlap_count'] == 0
+          assert len(fold_index) == expected_folds
+          assert fold_index['symbol_count'].eq(expected_symbols).all()
+          assert overlap.loc[overlap['left_fold'] != overlap['right_fold'], 'overlap_count'].eq(0).all()
+          assert len(fold_summary) == expected_folds
+          assert summary.iloc[0]['fold_count'] == expected_folds
+          assert summary.iloc[0]['robustness_status'] in {
+              'ROBUSTLY_SUPPORTED', 'DIRECTIONALLY_SUPPORTED', 'NOT_SUPPORTED'
+          }
+          assert summary.iloc[0]['automatic_weight_change_allowed'] == False
+          assert int(summary.iloc[0]['complete_case_date_count']) >= 10
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_weight_change'] is False
+          assert manifest['automatic_strategy_change'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert manifest['aggregate_uses_sample_adequate_folds_only'] is True
+          assert manifest['aggregate_requires_complete_fold_date_coverage'] is True
+          assert int(manifest['aggregate_fold_id_count']) == int(summary.iloc[0]['evaluable_fold_count'])
+          assert len(manifest['aggregate_fold_ids'].split('|')) == int(manifest['aggregate_fold_id_count'])
+
+          for fold_id in fold_index['fold_id']:
+              analysis = folds_root / fold_id / 'analysis'
+              fold_manifest = json.loads((analysis / 'volume_fold_analysis_manifest.json').read_text(encoding='utf-8'))
+              fold_result = pd.read_csv(analysis / 'volume_fold_summary.csv').iloc[0]
+              audit = pd.read_csv(analysis / 'volume_fold_distribution_audit.csv')
+              assert fold_manifest['daily_score_distribution_preserved'] is True
+              assert fold_manifest['promotion_evidence_allowed'] is False
+              assert fold_manifest['automatic_weight_change'] is False
+              assert fold_manifest['production_state_mutations'] == []
+              assert bool(fold_result['distribution_preserved'])
+              assert int(fold_result['baseline_lookahead_violations']) == 0
+              assert int(fold_result['tested_lookahead_violations']) == 0
+              assert audit['score_multiset_equal'].all()
+
+          print(fold_summary[[
+              'fold_id', 'baseline_full_trades', 'tested_full_trades',
+              'baseline_total_return', 'tested_total_return',
+              'delta_excess_return', 'delta_max_drawdown',
+              'early_delta_excess', 'late_delta_excess', 'fold_status'
+          ]].to_string(index=False))
+          print(summary.to_string(index=False))
+          PY
+      - name: Upload cross-fold volume evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-component-robustness-${{ github.run_id }}
+          path: output/volume_component/
+          if-no-files-found: warn
+          retention-days: 90

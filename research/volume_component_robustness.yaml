@@ -1,0 +1,48 @@
+study:
+  id: volume-component-cross-fold-v1
+  registered_at: '2026-07-11'
+  source_pr: 59
+  hypothesis: Removing the governed volume-ratio score component reduces execution-aware portfolio performance across disjoint sector-stratified symbol folds.
+
+comparison:
+  baseline_variant: baseline
+  tested_variant: drop_volume_ratio
+  preserved_daily_score_distribution: true
+  entry_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  same_day_close_entry_allowed: false
+  exit_policy:
+    stop_loss: 0.08
+    profit_target: 0.15
+    trailing_stop: 0.10
+    maximum_holding_sessions: 20
+    signal_exit: true
+
+pilot:
+  fold_count: 3
+  symbols_per_fold: 48
+  lookback_calendar_days: 420
+  sample_every_trading_days: 5
+
+scheduled:
+  fold_count: 5
+  symbols_per_fold: 60
+  lookback_calendar_days: 500
+  sample_every_trading_days: 5
+
+validation_gate:
+  minimum_evaluable_folds: 3
+  minimum_full_trades_per_fold: 25
+  minimum_subperiod_trades_per_fold: 6
+  minimum_harm_direction_fraction: 0.75
+  maximum_two_sided_p_value: 0.05
+  require_aggregate_ci_high_below_zero: true
+  require_median_delta_excess_below_zero: true
+
+governance:
+  research_only: true
+  promotion_evidence_allowed: false
+  automatic_weight_change: false
+  automatic_strategy_change: false
+  manual_review_required: true
+  production_state_mutation_allowed: false
+  execution_mode: RESEARCH_AND_PAPER_ONLY
