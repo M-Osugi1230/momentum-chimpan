@@ -135,7 +135,7 @@ def main() -> None:
             assert payload["production_state_mutations"] == []
 
             mismatched = eligibility.load_history(ledger_path)
-            mismatched.loc[:, "ranking_date_sha256"] = "0" * 64
+            mismatched.loc[:, "ranking_date_sha256"] = "0a" * 32
             mismatched.to_csv(ledger_path, index=False)
             mismatch_output = root / "output" / "mismatch.csv"
             mismatch_manifest = root / "output" / "mismatch.json"
