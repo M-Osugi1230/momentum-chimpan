@@ -175,6 +175,9 @@ def install_patches(
 
     @wraps(original_send_email)
     def patched_send_email(*args: Any, **kwargs: Any) -> Any:
+        # Keep receipt classification aligned with the original mail function,
+        # which supports credentials loaded from a local .env file.
+        main_module.load_dotenv()
         return email_delivery.send_with_receipt(
             original_send_email,
             *args,
