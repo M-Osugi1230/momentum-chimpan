@@ -2,7 +2,7 @@ study:
   id: volume-component-forward-evidence-v1
   registered_at: '2026-07-12'
   eligible_signal_date_from: '2026-07-13'
-  source_pr: 60
+  source_pr: 61
   hypothesis: The governed volume-ratio score component improves next-session executable forward outcomes versus a distribution-preserving removal counterfactual.
 
 comparison:
@@ -24,6 +24,13 @@ evidence_gate:
   maximum_two_sided_p_value: 0.05
   require_ci_high_below_zero: true
   require_early_and_late_negative: true
+
+operations:
+  raw_evidence_persistence: ACTIONS_ARTIFACT_ONLY
+  signed_status_path: data/volume_component_forward_status.json
+  publisher_workflow: Publish Volume Component Forward Status
+  status_commit_policy: SEMANTIC_EVIDENCE_CHANGE_ONLY
+  status_commit_retriggers_forward_analysis: false
 
 governance:
   research_only: true
