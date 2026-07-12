@@ -4,7 +4,7 @@ Last updated: 2026-07-13
 
 ## Purpose
 
-The monthly review combines operational reliability, data quality, daily research focus, prospective 5/10/20-session calibration, Forward Evidence, and strategy governance in one compact artifact.
+The monthly review combines operational reliability, SMTP acceptance, data quality, daily research focus, prospective 5/10/20-session calibration, Forward Evidence, and strategy governance in one compact artifact.
 
 It is a read-only management report. It does not change production state, Momentum scores, score weights, priority rules, paper execution, or live orders.
 
@@ -37,6 +37,8 @@ The report reads only established sources:
 
 - `research/operations/daily_production_audit.csv`;
 - `research/operations/daily_production_audit_status.json`;
+- `research/operations/email_delivery_audit.csv`;
+- `research/operations/email_delivery_audit_status.json`;
 - `data/momentum_daily_ranking.csv`;
 - `data/operations_heartbeat.json`;
 - `research/priority_outcomes/daily_research_decisions.csv`;
@@ -79,15 +81,32 @@ Metrics include:
 
 A failed run followed by a later passing run for the same report date is marked `RECOVERED_BY_LATER_PASS`. Otherwise, corrective action remains `NOT_RECORDED_IN_AUDIT_LEDGER`.
 
-## Email-delivery limitation
+## SMTP acceptance section
 
-The current operational state does not persist a separate positive delivery receipt for Gmail.
+The monthly review no longer infers email success from workflow or workbook success.
 
-Therefore the report states:
+It reads the signed SMTP receipt audit and reports:
 
-`NOT_CAPTURED_SEPARATELY_FROM_WORKFLOW_SUCCESS`
+- receipt row count;
+- valid-receipt rate;
+- scheduled receipt count;
+- scheduled email attempt count;
+- scheduled SMTP accepted count;
+- scheduled SMTP acceptance rate;
+- scheduled secret-configuration skips;
+- scheduled send failures.
 
-This avoids presenting workflow or report success as verified email delivery. A future delivery receipt may close this measurement gap.
+The operational claim is limited to:
+
+`SMTP_ACCEPTANCE_ONLY`
+
+A successful receipt means the application observed no SMTP rejection. It does not prove final inbox delivery.
+
+The report always states:
+
+`NOT_OBSERVED_BY_SMTP_ACCEPTANCE_RECEIPT`
+
+for final inbox delivery, spam placement, opening, and reading.
 
 ## Data Quality section
 
@@ -170,7 +189,7 @@ The expected monthly strategy-change count is zero unless an explicit, hash-boun
 
 The review explicitly retains these limitations:
 
-- email delivery is not separately captured from workflow/report success;
+- SMTP acceptance is observable, but final inbox delivery, spam placement, opening, and reading are not;
 - sector outcome comparison is a same-date decision-cohort proxy rather than a licensed sector index;
 - small samples are not validated evidence of priority quality;
 - monthly artifacts currently expire after 90 days because of the repository retention cap.
