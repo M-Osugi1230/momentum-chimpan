@@ -1,9 +1,11 @@
-"""Daily entrypoint for governed display and data-quality augmentation.
+"""Daily entrypoint for governed display, quality, and research focus.
 
 The governed screener still runs through ``main.main``. This wrapper augments
 human-facing Excel/email outputs and persisted ranking rows with research
-transparency and non-mutating data-quality metadata. Momentum scores, ranks,
-thresholds, paper execution, and strategy fingerprints remain untouched.
+transparency and non-mutating data-quality metadata. It also converts the
+existing action-priority table into a concise daily research plan after paper
+execution has already completed. Momentum scores, ranks, thresholds, paper
+execution, and strategy fingerprints remain untouched.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+import daily_research_focus
 import data_quality
 import main
 import research_transparency as transparency
@@ -44,11 +47,14 @@ def enrich_summary(
     summary: dict[str, Any],
     snapshot: dict[str, Any],
     quality_fields: dict[str, Any] | None = None,
+    focus_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = dict(summary)
     result.update(transparency.summary_fields(snapshot))
     if quality_fields:
         result.update(quality_fields)
+    if focus_fields:
+        result.update(focus_fields)
     return result
 
 
@@ -81,9 +87,10 @@ def install_patches(
     )
     config = main_module.load_config()
     minimum_trading_value = float(config["market"]["min_trading_value"])
-    quality_context: dict[str, pd.DataFrame] = {
+    display_context: dict[str, pd.DataFrame] = {
         "top100": pd.DataFrame(),
         "action_priority": pd.DataFrame(),
+        "daily_focus": pd.DataFrame(),
     }
 
     @wraps(original_provenance)
@@ -104,19 +111,31 @@ def install_patches(
         top100 = argument_frame(args, kwargs, 0, "top100")
         action_priority = argument_frame(args, kwargs, 29, "action_priority")
         gated_priority = data_quality.apply_priority_gate(action_priority, top100)
-        if not action_priority.empty or not gated_priority.empty:
-            data_quality.replace_frame_in_place(action_priority, gated_priority)
-        quality_context["top100"] = top100.copy()
-        quality_context["action_priority"] = gated_priority.copy()
-        quality_fields = data_quality.summary_fields(top100, gated_priority)
+        focused_priority = daily_research_focus.attach_daily_focus(
+            gated_priority,
+            top100,
+        )
+        if not action_priority.empty or not focused_priority.empty:
+            data_quality.replace_frame_in_place(action_priority, focused_priority)
+        display_context["top100"] = top100.copy()
+        display_context["action_priority"] = focused_priority.copy()
+        display_context["daily_focus"] = focused_priority.copy()
+        quality_fields = data_quality.summary_fields(top100, focused_priority)
+        focus_fields = daily_research_focus.summary_fields(focused_priority)
         result = original_excel(
             path,
-            enrich_summary(summary, current, quality_fields),
+            enrich_summary(
+                summary,
+                current,
+                quality_fields,
+                focus_fields,
+            ),
             *args,
             **kwargs,
         )
         transparency.patch_workbook(path, current)
-        data_quality.patch_workbook(path, top100, gated_priority)
+        data_quality.patch_workbook(path, top100, focused_priority)
+        daily_research_focus.patch_workbook(path, focused_priority)
         return result
 
     @wraps(original_plain)
@@ -124,9 +143,13 @@ def install_patches(
         body = original_plain(*args, **kwargs)
         body = insert_plain_section(
             body,
+            daily_research_focus.plain_section(display_context["daily_focus"]),
+        )
+        body = insert_plain_section(
+            body,
             data_quality.plain_section(
-                quality_context["top100"],
-                quality_context["action_priority"],
+                display_context["top100"],
+                display_context["action_priority"],
             ),
         )
         return insert_plain_section(body, transparency.plain_section(current))
@@ -136,9 +159,13 @@ def install_patches(
         body = original_html(*args, **kwargs)
         body = insert_html_section(
             body,
+            daily_research_focus.html_section(display_context["daily_focus"]),
+        )
+        body = insert_html_section(
+            body,
             data_quality.html_section(
-                quality_context["top100"],
-                quality_context["action_priority"],
+                display_context["top100"],
+                display_context["action_priority"],
             ),
         )
         return insert_html_section(body, transparency.html_section(current))
@@ -164,6 +191,12 @@ def run() -> None:
         "Data quality: policy=%s minimum_trading_value=%s score_and_rank_mutation=disabled",
         data_quality.load_policy()["policy"]["id"],
         main.load_config()["market"]["min_trading_value"],
+    )
+    main.logger.info(
+        "Daily research focus: policy=%s A_cap=%s action_list_cap=%s paper_execution_mutation=disabled",
+        daily_research_focus.load_policy()["policy"]["id"],
+        daily_research_focus.load_policy()["limits"]["maximum_A_candidates"],
+        daily_research_focus.load_policy()["limits"]["maximum_daily_action_list"],
     )
     main.main()
 
