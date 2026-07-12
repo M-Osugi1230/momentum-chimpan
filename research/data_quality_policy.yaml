@@ -1,0 +1,82 @@
+policy:
+  id: daily-ranking-data-quality-v1
+  registered_at: '2026-07-12'
+  purpose: Grade the reliability of each ranked stock without changing Momentum scores or ranks.
+
+source_contract:
+  expected_date_column: date
+  observed_price_date_column: price_date
+  identity_columns: [code, name]
+  critical_numeric_columns:
+    - close
+    - volume
+    - trading_value
+  analytical_columns:
+    - return_20d
+    - volume_ratio
+    - ma20
+    - ma60
+  optional_warning_columns:
+    - prev_close
+    - return_5d
+    - ma20_deviation
+    - sector33
+
+thresholds:
+  minimum_trading_value_source: config.yaml#market.min_trading_value
+  corporate_action_absolute_daily_return: 0.45
+  extreme_five_day_absolute_return: 1.00
+  extreme_twenty_day_absolute_return: 2.00
+  extreme_volume_ratio: 50.0
+  extreme_ma20_deviation: 1.50
+
+reason_codes:
+  critical:
+    - INVALID_CODE
+    - MISSING_NAME
+    - MISSING_PRICE_DATE
+    - INVALID_CLOSE
+    - INVALID_VOLUME
+    - INVALID_TRADING_VALUE
+  material:
+    - STALE_PRICE
+    - BELOW_MINIMUM_TRADING_VALUE
+    - POSSIBLE_CORPORATE_ACTION
+    - MISSING_ANALYTICAL_FIELD
+  warning:
+    - BLANK_SECTOR
+    - EXTREME_5D_RETURN
+    - EXTREME_20D_RETURN
+    - EXTREME_VOLUME_RATIO
+    - EXTREME_MA20_DEVIATION
+
+grades:
+  A:
+    meaning: Complete, current, and no detected warning.
+    eligible_for_priority_A: true
+  B:
+    meaning: Current and analytically usable with a minor warning.
+    eligible_for_priority_A: true
+  C:
+    meaning: Material caution; may remain visible but cannot be priority A.
+    eligible_for_priority_A: false
+  D:
+    meaning: Critical identity or core market-data failure; reference only.
+    eligible_for_priority_A: false
+
+priority_boundary:
+  preserve_momentum_score: true
+  preserve_momentum_rank: true
+  grade_C_max_priority: B
+  grade_D_forced_priority: 見送り
+  store_original_priority_column: action_priority_before_quality
+  store_adjustment_reason_column: quality_adjustment_reason
+
+governance:
+  display_and_research_priority_only: true
+  automatic_score_change: false
+  automatic_weight_change: false
+  automatic_strategy_change: false
+  production_state_mutations: []
+  live_orders: false
+  manual_review_required_for_policy_change: true
