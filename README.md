@@ -1,48 +1,60 @@
-# モメンタムチンパン戦法 自動ストックピックシステム
+# Momentum Chimpan
 
-本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。
+日本株のモメンタムを引け後に自動分析し、**今日どの銘柄から詳しく調査すべきか**を短時間で判断するための研究支援システムです。
+
+特定銘柄の売買を推奨するものではありません。実注文、自動売買、売り推奨、保有銘柄管理、自動的な戦略変更は行いません。
 
 ## 目的
 
-毎営業日の引け後に日本株を自動スクリーニングし、単なる買い候補TOP10メールではなく、以下を確認できる「日本株モメンタムダッシュボード」を作ります。
+毎営業日の引け後に、次の4点を把握できる状態を作ります。
 
+1. 日本株市場全体のモメンタムは強いか、弱いか
+2. 新しく強くなった銘柄は何か
+3. 強さが加速・継続・再浮上・失速している銘柄は何か
+4. 今日どの銘柄を優先して詳しく調査すべきか
+
+North Starは、メールまたはSummaryを約3分見るだけで、市場状態・重要な変化・優先調査候補・注意点を理解できることです。
+
+## ドキュメント
+
+- [プロジェクト憲章](docs/PROJECT_CHARTER.md)
+- [中長期ロードマップ](docs/ROADMAP.md)
+- [システムアーキテクチャ](docs/ARCHITECTURE.md)
+- [運用・復旧Runbook](docs/OPERATIONS_RUNBOOK.md)
+- [データ辞書](docs/DATA_DICTIONARY.md)
+- [KPI辞書](docs/KPI_DICTIONARY.md)
+- [研究エビデンス正本](research/evidence_catalog.yaml)
+- [出来高倍率Forward Evidence事前登録](research/volume_component_forward_evidence.yaml)
+
+ロードマップの実行索引はGitHub Issue #78です。
+
+## 現在できること
+
+### 日次スクリーニング
+
+- JPX上場銘柄一覧を取得
+- Prime / Standard / Growthの通常個別株を中心に分析
+- ETF・ETN・REITを除外
+- 最低株価・最低売買代金条件
+- `yfinance`による価格取得
 - Momentum Top100
+- メール上位30件
 - 新規ランクイン
 - 急上昇
 - 過去最高順位更新
-- TOP30継続
+- Top30継続
 - 年初来高値更新ランキング
 - Market Temperature
+- 市場レジーム
+- 業種リーダー
+- 相対強度ライフサイクル
+- ペーパーポートフォリオと実行監査
+- 研究エビデンスの透明性表示
 
-売買注文、自動売買、売り推奨、保有銘柄管理は行いません。
-
-## できること
-
-- JPX の上場銘柄一覧を取得し、Prime / Standard / Growth の通常個別株を中心にスクリーニングします。
-- `yfinance` から Yahoo Finance 形式（例: `7203.T`）で株価を取得します。
-- 年初来高値、騰落率、移動平均線、出来高倍率、売買代金から 100 点満点のモメンタムスコアを計算します。
-- Excel には Momentum Top100 を出力します。
-- メール本文には Momentum Top10 に加え、新規ランクイン上位5件、急上昇上位5件、TOP30継続ランキング上位5件を表示します。
-- `data/momentum_daily_ranking.csv` に毎日の全スキャン銘柄ランキングを保存します。
-- `data/market_temperature.csv` に市場温度感を保存します。
-- `output/daily_report.xlsx` を作成し、GitHub Actions artifact に保存します。
-- Gmail アプリパスワードで通知メールを送信します。
-
-## 売り候補機能について
-
-この版では売り候補機能を削除しています。
-
-- `holdings.csv` は読み込みません。
-- Sell Candidates シートは作成しません。
-- メール本文に売り候補は表示しません。
-- 売りシグナル計算は行いません。
-
-売却判断は取得単価、保有期間、税金、ポジションサイズ、個別材料に強く依存するため、このツールでは扱いません。
-
-## スコア配点
+### 現行スコア
 
 | 項目 | 最大点 |
-| --- | ---: |
+|---|---:|
 | 年初来高値更新 | 30 |
 | 年初来高値の連続更新日数 | 20 |
 | 20日騰落率 | 20 |
@@ -50,9 +62,25 @@
 | 20日線・60日線より上 | 10 |
 | 売買代金 | 5 |
 
-## 履歴と変化検知
+現在、出来高倍率15点については歴史検証の結果が期間・銘柄群によって競合しています。
 
-`data/momentum_daily_ranking.csv` には、毎日の全スキャン銘柄を保存します。主な保存項目は以下です。
+正本`research/evidence_catalog.yaml`では次の状態です。
+
+- current decision: `HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE`
+- historical consensus: `CONFLICTED_TIME_UNSTABLE`
+- research status: `UNRESOLVED`
+- governing study: `volume-component-forward-evidence-v1`
+- automatic weight change: disabled
+- automatic strategy change: disabled
+- manual review required
+
+したがって、現行15点は据え置きます。Forward Evidence完了前に配点を自動変更しません。
+
+## ランキング履歴と変化検知
+
+`data/momentum_daily_ranking.csv`に、毎日の全スキャン銘柄を保存します。
+
+主要項目:
 
 - `date`
 - `rank`
@@ -70,210 +98,226 @@
 - `is_rising_fast`
 - `is_best_rank`
 - `top30_streak`
+- 現行のライフサイクル・業種・優先度・証拠stamp関連項目
 
-保存時は `code + date` で重複排除します。
+自然キーは`date + code`です。同じ市場日の再実行時も、同じ銘柄を二重保存しないことが前提です。
 
-変化検知は、単純なカレンダー前日ではなく、履歴ファイル内の直近過去実行日と比較します。そのため、土日・祝日明けでも最新2回の実行結果を比較できます。
-
-### 新規ランクイン
-
-直近過去実行日に Top100 圏外で、今日 Top100 に入った銘柄です。
-
-### 急上昇
-
-`rank_change = previous_rank - current_rank` で計算し、20位以上順位を上げた Top100 銘柄です。
-
-### 過去最高順位更新
-
-過去の保存履歴における自己最高順位を更新した銘柄です。
-
-### TOP30継続
-
-連続して Top30 に入っている実行日数です。`top30_streak` として保存・表示します。
+変化検知はカレンダー前日ではなく、履歴内の直近過去実行日と比較します。土日・祝日明けでも最新2回の結果を比較します。
 
 ## Market Temperature
 
-`data/market_temperature.csv` に、市場全体の温度感を日次保存します。
+`data/market_temperature.csv`に、市場全体のモメンタム状態を保存します。
 
-| 項目 | 意味 |
-| --- | --- |
-| `ytd_high_count` | 当日の全スキャン銘柄における年初来高値更新数 |
-| `top100_avg_score` | Top100 の平均スコア |
-| `top100_avg_return_20d` | Top100 の平均20日騰落率 |
-| `top100_avg_volume_ratio` | Top100 の平均出来高倍率 |
-| `delta_*` | 直近過去実行日との差分 |
+主な内容:
 
-過去の版では年初来高値数が Top100 ベースだった時期があります。この版では全スキャン銘柄ベースです。
+- 年初来高値更新銘柄数
+- Top100平均スコア
+- Top100平均20日騰落率
+- Top100平均出来高倍率
+- 前回比
+- 市場レジーム
+- 移動平均ベースの市場breadth
+- 過熱銘柄数・比率
+- レジーム変化・継続日数
 
-## Excelシート構成
+## 日次レポート
 
-`output/daily_report.xlsx` には以下のシートを出力します。
+生産環境のエントリーポイントは`daily_runner.py`です。
 
-1. `Summary`
-2. `Momentum Top100`
-3. `New Entries`
-4. `Rising Fast`
-5. `Top30 Streak`
-6. `YTD High Ranking`
-7. `Market Temperature`
-8. `Scanned Universe`
-9. `Errors`
+`daily_runner.py`は`main.py`のランキング・履歴・ペーパー処理を実行したうえで、研究エビデンスの現在地をExcelとメールへ表示します。表示層からスコアやproduction stateを変更しません。
 
-### Summary
+生成物:
 
-実行日、アプリ版、レポート形式、JPX上場銘柄数、通常株ユニバース数、実スキャン対象銘柄数、取得成功数、取得失敗数、年初来高値更新数、Momentum Top100件数、新規ランクイン数、急上昇数、過去最高順位更新数、TOP30継続10日以上件数、検証モード、処理時間秒を表示します。
+- `output/daily_report.xlsx`
+- HTMLメール
+- プレーンテキストメール
+- `output/run.log`
+- 運用・証拠・復旧診断
 
-### Momentum Top100
+Workbookの中心は次の情報です。
 
-モメンタムスコア順の上位100銘柄です。確認対象であり、買い推奨ではありません。
+- Summary
+- Momentum Top100
+- New Entries
+- Rising Fast
+- Top30 Streak
+- YTD High Ranking
+- Market Temperature
+- Scanned Universe
+- Errors
+- Research Evidence
+- 現行アプリが生成するライフサイクル・業種・ペーパー・実行関連シート
 
-### New Entries
+`Research Evidence`では、出来高倍率15点据え置き、歴史エビデンスの競合、Forward Evidenceの件数・paired日数・統計状態を確認できます。
 
-直近過去実行日の Top100 圏外から、今日 Top100 に入った銘柄です。
+## 日次メール
 
-### Rising Fast
+現在の設定では、メールにMomentum上位30件を表示します。
 
-直近過去実行日から20位以上順位を上げた銘柄です。
+メールでは、ランキングだけでなく次の情報を確認できます。
 
-### Top30 Streak
+- 市場温度
+- 主要な変化
+- 新規ランクイン
+- 急上昇
+- Top30継続
+- 年初来高値更新
+- 業種・相対強度・ライフサイクル
+- 取得失敗や注意点
+- 現行研究判断とForward Evidence進捗
 
-Top30 に連続して入っている銘柄を、継続日数の長い順に表示します。
+今後はIssue #70に基づき、A / B / C / Watch / Skipの調査優先度へ再設計します。
 
-### YTD High Ranking
+## ペーパートレードと研究専用実行
 
-当日、年初来高値を更新した銘柄を、連続更新日数、更新回数、スコアの順で表示します。
+システムはペーパー状態と実行監査を保存できますが、実注文は行いません。
 
-### Market Temperature
+主なstate:
 
-年初来高値更新数、Top100平均スコア、Top100平均20日騰落率、Top100平均出来高倍率と前回比を表示します。
+- `data/paper_portfolio.csv`
+- `data/paper_trade_history.csv`
+- `data/paper_equity_history.csv`
+- `data/execution_audit.csv`
 
-### Scanned Universe
+ペーパーデータは候補選定やExitの研究・レビューに使用します。自動的に本番戦略へ昇格しません。
 
-実際にスキャンした銘柄コード、銘柄名、市場、スキャンモードを表示します。`MOMENTUM_MAX_SYMBOLS` を指定した場合は、制限後の銘柄のみになります。
+## Forward Evidence
 
-### Errors
+2026年7月13日以降のライブランキングを対象に、現行baselineと出来高倍率除外counterfactualを比較します。
 
-株価取得失敗、JPX一覧取得失敗、その他警告を記録します。エラーがあっても可能な限り処理を継続し、Excelに記録します。
+登録済み条件:
 
-## メール通知の見方
+- ライブランキング履歴のみ
+- strategy fingerprint付き
+- 同日終値entry禁止
+- 翌営業日調整後寄付
+- 5 / 10 / 20営業日
+- 市場・業種benchmark
+- score multiset維持
+- no-lookahead replay
+- transaction friction反映
 
-メールは HTML / プレーンテキストの両形式で送信します。
+主要gateは10日・20日の双方で:
 
-まず見るポイントには以下を表示します。
+- baseline 100 outcome以上
+- 出来高倍率除外 100 outcome以上
+- paired signal date 20日以上
 
-- 買い候補TOP100件数
-- 新規ランクイン件数
-- 急上昇件数
-- TOP30継続10日以上の件数
-- 年初来高値更新件数
-- 取得失敗件数
+Raw signals・価格・outcomesはGitHub Actions artifactに残します。
 
-続いて以下を表示します。
+リポジトリへ保存するのは署名済みcompact statusのみです。
 
-1. Market Temperature
-2. Momentum Top10
-3. 新規ランクイン上位5件
-4. 急上昇上位5件
-5. TOP30継続ランキング上位5件
+- `data/volume_component_forward_status.json`
 
-メール上の表示は、当日確認すべき銘柄を絞るためのダッシュボードです。詳細な数値は GitHub Actions artifact の `daily_report.xlsx` を確認してください。
+このstatusが欠損・改ざん・不正な場合、日次表示は安全側の警告と0件表示へ戻り、出来高倍率15点を維持します。
 
-## 初期設定
+## GitHub Actions日次運用
 
-Python 3.11 以上を用意し、依存関係をインストールします。
+`.github/workflows/daily.yml`は平日16:45 JSTに実行されます。
+
+主な順序:
+
+1. `main`をcheckout
+2. Pythonと依存関係を準備
+3. 戦略フィンガープリントをsnapshot
+4. `python daily_runner.py`
+5. operational heartbeatを生成
+6. ランキングとレポートの証拠stampを確認
+7. 復旧可能なstate snapshotをseal
+8. stateを検証し保存期間を管理
+9. 完全なproduction stateだけをcommit
+10. レポートと診断Artifactを保存
+11. 失敗時は通知し、最終gateをfailureにする
+
+production stateのallowlistと復旧方法は[Architecture](docs/ARCHITECTURE.md)と[Operations Runbook](docs/OPERATIONS_RUNBOOK.md)を参照してください。
+
+## セットアップ
+
+Python 3.11以上を用意します。GitHub ActionsではPython 3.12を使用しています。
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-主な設定は `config.yaml` で管理します。
-
-- `ranking.buy_candidate_limit`: Excel に出す Momentum Top 件数。既定は 100。
-- `ranking.email_top_n`: メールに出す Momentum Top 件数。既定は 10。
-- `data.ranking_history_path`: ランキング履歴 CSV の保存先。
-- `data.market_temperature_path`: Market Temperature CSV の保存先。
-- `data.output_path`: Excel レポートの保存先。
-- `data.request_timeout_seconds`: 1銘柄あたりの株価取得タイムアウト秒数。
-- `data.progress_log_interval`: 進捗ログを出す銘柄間隔。
+依存関係の再現性確認では`requirements.lock`も使用します。
 
 ## GitHub Secrets
 
-GitHub リポジトリの **Settings → Secrets and variables → Actions → New repository secret** から以下を登録してください。
+Repository Settings → Secrets and variables → Actionsに登録します。
 
 | Secret | 内容 |
-| --- | --- |
-| `EMAIL_FROM` | Gmail 送信元アドレス |
-| `EMAIL_TO` | 送信先メールアドレス |
-| `EMAIL_APP_PASSWORD` | Gmail アプリパスワード |
+|---|---|
+| `EMAIL_FROM` | Gmail送信元 |
+| `EMAIL_TO` | 送信先 |
+| `EMAIL_APP_PASSWORD` | Gmailアプリパスワード |
 
-ローカル実行時は `.env.example` を参考に `.env` を作成できます。
+未設定の場合、メール送信だけをスキップできる経路があります。研究Workflowへメールsecretを渡してはいけません。
 
-```env
-EMAIL_FROM=your-gmail-address@gmail.com
-EMAIL_TO=recipient@example.com
-EMAIL_APP_PASSWORD=your-gmail-app-password
-```
+## ローカル実行
 
-未設定の場合、メール送信だけをスキップします。
-
-## 手動実行
+現行のレポート構成を確認する場合:
 
 ```bash
-python3 main.py
+python3 daily_runner.py
 ```
 
-少数銘柄だけで検証する場合:
+少数銘柄の検証:
 
 ```bash
-MOMENTUM_MAX_SYMBOLS=3 python3 main.py
+MOMENTUM_MAX_SYMBOLS=3 python3 daily_runner.py
 ```
 
-macOSで簡単に実行する場合:
+macOS helper:
 
 ```bash
 ./run_local.sh 3
 ```
 
-引数なしの `./run_local.sh` は全銘柄スキャンです。
+引数なしの`./run_local.sh`は全銘柄スキャンです。
 
-## GitHub Actions
+限定銘柄の検証結果をproduction stateとして保存してはいけません。
 
-`.github/workflows/daily.yml` により、平日 07:45 UTC（日本時間 16:45）に実行されます。`workflow_dispatch` も有効なので、GitHub Actions 画面から手動実行できます。
+## 主な設定
 
-ワークフローでは以下を行います。
+`config.yaml`:
 
-1. Python をセットアップ
-2. `requirements.txt` をインストール
-3. `python main.py` を実行
-4. `output/daily_report.xlsx` を artifact として保存
-5. `data/momentum_daily_ranking.csv` と `data/market_temperature.csv` に変更があればコミット
+- `market.include_markets`
+- `market.exclude_etf`
+- `market.exclude_reit`
+- `market.min_trading_value`
+- `market.min_price`
+- `ranking.buy_candidate_limit`
+- `ranking.email_top_n`
+- `data.lookback_days`
+- 各履歴・出力path
+- request timeout
+- progress log interval
 
-自動コミットのため、workflow には `permissions: contents: write` を設定しています。
+設定変更がスコア・対象銘柄・実行結果へ影響する場合、strategy fingerprintが変わるproduction changeとして扱います。
 
-## よくある確認
+## 開発方針
 
-### 最新形式のレポートか確認する
+Forward Evidenceが`ACCUMULATING`の間は、新しいスコア最適化を凍結します。
 
-最新形式では Summary に `アプリ版`, `レポート形式`, `Momentum Top100`, `TOP30継続10日以上` が表示されます。
+優先する開発:
 
-```bash
-grep -n "dashboard_full_history" main.py
-grep -n "TOP30継続10日以上" main.py
-grep -n "Momentum Top100" README.md
-```
+- 本番運用の安定化
+- データ品質
+- メールとExcelの調査優先度UX
+- 5/10/20営業日の結果追跡
+- 証拠・復旧・レビュー品質
 
-### JPX一覧取得に失敗する
+凍結する開発:
 
-ネットワーク障害や JPX 側の変更が考えられます。過去に取得した `data/jpx_list_cache.csv` があればそれを利用します。キャッシュもない場合は対象ユニバースを空として終了します。
+- 配点変更
+- 新しいproductionスコア要素
+- 後付けの除外条件
+- 結果確認後のgate変更
+- 直近好調期間だけを使う最適化
+- 自動戦略昇格
 
-### メールが送信されない
+## 免責
 
-GitHub Secrets または `.env` の `EMAIL_FROM`, `EMAIL_TO`, `EMAIL_APP_PASSWORD` を確認してください。Gmail は通常のパスワードではなくアプリパスワードが必要です。メール送信に失敗しても Excel 出力は完了します。
+本システムはモメンタム確認と調査優先順位の支援を目的とします。
 
-### 祝日なのに workflow が実行される
-
-日本の祝日カレンダーによる厳密な停止は行いません。株価データの最新日が実行日と異なる場合はログに出力します。
-
-## 注意事項
-
-本ツールは日本株のモメンタム確認を補助するためのスクリーニングツールです。特定銘柄の売買を推奨するものではありません。最終的な投資判断は利用者自身の責任で行ってください。
+投資判断は利用者自身が行ってください。過去の検証結果、ランキング、ペーパートレード、期待値、研究ステータスは将来の成果を保証しません。
