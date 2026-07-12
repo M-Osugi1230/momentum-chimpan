@@ -1,0 +1,198 @@
+name: Volume Component Forward Evidence
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - volume_component_forward_evidence.py
+      - research/volume_component_forward_evidence.yaml
+      - .github/test_volume_component_forward_evidence.py
+      - .github/workflows/volume-component-forward-evidence.yml
+      - score_component_ablation.py
+      - replay.py
+      - live_execution_panel.py
+      - execution_realism.py
+      - evidence_provenance.py
+      - main.py
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Price download batch size'
+        required: false
+        default: '50'
+        type: string
+  schedule:
+    # Sunday 12:30 JST, after the weekly walk-forward replay window.
+    - cron: '30 3 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: volume-component-forward-evidence-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile prospective evidence tools
+        run: |
+          python -m py_compile \
+            volume_component_forward_evidence.py \
+            score_component_ablation.py replay.py \
+            live_execution_panel.py execution_realism.py \
+            evidence_provenance.py main.py \
+            .github/test_volume_component_forward_evidence.py
+      - name: Run synthetic prospective evidence validation
+        run: |
+          set -o pipefail
+          python .github/test_volume_component_forward_evidence.py \
+            2>&1 | tee /tmp/volume-component-forward-test.log
+      - name: Validate pre-registration and read-only policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          workflow_path = Path('.github/workflows/volume-component-forward-evidence.yml')
+          workflow_text = workflow_path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(workflow_text)
+          registry = yaml.safe_load(
+              Path('research/volume_component_forward_evidence.yaml').read_text(encoding='utf-8')
+          )
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('git' + ' push') not in workflow_text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in workflow_text
+          assert 'contents: write' not in workflow_text
+          assert registry['study']['registered_at'] == '2026-07-12'
+          assert registry['study']['eligible_signal_date_from'] == '2026-07-13'
+          assert registry['comparison']['preserved_daily_score_distribution'] is True
+          assert registry['comparison']['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert registry['comparison']['same_day_close_entry_allowed'] is False
+          assert registry['governance']['promotion_evidence_allowed'] is False
+          assert registry['governance']['automatic_weight_change'] is False
+          assert registry['governance']['automatic_strategy_change'] is False
+          PY
+      - name: Upload validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-component-forward-validation-log
+          path: /tmp/volume-component-forward-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  analyze:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Prepare fingerprinted live history
+        id: provenance
+        run: |
+          mkdir -p output/volume_component_forward/report
+          python strategy_governance.py snapshot \
+            --output output/volume_component_forward/current_strategy_fingerprint.json
+          python evidence_provenance.py prepare-live \
+            --ranking data/momentum_daily_ranking.csv \
+            --output output/volume_component_forward/live_strategy_history.csv \
+            --provenance output/volume_component_forward/evidence_provenance.json \
+            --fingerprint output/volume_component_forward/current_strategy_fingerprint.json \
+            | tee output/volume_component_forward/provenance.log
+          eligible_dates=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(
+              Path('output/volume_component_forward/evidence_provenance.json').read_text(encoding='utf-8')
+          )
+          print(int(payload.get('eligible_date_count', 0)))
+          PY
+          )
+          echo "eligible_dates=${eligible_dates}" >> "${GITHUB_OUTPUT}"
+      - name: Run prospective volume component evidence
+        env:
+          INPUT_BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          set -o pipefail
+          batch_size="${INPUT_BATCH_SIZE:-50}"
+          python volume_component_forward_evidence.py \
+            --strict \
+            --history output/volume_component_forward/live_strategy_history.csv \
+            --provenance output/volume_component_forward/evidence_provenance.json \
+            --registry research/volume_component_forward_evidence.yaml \
+            --output-dir output/volume_component_forward/report \
+            --batch-size "${batch_size}" \
+            | tee output/volume_component_forward/report/run.log
+      - name: Validate prospective evidence outputs
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/volume_component_forward/report')
+          manifest = json.loads(
+              (root / 'volume_component_forward_manifest.json').read_text(encoding='utf-8')
+          )
+          status = pd.read_csv(root / 'volume_component_forward_status.csv')
+          distribution = pd.read_csv(
+              root / 'volume_component_forward_distribution_audit.csv'
+          )
+          assert manifest['eligible_signal_date_from'] == '2026-07-13'
+          assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert manifest['same_day_close_entry_allowed'] is False
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_weight_change'] is False
+          assert manifest['automatic_strategy_change'] is False
+          assert manifest['production_state_mutations'] == []
+          assert int(manifest['lookahead_violations']) == 0
+          assert bool(manifest['distribution_preserved'])
+          assert len(status) == 1
+          assert status.iloc[0]['evidence_status'] in {
+              'ACCUMULATING',
+              'DIRECTIONALLY_SUPPORTED',
+              'ROBUSTLY_SUPPORTED',
+              'NOT_SUPPORTED',
+          }
+          if not distribution.empty:
+              assert distribution['score_multiset_equal'].all()
+          print(status.to_string(index=False))
+          PY
+      - name: Upload prospective volume evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-component-forward-evidence-${{ github.run_number }}
+          path: output/volume_component_forward/
+          if-no-files-found: error
+          retention-days: 180
