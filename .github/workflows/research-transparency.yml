@@ -1,0 +1,147 @@
+name: Research Transparency Dashboard
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - research_transparency.py
+      - daily_runner.py
+      - research/evidence_catalog.yaml
+      - research/evidence_catalog.md
+      - research_evidence_catalog.py
+      - .github/test_research_transparency.py
+      - .github/workflows/research-transparency.yml
+      - .github/workflows/daily.yml
+  push:
+    branches:
+      - main
+    paths:
+      - research_transparency.py
+      - daily_runner.py
+      - research/evidence_catalog.yaml
+      - research/evidence_catalog.md
+      - research_evidence_catalog.py
+      - .github/test_research_transparency.py
+      - .github/workflows/research-transparency.yml
+      - .github/workflows/daily.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-transparency-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile transparency tools
+        run: |
+          python -m py_compile \
+            main.py research_evidence_catalog.py \
+            research_transparency.py daily_runner.py \
+            .github/test_research_transparency.py
+      - name: Validate transparency dashboard
+        run: |
+          set -o pipefail
+          python .github/test_research_transparency.py \
+            2>&1 | tee /tmp/research-transparency-test.log
+      - name: Validate canonical evidence catalog
+        run: |
+          python research_evidence_catalog.py validate \
+            --catalog research/evidence_catalog.yaml \
+            --repository-root .
+      - name: Confirm strategy files are unchanged
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main
+          git diff --exit-code origin/main -- main.py config.yaml
+      - name: Run limited transparency integration
+        env:
+          MOMENTUM_MAX_SYMBOLS: '3'
+          EMAIL_FROM: ''
+          EMAIL_TO: ''
+          EMAIL_APP_PASSWORD: ''
+        run: |
+          mkdir -p output
+          set -o pipefail
+          python daily_runner.py 2>&1 | tee /tmp/research-transparency-integration.log
+      - name: Validate integrated workbook
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          report = Path('output/daily_report.xlsx')
+          assert report.is_file()
+          workbook = pd.ExcelFile(report)
+          assert 'Summary' in workbook.sheet_names
+          assert 'Research Evidence' in workbook.sheet_names
+          summary = pd.read_excel(report, sheet_name='Summary')
+          evidence = pd.read_excel(report, sheet_name='Research Evidence')
+          assert len(summary) == 1
+          row = summary.iloc[0]
+          assert int(row['出来高倍率配点']) == 15
+          assert row['研究判断'] == 'HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE'
+          assert row['歴史エビデンス'] == 'CONFLICTED_TIME_UNSTABLE'
+          assert row['Forward Evidence'] == 'ACCUMULATING'
+          assert row['自動配点変更'] == 'DISABLED'
+          assert row['自動戦略変更'] == 'DISABLED'
+          assert not evidence.empty
+          assert 'Current Decision' in set(evidence['section'].astype(str))
+          assert 'volume-component-forward-evidence-v1' in set(evidence['study_id'].astype(str))
+          assert 'NOT_SUPPORTED' in set(evidence['status'].astype(str))
+          assert 'ACCUMULATING' in set(evidence['status'].astype(str))
+          PY
+      - name: Validate read-only display boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          runner = Path('daily_runner.py').read_text(encoding='utf-8')
+          panel = Path('research_transparency.py').read_text(encoding='utf-8')
+          workflow = Path('.github/workflows/research-transparency.yml').read_text(encoding='utf-8')
+          daily = Path('.github/workflows/daily.yml').read_text(encoding='utf-8')
+
+          assert 'main.main()' in runner
+          assert 'main_module.excel_report = patched_excel' in runner
+          assert 'main_module.build_plain_email = patched_plain' in runner
+          assert 'main_module.build_html_email = patched_html' in runner
+          assert 'write_ranking_history' not in panel
+          assert 'paper_portfolio' not in panel
+          assert 'score_volume_ratio' not in panel
+          assert 'automatic_weight_change_allowed' in panel
+          assert 'python daily_runner.py' in daily
+          assert workflow.count('contents: read') >= 1
+          assert ('contents:' + ' write') not in workflow
+          assert ('git' + ' push') not in workflow
+          PY
+      - name: Upload transparency diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-transparency-diagnostics-${{ github.run_id }}
+          path: |
+            /tmp/research-transparency-test.log
+            /tmp/research-transparency-integration.log
+            output/daily_report.xlsx
+          if-no-files-found: ignore
+          retention-days: 14
