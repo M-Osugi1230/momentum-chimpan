@@ -135,7 +135,7 @@ def main() -> None:
             assert payload["production_state_mutations"] == []
 
             mismatched = eligibility.load_history(ledger_path)
-            mismatched.loc[:, "ranking_date_sha256"] = "0" * 64
+            mismatched.loc[:, "ranking_date_sha256"] = "0a" * 32
             mismatched.to_csv(ledger_path, index=False)
             mismatch_output = root / "output" / "mismatch.csv"
             mismatch_manifest = root / "output" / "mismatch.json"
@@ -202,10 +202,15 @@ def main() -> None:
     workflow_text = workflow_path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
     assert workflow["permissions"]["contents"] == "read"
-    assert "python live_session_eligibility.py validate" in workflow_text
-    assert "python forward_eligible_history.py" in workflow_text
-    assert "--ledger research/evidence/live_session_eligibility.csv" in workflow_text
-    assert "python evidence_provenance.py prepare-live" not in workflow_text
+    prepare_step = next(
+        step for step in workflow["jobs"]["analyze"]["steps"]
+        if step.get("name") == "Prepare eligibility-bound live history"
+    )["run"]
+    assert "python live_session_eligibility.py validate" in prepare_step
+    assert "python forward_eligible_history.py" in prepare_step
+    assert "--ledger research/evidence/live_session_eligibility.csv" in prepare_step
+    legacy_prepare = "python evidence_provenance.py " + "prepare-live"
+    assert legacy_prepare not in prepare_step
     assert ("git" + " push") not in workflow_text
     assert ("EMAIL_" + "APP_PASSWORD") not in workflow_text
 

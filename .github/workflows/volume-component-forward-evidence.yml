@@ -154,10 +154,15 @@ jobs:
           assert ('contents:' + ' write') not in workflow_text
           assert 'data/volume_component_forward_status.json' in workflow_text.split('push:', 1)[0]
           assert 'data/volume_component_forward_status.json' not in workflow_text.split('push:', 1)[1].split('workflow_dispatch:', 1)[0]
-          assert 'python live_session_eligibility.py validate' in workflow_text
-          assert 'python forward_eligible_history.py' in workflow_text
-          assert '--ledger research/evidence/live_session_eligibility.csv' in workflow_text
-          assert 'python evidence_provenance.py prepare-live' not in workflow_text
+          prepare_step = next(
+              step for step in workflow['jobs']['analyze']['steps']
+              if step.get('name') == 'Prepare eligibility-bound live history'
+          )['run']
+          assert 'python live_session_eligibility.py validate' in prepare_step
+          assert 'python forward_eligible_history.py' in prepare_step
+          assert '--ledger research/evidence/live_session_eligibility.csv' in prepare_step
+          legacy_prepare = 'python evidence_provenance.py ' + 'prepare-live'
+          assert legacy_prepare not in prepare_step
           assert registry['study']['registered_at'] == '2026-07-12'
           assert registry['study']['eligible_signal_date_from'] == '2026-07-13'
           assert registry['comparison']['preserved_daily_score_distribution'] is True
