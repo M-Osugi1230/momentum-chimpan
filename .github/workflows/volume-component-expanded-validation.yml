@@ -1,0 +1,157 @@
+name: Volume Component Expanded Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/volume-component-expanded-validation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: volume-component-expanded-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile expanded validation tools
+        run: |
+          python -m py_compile \
+            volume_component_robustness.py \
+            volume_component_aggregate_guard.py \
+            score_component_ablation.py \
+            historical_backfill.py historical_price_panel.py \
+            evidence_provenance.py replay.py \
+            portfolio_research.py portfolio_exit_lab.py \
+            portfolio_regime_attribution.py main.py
+      - name: Prepare five disjoint folds
+        run: |
+          mkdir -p output/volume_component_expanded/folds \
+            output/volume_component_expanded/report
+          printf 'run_mode=expanded_5fold_validation\n' \
+            > output/volume_component_expanded/run-mode.txt
+          python volume_component_robustness.py prepare-folds \
+            --cache data/jpx_list_cache.csv \
+            --config config.yaml \
+            --output-dir output/volume_component_expanded/folds \
+            --fold-count 5 \
+            --symbols-per-fold 60
+      - name: Build and analyze five folds
+        run: |
+          set -euo pipefail
+          processed=0
+          for fold_dir in output/volume_component_expanded/folds/fold_*; do
+            [ -d "${fold_dir}" ] || continue
+            processed=$((processed + 1))
+            fold_id="$(basename "${fold_dir}")"
+            mkdir -p "${fold_dir}/backfill/replay" "${fold_dir}/analysis"
+            echo "Analyzing ${fold_id}"
+            python historical_backfill.py \
+              --strict \
+              --cache "${fold_dir}/jpx_fold_cache.csv" \
+              --max-symbols 0 \
+              --lookback-calendar-days 500 \
+              --sample-every 5 \
+              --batch-size 50 \
+              --output-dir "${fold_dir}/backfill" \
+              | tee "${fold_dir}/backfill/backfill.log"
+            python evidence_provenance.py seal-derived \
+              --source-manifest "${fold_dir}/backfill/backfill_manifest.json" \
+              --provenance "${fold_dir}/backfill/replay/evidence_provenance.json"
+            python historical_price_panel.py \
+              --strict \
+              --history "${fold_dir}/backfill/historical_ranking.csv" \
+              --backfill-manifest "${fold_dir}/backfill/backfill_manifest.json" \
+              --output "${fold_dir}/backfill/historical_price_panel.csv" \
+              --manifest "${fold_dir}/backfill/historical_price_panel_manifest.json" \
+              --batch-size 50 \
+              | tee "${fold_dir}/backfill/price-panel.log"
+            python volume_component_robustness.py analyze-fold \
+              --strict \
+              --history "${fold_dir}/backfill/historical_ranking.csv" \
+              --prices "${fold_dir}/backfill/historical_price_panel.csv" \
+              --provenance "${fold_dir}/backfill/replay/evidence_provenance.json" \
+              --fold-manifest "${fold_dir}/fold_manifest.json" \
+              --registry research/volume_component_robustness.yaml \
+              --output-dir "${fold_dir}/analysis" \
+              --top-limit 100 \
+              | tee "${fold_dir}/analysis/analysis.log"
+          done
+          test "${processed}" -eq 5
+      - name: Aggregate complete-case evidence
+        run: |
+          set -o pipefail
+          python volume_component_aggregate_guard.py \
+            --strict \
+            --fold-root output/volume_component_expanded/folds \
+            --registry research/volume_component_robustness.yaml \
+            --output-dir output/volume_component_expanded/report \
+            | tee output/volume_component_expanded/report/aggregate.log
+      - name: Validate expanded evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/volume_component_expanded')
+          fold_index = pd.read_csv(root / 'folds' / 'fold_index.csv')
+          overlap = pd.read_csv(root / 'folds' / 'fold_overlap_matrix.csv')
+          summary = pd.read_csv(
+              root / 'report' / 'volume_component_robustness_summary.csv'
+          )
+          folds = pd.read_csv(
+              root / 'report' / 'volume_cross_fold_summary.csv'
+          )
+          manifest = json.loads(
+              (root / 'report' / 'volume_component_robustness_manifest.json')
+              .read_text(encoding='utf-8')
+          )
+          assert len(fold_index) == 5
+          assert fold_index['symbol_count'].eq(60).all()
+          assert len(folds) == 5
+          assert overlap.loc[
+              overlap['left_fold'] != overlap['right_fold'], 'overlap_count'
+          ].eq(0).all()
+          assert int(summary.iloc[0]['fold_count']) == 5
+          assert int(summary.iloc[0]['evaluable_fold_count']) >= 3
+          assert int(summary.iloc[0]['complete_case_date_count']) >= 10
+          assert summary.iloc[0]['robustness_status'] in {
+              'ROBUSTLY_SUPPORTED',
+              'DIRECTIONALLY_SUPPORTED',
+              'NOT_SUPPORTED',
+          }
+          assert manifest['promotion_evidence_allowed'] is False
+          assert manifest['automatic_weight_change'] is False
+          assert manifest['automatic_strategy_change'] is False
+          assert manifest['production_state_mutations'] == []
+          assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          print(folds.to_string(index=False))
+          print(summary.to_string(index=False))
+          PY
+      - name: Upload expanded evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-component-expanded-validation-${{ github.run_id }}
+          path: output/volume_component_expanded/
+          if-no-files-found: warn
+          retention-days: 90
