@@ -253,7 +253,8 @@ jobs:
           assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
           assert manifest['aggregate_uses_sample_adequate_folds_only'] is True
           assert manifest['aggregate_requires_complete_fold_date_coverage'] is True
-          assert len(manifest['aggregate_fold_ids']) == int(summary.iloc[0]['evaluable_fold_count'])
+          assert int(manifest['aggregate_fold_id_count']) == int(summary.iloc[0]['evaluable_fold_count'])
+          assert len(manifest['aggregate_fold_ids'].split('|')) == int(manifest['aggregate_fold_id_count'])
 
           for fold_id in fold_index['fold_id']:
               analysis = folds_root / fold_id / 'analysis'
