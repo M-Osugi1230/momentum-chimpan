@@ -215,6 +215,12 @@ def main() -> None:
 
     with TemporaryDirectory() as directory:
         root = Path(directory)
+        outside = root / "outside.yaml"
+        outside.write_text("secret: true\n", encoding="utf-8")
+        linked = root / "linked.yaml"
+        linked.symlink_to(outside)
+        assert integrity.root_reader(root)("linked.yaml") == ""
+
         write_yaml(root / integrity.POLICY_PATH, policy)
         write_yaml(root / integrity.CANDIDATES_PATH, {"schema_version": 1, "candidates": []})
         write_yaml(root / integrity.APPROVALS_PATH, approvals_fixture())
