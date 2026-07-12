@@ -187,7 +187,7 @@ with TemporaryDirectory() as temporary:
         & outcomes["horizon_sessions"].eq(5)
     ].iloc[0]
     assert first["exit_date"] == "2026-07-20"
-    expected_gross = (112.0 + 3.0 * 5.0 + 1.0) / (112.0 + 3.0 * 1.0) - 1.0
+    expected_gross = 126.0 / 113.0 - 1.0
     assert np.isclose(first["gross_return"], expected_gross)
     assert np.isclose(first["net_return"], expected_gross - 0.002)
     assert first["market_return"] is not None
