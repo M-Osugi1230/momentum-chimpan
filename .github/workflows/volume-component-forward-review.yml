@@ -74,6 +74,7 @@ jobs:
       - name: Build current review packet
         run: |
           set -o pipefail
+          mkdir -p output/volume-component-forward-review
           python volume_component_forward_review.py \
             --status data/volume_component_forward_status.json \
             --catalog research/evidence_catalog.yaml \
