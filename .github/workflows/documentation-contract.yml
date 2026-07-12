@@ -46,7 +46,10 @@ jobs:
       - name: Compile documentation contract
         run: python -m py_compile .github/test_documentation_contract.py
       - name: Validate documentation against production sources
-        run: python .github/test_documentation_contract.py
+        run: |
+          set -o pipefail
+          python .github/test_documentation_contract.py \
+            2>&1 | tee /tmp/documentation-contract.log
       - name: Confirm read-only workflow
         run: |
           python - <<'PY'
@@ -61,3 +64,11 @@ jobs:
           assert ('contents:' + ' write') not in text
           assert ('EMAIL_' + 'APP_PASSWORD') not in text
           PY
+      - name: Upload documentation contract failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-contract-failure
+          path: /tmp/documentation-contract.log
+          if-no-files-found: warn
+          retention-days: 7
