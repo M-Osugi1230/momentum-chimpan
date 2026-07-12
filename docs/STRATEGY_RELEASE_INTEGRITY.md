@@ -63,3 +63,18 @@ The integrity check verifies the binding. This preserves the existing release-ga
 `Strategy Release Integrity` runs on every pull request to `main` and on relevant pushes. It has `contents: read`, writes only temporary diagnostics and Actions artifacts, and cannot activate, merge, trade, or mutate production state.
 
 The current strategy, score weights, filters, exits, priority rules, paper execution, and 15-point volume-ratio weight remain unchanged.
+
+## Trusted base-branch enforcement
+
+A normal pull-request workflow executes code from the proposed revision, so it cannot by itself prove that its own validator was not weakened in the same PR. After this integrity layer is merged, `Trusted Strategy Release Integrity` runs on `pull_request_target` and executes only the validator and dependencies from the trusted base commit.
+
+The proposed checkout is treated strictly as untrusted data:
+
+- it is placed in a separate directory;
+- no proposed Python, shell, action, or dependency file is executed;
+- credentials are not persisted in either checkout;
+- permissions remain `contents: read`;
+- symlinked proposed files are rejected by the trusted reader;
+- outputs are diagnostics only.
+
+Repository branch protection should require the trusted check before merging changes to `main`. The normal pull-request integrity workflow remains useful for immediate feedback, while the trusted check is the authoritative self-protection boundary.
