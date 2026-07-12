@@ -1,0 +1,186 @@
+name: Daily Research Focus
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - daily_research_focus.py
+      - daily_runner.py
+      - research/daily_research_focus_policy.yaml
+      - .github/test_daily_research_focus.py
+      - .github/workflows/daily-research-focus.yml
+      - docs/DAILY_RESEARCH_FOCUS.md
+  push:
+    branches:
+      - main
+    paths:
+      - daily_research_focus.py
+      - daily_runner.py
+      - research/daily_research_focus_policy.yaml
+      - .github/test_daily_research_focus.py
+      - .github/workflows/daily-research-focus.yml
+      - docs/DAILY_RESEARCH_FOCUS.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile daily focus tools
+        run: |
+          python -m py_compile \
+            daily_research_focus.py \
+            daily_runner.py \
+            .github/test_daily_research_focus.py
+      - name: Validate daily focus policy and explanations
+        run: |
+          set -o pipefail
+          python .github/test_daily_research_focus.py \
+            2>&1 | tee /tmp/daily-research-focus-test.log
+      - name: Validate machine-readable governance
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          policy = yaml.safe_load(
+              Path('research/daily_research_focus_policy.yaml')
+              .read_text(encoding='utf-8')
+          )
+          assert policy['policy']['id'] == 'daily-research-focus-v1'
+          assert policy['limits']['maximum_A_candidates'] == 5
+          assert policy['limits']['maximum_daily_action_list'] == 10
+          governance = policy['governance']
+          assert governance['display_and_research_planning_only'] is True
+          assert governance['preserve_momentum_score'] is True
+          assert governance['preserve_momentum_rank'] is True
+          assert governance['preserve_paper_execution'] is True
+          assert governance['automatic_score_change'] is False
+          assert governance['automatic_weight_change'] is False
+          assert governance['automatic_strategy_change'] is False
+          assert governance['production_state_mutations'] == []
+          assert governance['live_orders'] is False
+          assert governance['outcome_tracking_required_before_rule_change'] is True
+          document = Path('docs/DAILY_RESEARCH_FOCUS.md').read_text(encoding='utf-8')
+          assert 'maximum 5' in document
+          assert 'maximum 10' in document
+          assert 'why_today' in document
+          assert 'next_research_questions' in document
+          PY
+      - name: Run limited external-data integration
+        env:
+          MOMENTUM_MAX_SYMBOLS: '3'
+          EMAIL_FROM: ''
+          EMAIL_TO: ''
+          EMAIL_APP_PASSWORD: ''
+        run: |
+          mkdir -p output
+          set -o pipefail
+          python daily_runner.py \
+            2>&1 | tee /tmp/daily-research-focus-integration.log
+      - name: Validate integrated daily action list
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from openpyxl import load_workbook
+
+          report = Path('output/daily_report.xlsx')
+          assert report.is_file()
+          workbook = load_workbook(report, data_only=True)
+          assert 'Daily Action List' in workbook.sheetnames
+          assert 'Action Priority' in workbook.sheetnames
+          assert 'Data Quality' in workbook.sheetnames
+          assert 'Research Evidence' in workbook.sheetnames
+          summary = pd.read_excel(report, sheet_name='Summary')
+          for column in (
+              'Daily Focus A',
+              'Daily Focus B',
+              'Daily Focus C',
+              'Daily Focus Watch',
+              'Daily Focus Skip',
+              'Daily Action List',
+              'Daily Focus説明不足',
+              'Daily Focus A上限超過',
+          ):
+              assert column in summary.columns, column
+          assert int(summary.iloc[0]['Daily Focus A']) <= 5
+          assert int(summary.iloc[0]['Daily Action List']) <= 10
+          assert int(summary.iloc[0]['Daily Focus説明不足']) == 0
+          assert int(summary.iloc[0]['Daily Focus A上限超過']) == 0
+          priority = pd.read_excel(report, sheet_name='Action Priority')
+          if not priority.empty:
+              for column in (
+                  'research_bucket',
+                  'daily_action_list',
+                  'daily_action_rank',
+                  'why_today',
+                  'what_changed',
+                  'risk_summary',
+                  'next_research_questions',
+                  'focus_adjustment_reason',
+              ):
+                  assert column in priority.columns, column
+              assert int(priority['research_bucket'].eq('A').sum()) <= 5
+              assert int(priority['daily_action_list'].fillna(False).astype(bool).sum()) <= 10
+              selected = priority[priority['daily_action_list'].fillna(False).astype(bool)]
+              for column in (
+                  'why_today',
+                  'what_changed',
+                  'risk_summary',
+                  'next_research_questions',
+              ):
+                  assert selected[column].fillna('').astype(str).str.strip().ne('').all()
+          PY
+      - name: Confirm strategy and paper code are unchanged
+        run: |
+          git diff --exit-code -- \
+            main.py \
+            config.yaml \
+            paper_portfolio.py \
+            portfolio_execution_research.py \
+            research/evidence_catalog.yaml
+      - name: Validate read-only workflow boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/daily-research-focus.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('git' + ' push') not in text
+          assert ('contents:' + ' write') not in text
+          assert ('EMAIL_' + 'APP_PASSWORD') in text
+          assert "EMAIL_APP_PASSWORD: ''" in text
+          PY
+      - name: Upload daily focus diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-research-focus-${{ github.run_id }}
+          path: |
+            /tmp/daily-research-focus-test.log
+            /tmp/daily-research-focus-integration.log
+            output/daily_report.xlsx
+          if-no-files-found: warn
+          retention-days: 14
