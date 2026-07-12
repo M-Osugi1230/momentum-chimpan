@@ -1,0 +1,22 @@
+{
+  "robustness_version": "2026-07-11-volume-component-cross-fold-v1",
+  "generated_at_utc": "2026-07-12T10:32:46+00:00",
+  "fold_count": 5,
+  "evaluable_fold_count": 5,
+  "robustness_status": "NOT_SUPPORTED",
+  "promotion_evidence_allowed": false,
+  "automatic_weight_change": false,
+  "automatic_strategy_change": false,
+  "manual_review_required": true,
+  "research_only": true,
+  "production_state_mutations": [],
+  "entry_model": "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN",
+  "same_day_close_entry_allowed": false,
+  "aggregate_guard_version": "2026-07-12-volume-component-complete-case-v1",
+  "aggregate_fold_ids": "fold_01|fold_02|fold_03|fold_04|fold_05",
+  "aggregate_fold_id_count": 5,
+  "complete_case_date_count": 275,
+  "excluded_incomplete_date_count": 0,
+  "aggregate_uses_sample_adequate_folds_only": true,
+  "aggregate_requires_complete_fold_date_coverage": true
+}
