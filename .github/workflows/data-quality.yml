@@ -10,6 +10,7 @@ on:
       - research/data_quality_policy.yaml
       - .github/test_data_quality.py
       - .github/workflows/data-quality.yml
+      - docs/DATA_QUALITY.md
       - docs/DATA_DICTIONARY.md
       - docs/KPI_DICTIONARY.md
       - README.md
@@ -22,6 +23,7 @@ on:
       - research/data_quality_policy.yaml
       - .github/test_data_quality.py
       - .github/workflows/data-quality.yml
+      - docs/DATA_QUALITY.md
       - docs/DATA_DICTIONARY.md
       - docs/KPI_DICTIONARY.md
       - README.md
@@ -80,6 +82,10 @@ jobs:
           assert governance['automatic_strategy_change'] is False
           assert governance['production_state_mutations'] == []
           assert governance['live_orders'] is False
+          document = Path('docs/DATA_QUALITY.md').read_text(encoding='utf-8')
+          assert 'Momentum score or rank' in document
+          assert 'quality C' in document
+          assert 'quality D' in document
           PY
       - name: Run limited external-data integration
         env:
