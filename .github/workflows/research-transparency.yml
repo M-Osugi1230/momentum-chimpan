@@ -74,6 +74,43 @@ jobs:
         run: |
           git fetch origin main
           git diff --exit-code origin/main -- main.py config.yaml
+      - name: Run limited transparency integration
+        env:
+          MOMENTUM_MAX_SYMBOLS: '3'
+          EMAIL_FROM: ''
+          EMAIL_TO: ''
+          EMAIL_APP_PASSWORD: ''
+        run: |
+          mkdir -p output
+          set -o pipefail
+          python daily_runner.py 2>&1 | tee /tmp/research-transparency-integration.log
+      - name: Validate integrated workbook
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          report = Path('output/daily_report.xlsx')
+          assert report.is_file()
+          workbook = pd.ExcelFile(report)
+          assert 'Summary' in workbook.sheet_names
+          assert 'Research Evidence' in workbook.sheet_names
+          summary = pd.read_excel(report, sheet_name='Summary')
+          evidence = pd.read_excel(report, sheet_name='Research Evidence')
+          assert len(summary) == 1
+          row = summary.iloc[0]
+          assert int(row['出来高倍率配点']) == 15
+          assert row['研究判断'] == 'HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE'
+          assert row['歴史エビデンス'] == 'CONFLICTED_TIME_UNSTABLE'
+          assert row['Forward Evidence'] == 'ACCUMULATING'
+          assert row['自動配点変更'] == 'DISABLED'
+          assert row['自動戦略変更'] == 'DISABLED'
+          assert not evidence.empty
+          assert 'Current Decision' in set(evidence['section'].astype(str))
+          assert 'volume-component-forward-evidence-v1' in set(evidence['study_id'].astype(str))
+          assert 'NOT_SUPPORTED' in set(evidence['status'].astype(str))
+          assert 'ACCUMULATING' in set(evidence['status'].astype(str))
+          PY
       - name: Validate read-only display boundary
         run: |
           python - <<'PY'
@@ -97,11 +134,14 @@ jobs:
           assert ('contents:' + ' write') not in workflow
           assert ('git' + ' push') not in workflow
           PY
-      - name: Upload failure log
-        if: failure()
+      - name: Upload transparency diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: research-transparency-validation-log
-          path: /tmp/research-transparency-test.log
+          name: research-transparency-diagnostics-${{ github.run_id }}
+          path: |
+            /tmp/research-transparency-test.log
+            /tmp/research-transparency-integration.log
+            output/daily_report.xlsx
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
