@@ -6,8 +6,10 @@ on:
       - main
     paths:
       - volume_component_robustness.py
+      - volume_component_aggregate_guard.py
       - research/volume_component_robustness.yaml
       - .github/test_volume_component_robustness.py
+      - .github/test_volume_component_aggregate_guard.py
       - .github/workflows/volume-component-robustness.yml
       - score_component_ablation.py
       - historical_backfill.py
@@ -67,14 +69,18 @@ jobs:
       - name: Compile robustness tools
         run: |
           python -m py_compile \
-            volume_component_robustness.py score_component_ablation.py \
-            historical_backfill.py historical_price_panel.py replay.py \
-            portfolio_research.py portfolio_exit_lab.py portfolio_regime_attribution.py \
-            main.py .github/test_volume_component_robustness.py
+            volume_component_robustness.py volume_component_aggregate_guard.py \
+            score_component_ablation.py historical_backfill.py historical_price_panel.py replay.py \
+            portfolio_research.py portfolio_exit_lab.py portfolio_regime_attribution.py main.py \
+            .github/test_volume_component_robustness.py \
+            .github/test_volume_component_aggregate_guard.py
       - name: Run synthetic cross-fold validation
         run: |
           set -o pipefail
-          python .github/test_volume_component_robustness.py 2>&1 | tee /tmp/volume-component-robustness-test.log
+          {
+            python .github/test_volume_component_robustness.py
+            python .github/test_volume_component_aggregate_guard.py
+          } 2>&1 | tee /tmp/volume-component-robustness-test.log
       - name: Validate registry and read-only workflow policy
         run: |
           python - <<'PY'
@@ -199,7 +205,7 @@ jobs:
       - name: Aggregate cross-fold evidence
         run: |
           set -o pipefail
-          python volume_component_robustness.py aggregate \
+          python volume_component_aggregate_guard.py \
             --strict \
             --fold-root output/volume_component/folds \
             --registry research/volume_component_robustness.yaml \
@@ -239,11 +245,15 @@ jobs:
               'ROBUSTLY_SUPPORTED', 'DIRECTIONALLY_SUPPORTED', 'NOT_SUPPORTED'
           }
           assert summary.iloc[0]['automatic_weight_change_allowed'] == False
+          assert int(summary.iloc[0]['complete_case_date_count']) >= 10
           assert manifest['promotion_evidence_allowed'] is False
           assert manifest['automatic_weight_change'] is False
           assert manifest['automatic_strategy_change'] is False
           assert manifest['production_state_mutations'] == []
           assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert manifest['aggregate_uses_sample_adequate_folds_only'] is True
+          assert manifest['aggregate_requires_complete_fold_date_coverage'] is True
+          assert len(manifest['aggregate_fold_ids']) == int(summary.iloc[0]['evaluable_fold_count'])
 
           for fold_id in fold_index['fold_id']:
               analysis = folds_root / fold_id / 'analysis'
@@ -268,9 +278,10 @@ jobs:
           print(summary.to_string(index=False))
           PY
       - name: Upload cross-fold volume evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: volume-component-robustness-${{ github.run_id }}
           path: output/volume_component/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
