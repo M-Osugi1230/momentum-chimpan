@@ -120,6 +120,23 @@ jobs:
             --snapshot-root data/state_snapshots \
             --audit output/recovery_snapshot_audit.json
 
+      - name: Verify exact sealed snapshot in isolated sandbox
+        id: recovery_drill
+        if: steps.recovery.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m py_compile daily_recovery_drill.py state_recovery.py
+          python daily_recovery_drill.py run \
+            --audit output/recovery_snapshot_audit.json \
+            --snapshot-root data/state_snapshots \
+            --output-dir output/recovery \
+            --production-root . \
+            --strict \
+            | tee output/recovery_drill.log
+          python daily_recovery_drill.py validate \
+            --manifest output/recovery/recovery_drill_manifest.json
+
       - name: Validate state and apply bounded retention
         id: maintenance
         if: >-
@@ -127,7 +144,8 @@ jobs:
           steps.report.outcome == 'success' &&
           steps.heartbeat.outcome == 'success' &&
           steps.evidence.outcome == 'success' &&
-          steps.recovery.outcome == 'success'
+          steps.recovery.outcome == 'success' &&
+          steps.recovery_drill.outcome == 'success'
         continue-on-error: true
         run: |
           python operations.py maintain \
@@ -146,6 +164,7 @@ jobs:
           steps.heartbeat.outcome == 'success' &&
           steps.evidence.outcome == 'success' &&
           steps.recovery.outcome == 'success' &&
+          steps.recovery_drill.outcome == 'success' &&
           steps.maintenance.outcome == 'success' &&
           (github.event_name == 'schedule' || inputs.max_symbols == '0' || inputs.max_symbols == '')
         run: |
@@ -198,6 +217,7 @@ jobs:
            steps.heartbeat.outcome == 'failure' ||
            steps.evidence.outcome == 'failure' ||
            steps.recovery.outcome == 'failure' ||
+           steps.recovery_drill.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         continue-on-error: true
@@ -211,6 +231,7 @@ jobs:
           HEARTBEAT_OUTCOME: ${{ steps.heartbeat.outcome }}
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
           RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+          RECOVERY_DRILL_OUTCOME: ${{ steps.recovery_drill.outcome }}
           MAINTENANCE_OUTCOME: ${{ steps.maintenance.outcome }}
           PERSIST_OUTCOME: ${{ steps.persist.outcome }}
         run: |
@@ -219,8 +240,9 @@ jobs:
           if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" = "failure" ]; then stage="heartbeat"; fi
           if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" = "failure" ]; then stage="evidence-stamp"; fi
           if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" = "failure" ]; then stage="recovery-snapshot-seal"; fi
-          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
-          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${RECOVERY_DRILL_OUTCOME}" = "failure" ]; then stage="exact-recovery-drill"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${RECOVERY_DRILL_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" = "failure" ]; then stage="state-maintenance"; fi
+          if [ "${STRATEGY_OUTCOME}" != "failure" ] && [ "${REPORT_OUTCOME}" != "failure" ] && [ "${HEARTBEAT_OUTCOME}" != "failure" ] && [ "${EVIDENCE_OUTCOME}" != "failure" ] && [ "${RECOVERY_OUTCOME}" != "failure" ] && [ "${RECOVERY_DRILL_OUTCOME}" != "failure" ] && [ "${MAINTENANCE_OUTCOME}" != "failure" ] && [ "${PERSIST_OUTCOME}" = "failure" ]; then stage="state-persistence"; fi
           python operations.py notify \
             --stage "${stage}" \
             --log output/run.log \
@@ -242,6 +264,8 @@ jobs:
             output/state_maintenance.json
             output/evidence_stamp_audit.json
             output/recovery_snapshot_audit.json
+            output/recovery_drill.log
+            output/recovery/**
             output/ops_notification.txt
             data/operations_heartbeat.json
             data/strategy_fingerprint.json
@@ -262,6 +286,7 @@ jobs:
            steps.heartbeat.outcome == 'failure' ||
            steps.evidence.outcome == 'failure' ||
            steps.recovery.outcome == 'failure' ||
+           steps.recovery_drill.outcome == 'failure' ||
            steps.maintenance.outcome == 'failure' ||
            steps.persist.outcome == 'failure')
         run: |
