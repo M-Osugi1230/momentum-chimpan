@@ -126,10 +126,17 @@ def load_yaml_text(text: str, source: str) -> dict[str, Any]:
 
 
 def root_reader(root: str | Path) -> Callable[[str], str]:
-    base = Path(root)
+    base = Path(root).resolve()
 
     def read(path: str) -> str:
-        target = base / path
+        candidate = base / path
+        if candidate.is_symlink():
+            return ""
+        try:
+            target = candidate.resolve(strict=True)
+            target.relative_to(base)
+        except (FileNotFoundError, OSError, ValueError):
+            return ""
         return target.read_text(encoding="utf-8") if target.is_file() else ""
 
     return read
@@ -225,7 +232,7 @@ def validate_object_id_bindings(candidate: dict[str, Any]) -> list[str]:
 def validate_registries(candidates: dict[str, Any], approvals: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     candidate_map, candidate_issues = map_unique(candidates.get("candidates", []), "release_id", "candidates")
-    approval_map, approval_issues = map_unique(approvals.get("approvals", []), "approval_id", "approvals")
+    _approval_map, approval_issues = map_unique(approvals.get("approvals", []), "approval_id", "approvals")
     issues.extend(candidate_issues)
     issues.extend(approval_issues)
     approval_policy = approvals.get("policy") or {}
@@ -300,8 +307,10 @@ def compare_append_only(
 def release_surface_changed(base_ref: str, head_root: str | Path, policy: dict[str, Any]) -> tuple[bool, str, str]:
     import strategy_release_gate
 
-    base = strategy_release_gate.release_surface_fingerprint_git(base_ref, policy)["sha256"]
-    head = strategy_release_gate.release_surface_fingerprint(head_root, policy)["sha256"]
+    base_payload = strategy_release_gate.release_surface_payload(git_reader(base_ref), policy)
+    head_payload = strategy_release_gate.release_surface_payload(root_reader(head_root), policy)
+    base = canonical_hash(base_payload)
+    head = canonical_hash(head_payload)
     return base != head, base, head
 
 
