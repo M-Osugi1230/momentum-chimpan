@@ -1,0 +1,140 @@
+name: Monthly Operations Review
+
+on:
+  schedule:
+    - cron: '30 9 1 * *'
+  workflow_dispatch:
+    inputs:
+      review_month:
+        description: Optional calendar month in YYYY-MM format; defaults to the previous month
+        required: false
+        type: string
+  pull_request:
+    branches:
+      - main
+    paths:
+      - monthly_review.py
+      - .github/test_monthly_review.py
+      - .github/workflows/monthly-operations-review.yml
+      - docs/MONTHLY_REVIEW.md
+      - research/operations/**
+      - research/priority_outcomes/**
+      - data/volume_component_forward_status.json
+      - research/evidence_catalog.yaml
+      - research/strategy_approvals.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile monthly review tools
+        run: |
+          python -m py_compile \
+            monthly_review.py \
+            .github/test_monthly_review.py
+      - name: Validate deterministic monthly review contract
+        run: |
+          set -o pipefail
+          python .github/test_monthly_review.py \
+            2>&1 | tee /tmp/monthly-review-test.log
+      - name: Resolve review month
+        id: month
+        env:
+          REQUESTED_MONTH: ${{ inputs.review_month }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_MONTH:-}" ]; then
+            REVIEW_MONTH="${REQUESTED_MONTH}"
+          else
+            REVIEW_MONTH="$(python - <<'PY'
+          import monthly_review
+          print(monthly_review.default_review_month())
+          PY
+          )"
+          fi
+          python - <<PY
+          import monthly_review
+          monthly_review.month_bounds('${REVIEW_MONTH}')
+          PY
+          echo "value=${REVIEW_MONTH}" >> "${GITHUB_OUTPUT}"
+      - name: Build monthly operations and evidence review
+        env:
+          REVIEW_MONTH: ${{ steps.month.outputs.value }}
+        run: |
+          set -euo pipefail
+          rm -rf output/monthly_review
+          python monthly_review.py build \
+            --month "${REVIEW_MONTH}" \
+            --output-dir output/monthly_review \
+            --repository "${GITHUB_REPOSITORY}" \
+            --commit-sha "${GITHUB_SHA}" \
+            | tee /tmp/monthly-review-build.log
+      - name: Validate generated signed review
+        run: |
+          python monthly_review.py validate \
+            --json output/monthly_review/monthly_review.json
+      - name: Inspect generated review boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/monthly_review')
+          expected = {
+              'monthly_review.json',
+              'monthly_review_summary.csv',
+              'monthly_review.md',
+          }
+          assert {path.name for path in root.iterdir() if path.is_file()} == expected
+          payload = json.loads((root / 'monthly_review.json').read_text(encoding='utf-8'))
+          assert payload['review_state'] in {'ACCUMULATING', 'PASS', 'REVIEW_REQUIRED'}
+          assert payload['production_state_mutations'] == []
+          assert payload['automatic_score_change'] is False
+          assert payload['automatic_weight_change'] is False
+          assert payload['automatic_strategy_change'] is False
+          assert payload['automatic_priority_rule_change'] is False
+          assert payload['manual_review_required'] is True
+          assert payload['research_only'] is True
+          assert len(payload['canonical_sources']) == 10
+          summary = pd.read_csv(root / 'monthly_review_summary.csv')
+          assert len(summary) == 1
+          assert summary.iloc[0]['review_state'] == payload['review_state']
+          markdown = (root / 'monthly_review.md').read_text(encoding='utf-8')
+          assert 'Monthly Operations and Evidence Review' in markdown
+          assert 'Canonical sources' in markdown
+          assert 'Known measurement gaps' in markdown
+          assert 'Manual review remains mandatory' in markdown
+          PY
+      - name: Confirm repository remains unchanged
+        run: git diff --exit-code
+      - name: Upload monthly review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monthly-operations-review-${{ steps.month.outputs.value }}-${{ github.run_id }}
+          path: |
+            output/monthly_review/monthly_review.json
+            output/monthly_review/monthly_review_summary.csv
+            output/monthly_review/monthly_review.md
+            /tmp/monthly-review-test.log
+            /tmp/monthly-review-build.log
+          if-no-files-found: warn
+          retention-days: 365
