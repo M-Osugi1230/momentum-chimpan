@@ -1,0 +1,128 @@
+name: Strategy Release Integrity
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    paths:
+      - strategy_release_integrity.py
+      - strategy_release_gate.py
+      - research/strategy_release_policy.yaml
+      - research/strategy_release_candidates.yaml
+      - research/strategy_approvals.yaml
+      - .github/test_strategy_release_integrity.py
+      - .github/workflows/strategy-release-integrity.yml
+      - docs/STRATEGY_RELEASE_INTEGRITY.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile integrity tools
+        run: |
+          python -m py_compile \
+            strategy_release_integrity.py \
+            .github/test_strategy_release_integrity.py
+
+      - name: Run deterministic integrity tests
+        run: |
+          set -o pipefail
+          python .github/test_strategy_release_integrity.py \
+            2>&1 | tee /tmp/strategy-release-integrity-tests.log
+
+      - name: Validate current governance sources
+        run: |
+          set -o pipefail
+          python strategy_release_integrity.py validate \
+            --root . \
+            --output output/strategy-release-integrity/current.json \
+            2>&1 | tee /tmp/strategy-release-integrity-current.log
+
+      - name: Enforce append-only pull-request integrity
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "${BASE_SHA}"
+          python strategy_release_integrity.py pr-gate \
+            --base-ref "${BASE_SHA}" \
+            --head-root . \
+            --output output/strategy-release-integrity/pr_gate.json \
+            2>&1 | tee /tmp/strategy-release-integrity-pr.log
+
+      - name: Inspect safety boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          current = json.loads(Path('output/strategy-release-integrity/current.json').read_text(encoding='utf-8'))
+          assert current['passed'] is True
+          assert current['automatic_activation'] is False
+          assert current['automatic_merge'] is False
+          assert current['production_state_mutations'] == []
+          pr_path = Path('output/strategy-release-integrity/pr_gate.json')
+          if pr_path.is_file():
+              gate = json.loads(pr_path.read_text(encoding='utf-8'))
+              assert gate['passed'] is True
+              assert gate['automatic_activation'] is False
+              assert gate['automatic_merge'] is False
+              assert gate['production_state_mutations'] == []
+          PY
+
+      - name: Confirm workflow is read-only
+        run: |
+          git diff --exit-code
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/strategy-release-integrity.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('git' + ' push') not in text
+          assert ('contents:' + ' write') not in text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          PY
+
+      - name: Upload integrity diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-release-integrity-${{ github.run_id }}
+          path: |
+            output/strategy-release-integrity/current.json
+            output/strategy-release-integrity/pr_gate.json
+            /tmp/strategy-release-integrity-tests.log
+            /tmp/strategy-release-integrity-current.log
+            /tmp/strategy-release-integrity-pr.log
+          if-no-files-found: warn
+          retention-days: 90
