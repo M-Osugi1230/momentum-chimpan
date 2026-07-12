@@ -1,6 +1,6 @@
 # Daily Research Priority Outcomes
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 ## Purpose
 
@@ -12,15 +12,30 @@ The machine-readable registration is `research/priority_outcomes/policy.yaml`.
 
 ## Source and eligibility
 
-Decisions are accepted only from the exact successful `Daily Momentum Report` artifact when:
+Decisions are accepted only from the exact successful `Daily Momentum Report` artifact when the signed Live Session Readiness check confirms `eligible_for_priority_outcome_ingestion: true`.
 
-- the heartbeat confirms a full production state update;
-- the workflow status is successful;
-- a non-empty governed strategy fingerprint exists;
-- the report date is 2026-07-13 or later;
-- the workbook contains the `Action Priority` sheet produced by the registered Daily Research Focus layer.
+The readiness check is rebuilt inside the outcome publisher from the same downloaded artifact and exact source-run metadata. It requires:
+
+- successful upstream workflow and complete artifact files;
+- a full production state update on or after 2026-07-13;
+- a valid governed strategy fingerprint;
+- required workbook sheets;
+- report-date ranking rows with no duplicate `date + code` and exact fingerprint consistency;
+- a valid evidence stamp;
+- a sealed complete recovery snapshot;
+- state-maintenance PASS;
+- complete Top100 Data Quality grades;
+- Daily Research Focus A count at most five and Action List count at most ten;
+- no Data Quality C/D row remaining in A;
+- complete why/change/risk/next-research explanations;
+- at least one decision extractable under the registered outcome policy;
+- valid signed SMTP receipt status under the Live Session Readiness contract.
+
+A `FAIL`, missing readiness output, invalid signature, or false ingestion-eligibility flag stops the workflow before decision history is updated. `REVIEW_REQUIRED` remains eligible only where the registered readiness policy explicitly allows it, such as a visible market-coverage warning or missing SMTP configuration without a critical artifact failure.
 
 Limited-symbol verification runs and incomplete reports are not eligible.
+
+Monthly and manual runs without a new daily artifact only mature already-recorded outcomes and rebuild calibration; they do not synthesize a new decision date.
 
 ## Decision history
 
@@ -165,15 +180,19 @@ Even after these gates pass:
 - manually when requested;
 - monthly to refresh the calibration report.
 
-The workflow:
+For an exact daily artifact, the workflow:
 
 1. checks out current `main`;
-2. downloads the exact upstream report artifact by run ID when available;
-3. ingests eligible decisions;
-4. fetches only the price history needed to mature pending outcomes;
-5. validates no-lookahead and duplicate rules;
-6. rebuilds the signed calibration report;
-7. stages only the four research files in `research/priority_outcomes/`.
+2. downloads the exact upstream report artifact by run ID;
+3. rebuilds and validates signed Live Session Readiness from that artifact and source metadata;
+4. stops before ingestion unless priority-outcome eligibility is true;
+5. ingests eligible decisions;
+6. fetches only the price history needed to mature pending outcomes;
+7. validates no-lookahead and duplicate rules;
+8. rebuilds the signed calibration report;
+9. stages only the four research files in `research/priority_outcomes/`.
+
+The signed readiness JSON, Markdown, and build log are retained in the outcome workflow artifact but are never committed by this publisher.
 
 Top-level permissions are read-only. Only the isolated publish job receives `contents: write`.
 
