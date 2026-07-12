@@ -16,6 +16,7 @@ on:
       - .github/test_strategy_release_integrity.py
       - .github/workflows/strategy-release-integrity.yml
       - docs/STRATEGY_RELEASE_INTEGRITY.md
+      - .github/workflows/strategy-release-integrity-target.yml
   workflow_dispatch:
 
 permissions:
@@ -111,6 +112,17 @@ jobs:
           assert ('git' + ' push') not in text
           assert ('contents:' + ' write') not in text
           assert ('EMAIL_' + 'APP_PASSWORD') not in text
+
+          target_path = Path('.github/workflows/strategy-release-integrity-target.yml')
+          target_text = target_path.read_text(encoding='utf-8')
+          target = yaml.safe_load(target_text)
+          assert target['permissions']['contents'] == 'read'
+          assert 'pull_request_target' in target[True]
+          assert 'working-directory: proposed' not in target_text
+          assert 'python ../proposed' not in target_text
+          assert ('git' + ' push') not in target_text
+          assert ('contents:' + ' write') not in target_text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in target_text
           PY
 
       - name: Upload integrity diagnostics
