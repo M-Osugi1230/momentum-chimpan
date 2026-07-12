@@ -46,7 +46,6 @@ HISTORY_COLUMNS = [
     "readiness_details",
     "research_only",
 ]
-
 BOOL_COLUMNS = {
     "eligible_for_forward_evidence",
     "eligible_for_priority_outcome_ingestion",
@@ -64,7 +63,7 @@ def canonical_hash(value: Any) -> str:
 
 
 def sha256_file(path: str | Path) -> str:
-    return readiness.sha256_file(path)
+    return readiness.sha256_file(Path(path))
 
 
 def optional_text(value: Any) -> str:
@@ -107,7 +106,7 @@ def normalized_scalar(value: Any) -> str:
 
 
 def ranking_date_payload(frame: pd.DataFrame, report_date: str) -> dict[str, Any]:
-    if frame is None or frame.empty or "date" not in frame.columns:
+    if frame is None or "date" not in frame.columns:
         return {"report_date": report_date, "columns": [], "rows": []}
     work = frame[frame["date"].astype(str).eq(report_date)].copy()
     columns = sorted(str(column) for column in work.columns)
@@ -141,7 +140,26 @@ def ranking_date_fingerprint(path: str | Path, report_date: str) -> tuple[int, s
 
 
 def empty_history() -> pd.DataFrame:
-    return pd.DataFrame(columns=HISTORY_COLUMNS)
+    frame = pd.DataFrame(columns=HISTORY_COLUMNS)
+    for column in BOOL_COLUMNS:
+        frame[column] = pd.Series(dtype=bool)
+    for column in NUMERIC_COLUMNS:
+        frame[column] = pd.Series(dtype=int)
+    return frame[HISTORY_COLUMNS]
+
+
+def normalize_history(frame: pd.DataFrame) -> pd.DataFrame:
+    work = frame.copy()
+    for column in HISTORY_COLUMNS:
+        if column not in work.columns:
+            work[column] = None
+    for column in BOOL_COLUMNS:
+        work[column] = work[column].map(to_bool).astype(bool)
+    for column in NUMERIC_COLUMNS:
+        work[column] = pd.to_numeric(work[column], errors="coerce").fillna(0).astype(int)
+    for column in set(HISTORY_COLUMNS) - BOOL_COLUMNS - NUMERIC_COLUMNS:
+        work[column] = work[column].fillna("").astype(str)
+    return work[HISTORY_COLUMNS]
 
 
 def load_history(path: str | Path = DEFAULT_LEDGER) -> pd.DataFrame:
@@ -152,24 +170,7 @@ def load_history(path: str | Path = DEFAULT_LEDGER) -> pd.DataFrame:
         frame = pd.read_csv(target, dtype={"source_run_id": str, "head_sha": str})
     except Exception:
         return empty_history()
-    for column in HISTORY_COLUMNS:
-        if column not in frame.columns:
-            frame[column] = None
-    return normalize_history(frame[HISTORY_COLUMNS])
-
-
-def normalize_history(frame: pd.DataFrame) -> pd.DataFrame:
-    work = frame.copy()
-    for column in HISTORY_COLUMNS:
-        if column not in work.columns:
-            work[column] = None
-    for column in BOOL_COLUMNS:
-        work[column] = work[column].map(to_bool)
-    for column in NUMERIC_COLUMNS:
-        work[column] = pd.to_numeric(work[column], errors="coerce").fillna(0).astype(int)
-    for column in set(HISTORY_COLUMNS) - BOOL_COLUMNS - NUMERIC_COLUMNS:
-        work[column] = work[column].fillna("").astype(str)
-    return work[HISTORY_COLUMNS]
+    return normalize_history(frame)
 
 
 def append_record(history: pd.DataFrame, record: dict[str, Any]) -> pd.DataFrame:
@@ -191,7 +192,10 @@ def critical_gate_details(payload: dict[str, Any]) -> tuple[list[str], list[str]
         if not isinstance(gate, dict):
             continue
         state = optional_text(gate.get("state"))
-        detail = f"{optional_text(gate.get('gate'))}: {optional_text(gate.get('detail'))}".strip()
+        detail = (
+            f"{optional_text(gate.get('gate'))}: "
+            f"{optional_text(gate.get('detail'))}"
+        ).strip()
         if state == "FAIL":
             failures.append(detail)
         elif state == "REVIEW_REQUIRED":
@@ -294,10 +298,14 @@ def validate_history(history: pd.DataFrame) -> list[str]:
         run_id = row["source_run_id"] or "<missing>"
         if row["readiness_state"] not in {"PASS", "REVIEW_REQUIRED", "FAIL"}:
             issues.append(f"{run_id}: invalid readiness_state")
-        for field in ("artifact_fingerprint", "readiness_fingerprint", "readiness_status_sha256"):
+        for field in (
+            "artifact_fingerprint",
+            "readiness_fingerprint",
+            "readiness_status_sha256",
+        ):
             if not valid_sha256(row[field]):
                 issues.append(f"{run_id}: invalid {field}")
-        if row["eligible_for_forward_evidence"]:
+        if bool(row["eligible_for_forward_evidence"]):
             if row["readiness_state"] not in {"PASS", "REVIEW_REQUIRED"}:
                 issues.append(f"{run_id}: eligible run has invalid readiness_state")
             if not row["report_date"]:
@@ -315,8 +323,10 @@ def validate_history(history: pd.DataFrame) -> list[str]:
 
 def build_status(history: pd.DataFrame) -> dict[str, Any]:
     work = normalize_history(history)
-    eligible = work[work["eligible_for_forward_evidence"]].copy()
-    eligible_dates = sorted(eligible["report_date"].loc[eligible["report_date"].ne("")].unique().tolist())
+    eligible = work[work["eligible_for_forward_evidence"].eq(True)].copy()
+    eligible_dates = sorted(
+        eligible.loc[eligible["report_date"].ne(""), "report_date"].unique().tolist()
+    )
     substantive = {
         "eligibility_version": ELIGIBILITY_VERSION,
         "ledger_state": "ACCUMULATING" if len(work) else "EMPTY",
@@ -325,8 +335,12 @@ def build_status(history: pd.DataFrame) -> dict[str, Any]:
         "eligible_forward_date_count": len(eligible_dates),
         "latest_eligible_report_date": eligible_dates[-1] if eligible_dates else "",
         "failed_readiness_run_count": int(work["readiness_state"].eq("FAIL").sum()),
-        "review_required_run_count": int(work["readiness_state"].eq("REVIEW_REQUIRED").sum()),
-        "duplicate_source_run_count": int(work.duplicated(["source_run_id"], keep=False).sum()),
+        "review_required_run_count": int(
+            work["readiness_state"].eq("REVIEW_REQUIRED").sum()
+        ),
+        "duplicate_source_run_count": int(
+            work.duplicated(["source_run_id"], keep=False).sum()
+        ),
         "automatic_score_change": False,
         "automatic_weight_change": False,
         "automatic_strategy_change": False,
@@ -385,7 +399,9 @@ def atomic_write_json(payload: dict[str, Any], path: str | Path) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     temporary.replace(target)
 
 
@@ -458,7 +474,9 @@ def parse_args() -> argparse.Namespace:
     update.add_argument("--recorded-at-utc", required=True)
     update.add_argument("--ledger", default=DEFAULT_LEDGER)
     update.add_argument("--status", default=DEFAULT_STATUS)
-    update.add_argument("--readiness-output-dir", default="output/live-session-eligibility")
+    update.add_argument(
+        "--readiness-output-dir", default="output/live-session-eligibility"
+    )
 
     validate = commands.add_parser("validate")
     validate.add_argument("--ledger", default=DEFAULT_LEDGER)
@@ -468,7 +486,11 @@ def parse_args() -> argparse.Namespace:
 
 def main_cli() -> int:
     args = parse_args()
-    result = update_ledger(args) if args.command == "update" else validate_committed(args.ledger, args.status)
+    result = (
+        update_ledger(args)
+        if args.command == "update"
+        else validate_committed(args.ledger, args.status)
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.command == "validate" and not result["passed"]:
         return 1
