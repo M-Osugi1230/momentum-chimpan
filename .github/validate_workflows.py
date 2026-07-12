@@ -87,7 +87,10 @@ def main() -> int:
     require("volume-component-forward-evidence.yml", forward, [
         "volume_component_forward_evidence.py",
         "research/volume_component_forward_evidence.yaml",
-        "evidence_provenance.py prepare-live",
+        "live_session_eligibility.py validate",
+        "forward_eligible_history.py",
+        "research/evidence/live_session_eligibility.csv",
+        "eligibility_enforced",
         "live_strategy_history.csv",
         "eligible_signal_date_from",
         "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN",
@@ -98,9 +101,29 @@ def main() -> int:
         "retention-days: 180",
     ])
     forbid("volume-component-forward-evidence.yml", forward, [
+        "evidence_provenance.py prepare-live",
         "git push",
         "contents: write",
         "EMAIL_APP_PASSWORD",
+    ])
+
+    eligibility = load_workflow("live-session-eligibility-ledger.yml")
+    require("live-session-eligibility-ledger.yml", eligibility, [
+        "Daily Momentum Report",
+        "actions/download-artifact@v4",
+        "run-id: ${{ github.event.workflow_run.id }}",
+        "live_session_eligibility.py update",
+        "research/evidence/live_session_eligibility.csv",
+        "research/evidence/live_session_eligibility_status.json",
+        "git add --",
+        "contents: read",
+        "retention-days: 90",
+    ])
+    forbid("live-session-eligibility-ledger.yml", eligibility, [
+        "EMAIL_APP_PASSWORD",
+        "data/momentum_daily_ranking.csv \\",
+        "config.yaml \\",
+        "main.py \\",
     ])
 
     smoke = load_workflow("smoke.yml")
