@@ -16,8 +16,10 @@ Workflow: `.github/workflows/monthly-operations-review.yml`
 - reviews the previous calendar month by default;
 - supports a manual `YYYY-MM` review month;
 - uses `contents: read` only;
-- uploads the report as a GitHub Actions artifact for 365 days;
+- requests the maximum 365-day artifact retention, while the current repository-level cap makes the effective retention 90 days;
 - does not commit generated reports to the repository.
+
+GitHub applies the lower of the workflow request and the repository retention limit. The first validated artifact expired after 90 days, so 90 days is the current operational retention contract unless the repository setting is increased.
 
 ## Outputs
 
@@ -170,7 +172,8 @@ The review explicitly retains these limitations:
 
 - email delivery is not separately captured from workflow/report success;
 - sector outcome comparison is a same-date decision-cohort proxy rather than a licensed sector index;
-- small samples are not validated evidence of priority quality.
+- small samples are not validated evidence of priority quality;
+- monthly artifacts currently expire after 90 days because of the repository retention cap.
 
 Unknown or unavailable measurements remain blank or labeled rather than being converted into success.
 
