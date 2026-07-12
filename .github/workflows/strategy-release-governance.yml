@@ -1,0 +1,141 @@
+name: Strategy Release Governance
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    paths:
+      - strategy_release_gate.py
+      - research/strategy_release_policy.yaml
+      - research/strategy_release_candidates.yaml
+      - research/strategy_approvals.yaml
+      - strategy_governance.py
+      - main.py
+      - config.yaml
+      - data_quality.py
+      - daily_research_focus.py
+      - research/data_quality_policy.yaml
+      - research/daily_research_focus_policy.yaml
+      - .github/test_strategy_release_gate.py
+      - .github/workflows/strategy-release-governance.yml
+      - docs/STRATEGY_RELEASE_GOVERNANCE.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile release governance tools
+        run: |
+          python -m py_compile \
+            strategy_release_gate.py \
+            .github/test_strategy_release_gate.py
+      - name: Validate policy, candidates, approvals, and synthetic release lifecycle
+        run: |
+          set -o pipefail
+          python .github/test_strategy_release_gate.py \
+            2>&1 | tee /tmp/strategy-release-governance-test.log
+      - name: Build signed release governance status
+        run: |
+          rm -rf output/strategy-release-gate
+          python strategy_release_gate.py validate \
+            --policy research/strategy_release_policy.yaml \
+            --candidates research/strategy_release_candidates.yaml \
+            --approvals research/strategy_approvals.yaml \
+            --output-dir output/strategy-release-gate \
+            | tee /tmp/strategy-release-governance-report.log
+      - name: Enforce pull request release-surface gate
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "${BASE_SHA}"
+          python strategy_release_gate.py pr-gate \
+            --base-ref "${BASE_SHA}" \
+            --head-root . \
+            --head-ref "${GITHUB_SHA}" \
+            --pr-number "${PR_NUMBER}" \
+            --policy research/strategy_release_policy.yaml \
+            --candidates research/strategy_release_candidates.yaml \
+            --approvals research/strategy_approvals.yaml \
+            --output output/strategy-release-gate/pr_gate.json \
+            | tee /tmp/strategy-release-pr-gate.log
+      - name: Inspect generated governance boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('output/strategy-release-gate')
+          report = json.loads((root / 'strategy_release_gate.json').read_text(encoding='utf-8'))
+          assert report['registry_valid'] is True
+          assert report['automatic_activation'] is False
+          assert report['automatic_merge'] is False
+          assert report['automatic_strategy_change'] is False
+          assert report['automatic_priority_rule_change'] is False
+          assert report['production_state_mutations'] == []
+          assert report['manual_review_required'] is True
+          assert report['research_only'] is True
+          markdown = (root / 'strategy_release_gate.md').read_text(encoding='utf-8')
+          assert 'Automatic activation: **False**' in markdown
+          assert 'Automatic merge: **False**' in markdown
+          if (root / 'pr_gate.json').is_file():
+              gate = json.loads((root / 'pr_gate.json').read_text(encoding='utf-8'))
+              assert gate['passed'] is True
+              assert gate['automatic_activation'] is False
+              assert gate['automatic_merge'] is False
+              assert gate['manual_review_required'] is True
+          PY
+      - name: Confirm workflow is read-only
+        run: |
+          git diff --exit-code
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/strategy-release-governance.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('git' + ' push') not in text
+          assert ('contents:' + ' write') not in text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          PY
+      - name: Upload strategy release governance artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-release-governance-${{ github.run_id }}
+          path: |
+            output/strategy-release-gate/strategy_release_gate.json
+            output/strategy-release-gate/strategy_release_gate.md
+            output/strategy-release-gate/pr_gate.json
+            /tmp/strategy-release-governance-test.log
+            /tmp/strategy-release-governance-report.log
+            /tmp/strategy-release-pr-gate.log
+          if-no-files-found: warn
+          retention-days: 90
