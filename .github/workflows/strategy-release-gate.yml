@@ -1,0 +1,119 @@
+name: Strategy Release Gate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - main.py
+      - config.yaml
+      - research/daily_research_focus_policy.yaml
+      - research/data_quality_policy.yaml
+      - research/strategy_release_policy.yaml
+      - research/strategy_release_candidates.yaml
+      - research/strategy_approvals.yaml
+      - strategy_release_gate.py
+      - .github/test_strategy_release_gate.py
+      - .github/workflows/strategy-release-gate.yml
+      - docs/STRATEGY_RELEASE_POLICY.md
+  push:
+    branches:
+      - main
+    paths:
+      - main.py
+      - config.yaml
+      - research/daily_research_focus_policy.yaml
+      - research/data_quality_policy.yaml
+      - research/strategy_release_policy.yaml
+      - research/strategy_release_candidates.yaml
+      - research/strategy_approvals.yaml
+      - strategy_release_gate.py
+      - .github/test_strategy_release_gate.py
+      - .github/workflows/strategy-release-gate.yml
+      - docs/STRATEGY_RELEASE_POLICY.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout proposed repository
+        uses: actions/checkout@v4
+        with:
+          path: current
+          fetch-depth: 1
+
+      - name: Checkout pull request base
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: current/requirements.txt
+
+      - name: Install dependencies
+        working-directory: current
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile release-gate tools
+        working-directory: current
+        run: |
+          python -m py_compile \
+            strategy_release_gate.py \
+            .github/test_strategy_release_gate.py
+
+      - name: Validate deterministic release-gate contract
+        working-directory: current
+        run: |
+          set -o pipefail
+          python .github/test_strategy_release_gate.py \
+            2>&1 | tee /tmp/strategy-release-gate-tests.log
+
+      - name: Validate current policy, candidates, approvals, and fingerprint
+        working-directory: current
+        run: |
+          set -o pipefail
+          python strategy_release_gate.py validate --root . \
+            2>&1 | tee /tmp/strategy-release-current.json
+
+      - name: Block unapproved protected strategy changes
+        if: github.event_name == 'pull_request'
+        working-directory: current
+        run: |
+          set -o pipefail
+          python strategy_release_gate.py check-change \
+            --base-root ../base \
+            --current-root . \
+            2>&1 | tee /tmp/strategy-release-change.json
+
+      - name: Confirm read-only repository boundary
+        working-directory: current
+        run: git diff --exit-code
+
+      - name: Upload release-gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy-release-gate-${{ github.run_id }}
+          path: |
+            /tmp/strategy-release-gate-tests.log
+            /tmp/strategy-release-current.json
+            /tmp/strategy-release-change.json
+          if-no-files-found: warn
+          retention-days: 90
