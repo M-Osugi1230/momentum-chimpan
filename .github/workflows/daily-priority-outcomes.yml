@@ -13,10 +13,12 @@ on:
       - main
     paths:
       - priority_outcomes.py
+      - live_session_readiness.py
       - research/priority_outcomes/**
       - .github/test_priority_outcomes.py
       - .github/workflows/daily-priority-outcomes.yml
       - docs/PRIORITY_OUTCOMES.md
+      - docs/LIVE_SESSION_READINESS.md
   workflow_dispatch:
 
 permissions:
@@ -49,6 +51,7 @@ jobs:
         run: |
           python -m py_compile \
             priority_outcomes.py \
+            live_session_readiness.py \
             .github/test_priority_outcomes.py
       - name: Validate prospective outcome contract
         run: |
@@ -120,8 +123,10 @@ jobs:
           else
             python -m pip install -r requirements.txt
           fi
-      - name: Prepare artifact directory
-        run: mkdir -p downloaded-daily-report
+      - name: Prepare artifact directories
+        run: |
+          mkdir -p downloaded-daily-report
+          mkdir -p output/priority-outcomes-readiness
       - name: Download exact upstream daily artifact
         if: github.event_name == 'workflow_run'
         continue-on-error: true
@@ -132,6 +137,55 @@ jobs:
           merge-multiple: true
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Require exact live-session readiness before ingestion
+        if: github.event_name == 'workflow_run'
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+          SOURCE_UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
+        run: |
+          set -euo pipefail
+          python -m py_compile live_session_readiness.py priority_outcomes.py
+          python live_session_readiness.py build \
+            --artifact-root downloaded-daily-report \
+            --source-run-id "${SOURCE_RUN_ID}" \
+            --source-run-url "${SOURCE_RUN_URL}" \
+            --upstream-conclusion "${SOURCE_CONCLUSION}" \
+            --upstream-event "${SOURCE_EVENT}" \
+            --head-sha "${SOURCE_HEAD_SHA}" \
+            --created-at-utc "${SOURCE_CREATED_AT}" \
+            --updated-at-utc "${SOURCE_UPDATED_AT}" \
+            --output-dir output/priority-outcomes-readiness \
+            | tee /tmp/priority-outcomes-readiness.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import live_session_readiness as readiness
+
+          path = Path('output/priority-outcomes-readiness/live_session_readiness.json')
+          if not path.is_file():
+              raise SystemExit('signed live-session readiness output is missing')
+          payload = json.loads(path.read_text(encoding='utf-8'))
+          issues = readiness.validate_readiness(payload)
+          if issues:
+              raise SystemExit('invalid live-session readiness: ' + '; '.join(issues))
+          if payload.get('readiness_state') == 'FAIL':
+              raise SystemExit('live session readiness failed; prospective decisions will not be ingested')
+          if payload.get('eligible_for_priority_outcome_ingestion') is not True:
+              raise SystemExit('live session is not eligible for priority outcome ingestion')
+          print(json.dumps({
+              'readiness_state': payload.get('readiness_state'),
+              'source_run_id': payload.get('source_run_id'),
+              'report_date': payload.get('report_date'),
+              'eligible_for_priority_outcome_ingestion': True,
+              'readiness_fingerprint': payload.get('readiness_fingerprint'),
+              'status_sha256': payload.get('status_sha256'),
+          }, ensure_ascii=False, indent=2))
+          PY
       - name: Ingest decisions and mature available outcomes
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
@@ -202,6 +256,9 @@ jobs:
             research/priority_outcomes/daily_research_outcomes.csv
             research/priority_outcomes/latest_calibration.json
             research/priority_outcomes/latest_calibration.md
+            output/priority-outcomes-readiness/live_session_readiness.json
+            output/priority-outcomes-readiness/live_session_readiness.md
+            /tmp/priority-outcomes-readiness.log
             /tmp/priority-outcomes-update.log
           if-no-files-found: warn
           retention-days: 90
