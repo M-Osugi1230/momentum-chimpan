@@ -1,6 +1,6 @@
 # Momentum Chimpan Roadmap
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 ## Roadmap rule
 
@@ -14,6 +14,22 @@ Until the prospective evidence gate completes, engineering capacity should be al
 | Data quality and operational reliability | 40% |
 | Evidence and calibration | 20% |
 | New score components and weight optimization | 0% |
+
+## Current execution status
+
+| Workstream | State | Evidence / next gate |
+|---|---|---|
+| Documentation and contracts | Implemented | PR #100; documentation contract active |
+| Ten-session production audit | `ACCUMULATING` | PR #101; Issue #68; first eligible session 2026-07-13; ten distinct full state-update sessions and recovery drill required |
+| Forward Evidence publisher | `ACCUMULATING` | Issue #69; first eligible non-initial live source run, signed hashes, and daily-display parity still required |
+| Data Quality A/B/C/D | Implemented; observing | PR #102; full-universe production quality and coverage observation continues |
+| Daily Research Focus | Implemented; observing | PR #103; A/B/C/Watch/Skip and capped Action List require live observation |
+| 5/10/20-session priority outcomes | `ACCUMULATING` | PR #104; no-lookahead prospective samples mature only after future sessions |
+| Monthly operations and evidence review | Implemented | PR #105; read-only scheduled governance report |
+| Strategy-release governance | Implemented | PR #106 and PR #109; registered evidence, shadow operation, manual approval, append-only records, and trusted base-branch enforcement |
+| Score optimization | Frozen | Issue #73 remains open; current volume-ratio weight remains 15 points |
+
+Implemented means the contract and validation are present on `main`; it does not mean that time-dependent production or evidence exit gates have matured.
 
 ## Phase 0 — Re-baseline and production audit
 
@@ -215,6 +231,8 @@ Only mature questions with prospective evidence may enter this phase, including 
 7. use a separate production-change PR;
 8. retain rollback path and post-release audit.
 
+The release governance on `main` additionally requires a pinned protected surface, append-only candidate and approval records, and trusted base-branch validation before a production-change PR can pass.
+
 ## Phase 6 — Web dashboard
 
 Target: April 2027 or later
@@ -257,13 +275,13 @@ Target: only after recurring value is proven
 
 ## Immediate execution order
 
-1. Complete documentation PR for #67/#79/#80/#81/#82/#83.
-2. Start ten-session production audit under #68.
-3. Verify Forward Evidence publisher under #69.
-4. Implement data-quality foundations under #71.
-5. Design and implement priority experience under #70.
-6. Activate outcome tracking under #72 with the priority launch.
-7. Produce monthly governance reporting under #74.
+1. Run and inspect the first eligible 2026-07-13 full-production session.
+2. Verify the first non-initial Forward Evidence publisher chain under #69.
+3. Accumulate ten distinct full state-update market sessions and complete the #68 recovery drill.
+4. Observe Data Quality and Daily Research Focus across the full production universe.
+5. Accumulate no-lookahead 5/10/20-session priority outcomes under #72.
+6. Use the monthly review from #74 for recurring operations and evidence governance.
+7. Keep #73 active: do not optimize scores or activate any strategy change while prospective evidence is `ACCUMULATING`.
 
 ## Backlog discipline
 
