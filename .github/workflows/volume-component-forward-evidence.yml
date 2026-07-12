@@ -8,11 +8,19 @@ on:
       - volume_component_forward_evidence.py
       - volume_component_forward_status.py
       - volume_component_forward_status_publish.py
+      - live_session_readiness.py
+      - live_session_eligibility.py
+      - forward_eligible_history.py
+      - research/evidence/live_session_eligibility.csv
+      - research/evidence/live_session_eligibility_status.json
       - data/volume_component_forward_status.json
       - research/volume_component_forward_evidence.yaml
       - .github/test_volume_component_forward_evidence.py
       - .github/test_volume_component_forward_status.py
       - .github/test_volume_component_forward_status_publish.py
+      - .github/test_live_session_eligibility.py
+      - .github/test_forward_eligible_history.py
+      - .github/workflows/live-session-eligibility-ledger.yml
       - .github/workflows/volume-component-forward-evidence.yml
       - .github/workflows/volume-component-forward-status.yml
       - score_component_ablation.py
@@ -21,6 +29,7 @@ on:
       - execution_realism.py
       - evidence_provenance.py
       - main.py
+      - docs/LIVE_SESSION_ELIGIBILITY.md
   push:
     branches:
       - main
@@ -28,10 +37,18 @@ on:
       - volume_component_forward_evidence.py
       - volume_component_forward_status.py
       - volume_component_forward_status_publish.py
+      - live_session_readiness.py
+      - live_session_eligibility.py
+      - forward_eligible_history.py
+      - research/evidence/live_session_eligibility.csv
+      - research/evidence/live_session_eligibility_status.json
       - research/volume_component_forward_evidence.yaml
       - .github/test_volume_component_forward_evidence.py
       - .github/test_volume_component_forward_status.py
       - .github/test_volume_component_forward_status_publish.py
+      - .github/test_live_session_eligibility.py
+      - .github/test_forward_eligible_history.py
+      - .github/workflows/live-session-eligibility-ledger.yml
       - .github/workflows/volume-component-forward-evidence.yml
       - .github/workflows/volume-component-forward-status.yml
       - score_component_ablation.py
@@ -40,6 +57,7 @@ on:
       - execution_realism.py
       - evidence_provenance.py
       - main.py
+      - docs/LIVE_SESSION_ELIGIBILITY.md
   workflow_dispatch:
     inputs:
       batch_size:
@@ -82,17 +100,32 @@ jobs:
             volume_component_forward_evidence.py \
             volume_component_forward_status.py \
             volume_component_forward_status_publish.py \
+            live_session_readiness.py \
+            live_session_eligibility.py \
+            forward_eligible_history.py \
             score_component_ablation.py replay.py \
             live_execution_panel.py execution_realism.py \
             evidence_provenance.py main.py \
             .github/test_volume_component_forward_evidence.py \
             .github/test_volume_component_forward_status.py \
-            .github/test_volume_component_forward_status_publish.py
+            .github/test_volume_component_forward_status_publish.py \
+            .github/test_live_session_eligibility.py \
+            .github/test_forward_eligible_history.py
       - name: Run synthetic prospective evidence validation
         run: |
           set -o pipefail
           python .github/test_volume_component_forward_evidence.py \
             2>&1 | tee /tmp/volume-component-forward-test.log
+      - name: Run live-session eligibility validation
+        run: |
+          set -o pipefail
+          python .github/test_live_session_eligibility.py \
+            2>&1 | tee /tmp/live-session-eligibility-test.log
+      - name: Run eligible-history filter validation
+        run: |
+          set -o pipefail
+          python .github/test_forward_eligible_history.py \
+            2>&1 | tee /tmp/forward-eligible-history-test.log
       - name: Run signed status validation
         run: |
           set -o pipefail
@@ -121,6 +154,10 @@ jobs:
           assert ('contents:' + ' write') not in workflow_text
           assert 'data/volume_component_forward_status.json' in workflow_text.split('push:', 1)[0]
           assert 'data/volume_component_forward_status.json' not in workflow_text.split('push:', 1)[1].split('workflow_dispatch:', 1)[0]
+          assert 'python live_session_eligibility.py validate' in workflow_text
+          assert 'python forward_eligible_history.py' in workflow_text
+          assert '--ledger research/evidence/live_session_eligibility.csv' in workflow_text
+          assert 'python evidence_provenance.py prepare-live' not in workflow_text
           assert registry['study']['registered_at'] == '2026-07-12'
           assert registry['study']['eligible_signal_date_from'] == '2026-07-13'
           assert registry['comparison']['preserved_daily_score_distribution'] is True
@@ -157,6 +194,8 @@ jobs:
           name: volume-component-forward-validation-log
           path: |
             /tmp/volume-component-forward-test.log
+            /tmp/live-session-eligibility-test.log
+            /tmp/forward-eligible-history-test.log
             /tmp/volume-component-forward-status-test.log
             /tmp/volume-component-forward-status-publish-test.log
           if-no-files-found: ignore
@@ -181,14 +220,19 @@ jobs:
           else
             python -m pip install -r requirements.txt
           fi
-      - name: Prepare fingerprinted live history
+      - name: Prepare eligibility-bound live history
         id: provenance
         run: |
+          set -euo pipefail
           mkdir -p output/volume_component_forward/report
           python strategy_governance.py snapshot \
             --output output/volume_component_forward/current_strategy_fingerprint.json
-          python evidence_provenance.py prepare-live \
+          python live_session_eligibility.py validate \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json
+          python forward_eligible_history.py \
             --ranking data/momentum_daily_ranking.csv \
+            --ledger research/evidence/live_session_eligibility.csv \
             --output output/volume_component_forward/live_strategy_history.csv \
             --provenance output/volume_component_forward/evidence_provenance.json \
             --fingerprint output/volume_component_forward/current_strategy_fingerprint.json \
@@ -199,6 +243,10 @@ jobs:
           payload = json.loads(
               Path('output/volume_component_forward/evidence_provenance.json').read_text(encoding='utf-8')
           )
+          assert payload.get('eligibility_enforced') is True
+          assert payload.get('automatic_weight_change') is False
+          assert payload.get('automatic_strategy_change') is False
+          assert payload.get('production_state_mutations') == []
           print(int(payload.get('eligible_date_count', 0)))
           PY
           )
@@ -228,10 +276,15 @@ jobs:
           manifest = json.loads(
               (root / 'volume_component_forward_manifest.json').read_text(encoding='utf-8')
           )
+          provenance = json.loads(
+              Path('output/volume_component_forward/evidence_provenance.json').read_text(encoding='utf-8')
+          )
           status = pd.read_csv(root / 'volume_component_forward_status.csv')
           distribution = pd.read_csv(
               root / 'volume_component_forward_distribution_audit.csv'
           )
+          assert provenance['eligibility_enforced'] is True
+          assert provenance['verified_date_count'] == provenance['eligible_date_count']
           assert manifest['eligible_signal_date_from'] == '2026-07-13'
           assert manifest['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
           assert manifest['same_day_close_entry_allowed'] is False

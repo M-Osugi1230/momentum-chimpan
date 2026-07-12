@@ -1,0 +1,236 @@
+name: Live Session Eligibility Ledger
+
+on:
+  workflow_run:
+    workflows:
+      - Daily Momentum Report
+    types:
+      - completed
+  pull_request:
+    branches:
+      - main
+    paths:
+      - live_session_readiness.py
+      - live_session_eligibility.py
+      - forward_eligible_history.py
+      - evidence_provenance.py
+      - research/evidence/live_session_eligibility.csv
+      - research/evidence/live_session_eligibility_status.json
+      - .github/test_live_session_eligibility.py
+      - .github/test_forward_eligible_history.py
+      - .github/workflows/live-session-eligibility-ledger.yml
+      - .github/workflows/volume-component-forward-evidence.yml
+      - docs/LIVE_SESSION_ELIGIBILITY.md
+  push:
+    branches:
+      - main
+    paths:
+      - live_session_readiness.py
+      - live_session_eligibility.py
+      - forward_eligible_history.py
+      - evidence_provenance.py
+      - research/evidence/live_session_eligibility.csv
+      - research/evidence/live_session_eligibility_status.json
+      - .github/test_live_session_eligibility.py
+      - .github/test_forward_eligible_history.py
+      - .github/workflows/live-session-eligibility-ledger.yml
+      - .github/workflows/volume-component-forward-evidence.yml
+      - docs/LIVE_SESSION_ELIGIBILITY.md
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: live-session-eligibility-main
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile eligibility tools
+        run: |
+          python -m py_compile \
+            live_session_readiness.py \
+            live_session_eligibility.py \
+            forward_eligible_history.py \
+            .github/test_live_session_eligibility.py \
+            .github/test_forward_eligible_history.py
+      - name: Validate eligibility ledger contract
+        run: |
+          set -o pipefail
+          python .github/test_live_session_eligibility.py \
+            2>&1 | tee /tmp/live-session-eligibility-test.log
+      - name: Validate Forward Evidence eligibility filter
+        run: |
+          set -o pipefail
+          python .github/test_forward_eligible_history.py \
+            2>&1 | tee /tmp/forward-eligible-history-test.log
+      - name: Validate committed signed ledger
+        run: |
+          python live_session_eligibility.py validate \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json
+      - name: Validate workflow safety boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/live-session-eligibility-ledger.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['actions'] == 'read'
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          assert 'git add -- \\\n            research/evidence/live_session_eligibility.csv \\\n            research/evidence/live_session_eligibility_status.json' in text
+          persistence = text.split('git add --', 1)[1]
+          for forbidden in (
+              'main.py',
+              'config.yaml',
+              'data/momentum_daily_ranking.csv',
+              'paper_portfolio.csv',
+              'research/priority_outcomes/daily_research_decisions.csv',
+          ):
+              assert forbidden not in persistence
+          PY
+      - name: Upload validation failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-session-eligibility-validation-log
+          path: |
+            /tmp/live-session-eligibility-test.log
+            /tmp/forward-eligible-history-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Prepare exact-artifact directories
+        run: |
+          mkdir -p downloaded-daily-report
+          mkdir -p output/live-session-eligibility
+      - name: Download exact upstream daily artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: momentum-operations-*
+          path: downloaded-daily-report
+          merge-multiple: true
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Append signed eligibility record
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+          SOURCE_UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
+        run: |
+          set -euo pipefail
+          python -m py_compile live_session_readiness.py live_session_eligibility.py
+          python live_session_eligibility.py update \
+            --artifact-root downloaded-daily-report \
+            --source-run-id "${SOURCE_RUN_ID}" \
+            --source-run-url "${SOURCE_RUN_URL}" \
+            --upstream-conclusion "${SOURCE_CONCLUSION}" \
+            --upstream-event "${SOURCE_EVENT}" \
+            --head-sha "${SOURCE_HEAD_SHA}" \
+            --created-at-utc "${SOURCE_CREATED_AT}" \
+            --updated-at-utc "${SOURCE_UPDATED_AT}" \
+            --recorded-at-utc "${SOURCE_UPDATED_AT}" \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json \
+            --readiness-output-dir output/live-session-eligibility \
+            | tee /tmp/live-session-eligibility-update.log
+          python live_session_eligibility.py validate \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json
+      - name: Persist eligibility research files only
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            research/evidence/live_session_eligibility.csv \
+            research/evidence/live_session_eligibility_status.json
+          if git diff --cached --quiet; then
+            echo "No live-session eligibility changes to commit"
+            exit 0
+          fi
+          git commit -m "Record live-session evidence eligibility"
+          git fetch origin main
+          git rebase origin/main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Eligibility ledger push attempt ${attempt} failed"
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $((attempt * 10))
+              git fetch origin main
+              git rebase origin/main
+            fi
+          done
+          echo "Failed to persist eligibility ledger" >&2
+          exit 1
+      - name: Upload eligibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-session-eligibility-${{ github.run_id }}
+          path: |
+            research/evidence/live_session_eligibility.csv
+            research/evidence/live_session_eligibility_status.json
+            output/live-session-eligibility/live_session_readiness.json
+            output/live-session-eligibility/live_session_readiness.md
+            /tmp/live-session-eligibility-update.log
+          if-no-files-found: warn
+          retention-days: 90
