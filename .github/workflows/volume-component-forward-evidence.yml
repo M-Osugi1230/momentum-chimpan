@@ -7,10 +7,12 @@ on:
     paths:
       - volume_component_forward_evidence.py
       - volume_component_forward_status.py
+      - volume_component_forward_status_publish.py
       - data/volume_component_forward_status.json
       - research/volume_component_forward_evidence.yaml
       - .github/test_volume_component_forward_evidence.py
       - .github/test_volume_component_forward_status.py
+      - .github/test_volume_component_forward_status_publish.py
       - .github/workflows/volume-component-forward-evidence.yml
       - .github/workflows/volume-component-forward-status.yml
       - score_component_ablation.py
@@ -25,10 +27,11 @@ on:
     paths:
       - volume_component_forward_evidence.py
       - volume_component_forward_status.py
-      - data/volume_component_forward_status.json
+      - volume_component_forward_status_publish.py
       - research/volume_component_forward_evidence.yaml
       - .github/test_volume_component_forward_evidence.py
       - .github/test_volume_component_forward_status.py
+      - .github/test_volume_component_forward_status_publish.py
       - .github/workflows/volume-component-forward-evidence.yml
       - .github/workflows/volume-component-forward-status.yml
       - score_component_ablation.py
@@ -78,11 +81,13 @@ jobs:
           python -m py_compile \
             volume_component_forward_evidence.py \
             volume_component_forward_status.py \
+            volume_component_forward_status_publish.py \
             score_component_ablation.py replay.py \
             live_execution_panel.py execution_realism.py \
             evidence_provenance.py main.py \
             .github/test_volume_component_forward_evidence.py \
-            .github/test_volume_component_forward_status.py
+            .github/test_volume_component_forward_status.py \
+            .github/test_volume_component_forward_status_publish.py
       - name: Run synthetic prospective evidence validation
         run: |
           set -o pipefail
@@ -93,6 +98,11 @@ jobs:
           set -o pipefail
           python .github/test_volume_component_forward_status.py \
             2>&1 | tee /tmp/volume-component-forward-status-test.log
+      - name: Run semantic publisher validation
+        run: |
+          set -o pipefail
+          python .github/test_volume_component_forward_status_publish.py \
+            2>&1 | tee /tmp/volume-component-forward-status-publish-test.log
       - name: Validate pre-registration and read-only evidence policy
         run: |
           python - <<'PY'
@@ -109,6 +119,8 @@ jobs:
           assert ('git' + ' push') not in workflow_text
           assert ('EMAIL_' + 'APP_PASSWORD') not in workflow_text
           assert ('contents:' + ' write') not in workflow_text
+          assert 'data/volume_component_forward_status.json' in workflow_text.split('push:', 1)[0]
+          assert 'data/volume_component_forward_status.json' not in workflow_text.split('push:', 1)[1].split('workflow_dispatch:', 1)[0]
           assert registry['study']['registered_at'] == '2026-07-12'
           assert registry['study']['eligible_signal_date_from'] == '2026-07-13'
           assert registry['comparison']['preserved_daily_score_distribution'] is True
@@ -130,10 +142,12 @@ jobs:
           permissions = workflow['permissions']
           assert permissions['actions'] == 'read'
           assert permissions['contents'] == 'write'
+          assert 'volume_component_forward_status_publish.py' in text
           assert 'data/volume_component_forward_status.json' in text
           assert 'git add -- data/volume_component_forward_status.json' in text
-          assert 'main.py' not in text.split('git add --', 1)[1]
-          assert 'config.yaml' not in text.split('git add --', 1)[1]
+          persistence = text.split('git add --', 1)[1]
+          assert 'main.py' not in persistence
+          assert 'config.yaml' not in persistence
           assert ('EMAIL_' + 'APP_PASSWORD') not in text
           PY
       - name: Upload validation failure logs
@@ -144,6 +158,7 @@ jobs:
           path: |
             /tmp/volume-component-forward-test.log
             /tmp/volume-component-forward-status-test.log
+            /tmp/volume-component-forward-status-publish-test.log
           if-no-files-found: ignore
           retention-days: 7
 
