@@ -1,0 +1,58 @@
+policy:
+  id: daily-research-focus-v1
+  registered_at: '2026-07-12'
+  purpose: Convert existing action priorities into a concise daily research plan without changing Momentum score, rank, or paper execution.
+
+limits:
+  maximum_A_candidates: 5
+  maximum_daily_action_list: 10
+  email_A_limit: 5
+  email_B_limit: 5
+
+bucket_mapping:
+  A: A
+  B: B
+  C_high_monitoring: C
+  C_waiting: Watch
+  rejected_near_threshold: Watch
+  rejected_low_priority: Skip
+
+watch_rules:
+  C_minimum_action_score: 55
+  rejected_minimum_action_score: 45
+  eligible_quality_grades: [A, B, C]
+
+required_explanations:
+  - why_today
+  - what_changed
+  - risk_summary
+  - next_research_questions
+  - focus_adjustment_reason
+
+research_questions:
+  common:
+    - 最新決算・業績修正・適時開示を確認
+    - 上昇材料が一過性か継続性があるか確認
+    - 日足チャート、窓、移動平均乖離、直近高値を確認
+  new_entry:
+    - 新規ランクインの直接要因と同業他社比較を確認
+  rapid_rise:
+    - 順位急上昇が材料・需給・決算のどれに起因するか確認
+  high_volume:
+    - 出来高急増の材料と翌日以降の継続性を確認
+  lifecycle:
+    - 初動・加速・継続・再浮上のどの局面かをチャートで確認
+  data_warning:
+    - 株価調整、分割、欠損、流動性等のデータ警告を確認
+
+governance:
+  display_and_research_planning_only: true
+  preserve_momentum_score: true
+  preserve_momentum_rank: true
+  preserve_paper_execution: true
+  automatic_score_change: false
+  automatic_weight_change: false
+  automatic_strategy_change: false
+  production_state_mutations: []
+  live_orders: false
+  outcome_tracking_required_before_rule_change: true
