@@ -16,6 +16,12 @@ Generated: `2026-07-12T00:00:00+00:00`
 
 | Bucket | Horizon | N | Decision dates | Gate |
 |---|---:|---:|---:|---|
+| A | 5 | 0/30 | 0/20 | ACCUMULATING |
+| A | 10 | 0/30 | 0/20 | ACCUMULATING |
+| A | 20 | 0/30 | 0/20 | ACCUMULATING |
+| B | 5 | 0/30 | 0/20 | ACCUMULATING |
+| B | 10 | 0/30 | 0/20 | ACCUMULATING |
+| B | 20 | 0/30 | 0/20 | ACCUMULATING |
 
 ## Bucket calibration
 
