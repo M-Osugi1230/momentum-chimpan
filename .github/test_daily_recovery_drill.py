@@ -187,8 +187,13 @@ def main() -> None:
     assert "steps.recovery_drill.outcome == 'success'" in maintenance["if"]
     persist = steps[persist_index]
     assert "steps.recovery_drill.outcome == 'success'" in persist["if"]
-    artifact = next(step for step in steps if step.get("name") == "Upload operations artifact")
-    assert "output/recovery" in artifact["with"]["path"]
+    artifact = next(
+        step
+        for step in steps
+        if step.get("uses") == "actions/upload-artifact@v4"
+        and "output/recovery" in step.get("with", {}).get("path", "")
+    )
+    assert "output/recovery/**" in artifact["with"]["path"]
 
     print("daily exact recovery drill validation passed")
 
