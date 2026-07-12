@@ -13,7 +13,14 @@
   "error_outcome_count": 0,
   "lookahead_violation_count": 0,
   "distinct_decision_dates": 0,
-  "review_gates": [],
+  "review_gates": [
+    {"research_bucket": "A", "horizon_sessions": 5, "sample_size": 0, "distinct_decision_dates": 0, "minimum_sample_size": 30, "minimum_distinct_decision_dates": 20, "passed": false},
+    {"research_bucket": "A", "horizon_sessions": 10, "sample_size": 0, "distinct_decision_dates": 0, "minimum_sample_size": 30, "minimum_distinct_decision_dates": 20, "passed": false},
+    {"research_bucket": "A", "horizon_sessions": 20, "sample_size": 0, "distinct_decision_dates": 0, "minimum_sample_size": 30, "minimum_distinct_decision_dates": 20, "passed": false},
+    {"research_bucket": "B", "horizon_sessions": 5, "sample_size": 0, "distinct_decision_dates": 0, "minimum_sample_size": 30, "minimum_distinct_decision_dates": 20, "passed": false},
+    {"research_bucket": "B", "horizon_sessions": 10, "sample_size": 0, "distinct_decision_dates": 0, "minimum_sample_size": 30, "minimum_distinct_decision_dates": 20, "passed": false},
+    {"research_bucket": "B", "horizon_sessions": 20, "sample_size": 0, "distinct_decision_dates": 0, "minimum_sample_size": 30, "minimum_distinct_decision_dates": 20, "passed": false}
+  ],
   "ready_for_human_priority_rule_review": false,
   "production_rule_change_allowed": false,
   "manual_review_required": true,
@@ -25,6 +32,6 @@
   "automatic_priority_rule_change": false,
   "research_only": true,
   "generated_at_utc": "2026-07-12T00:00:00+00:00",
-  "calibration_fingerprint": "2a8ace5d30aaa46dbfa5fbf0a98509e34c8a232f7436222429f1fcad1b940223",
-  "status_sha256": "b75b82a160ee6f084f85c2d75f0677e8529f1f64d43dcada824e44da4c297382"
+  "calibration_fingerprint": "f9691182f0abd41d9dc4d73495692c4175156d5458e8a3d0c4c2a6e028e24166",
+  "status_sha256": "4fde98ea32f4a8c621ca940508532b2b224558d9be9e8a30ec7ebded8a16284c"
 }
