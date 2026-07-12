@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -44,7 +45,9 @@ for relative_path in sorted(REQUIRED_DOCS):
 
 assert "daily_runner.py" in readme, "README must name the production entrypoint"
 assert "メール上位30件" in readme or "上位30件" in readme
-assert "Momentum Top10" not in readme, "obsolete Top10 wording returned"
+assert re.search(r"Momentum Top10(?!0)", readme) is None, (
+    "obsolete standalone Top10 wording returned"
+)
 assert "自動売買" in readme
 assert "automatic weight change: disabled" in readme
 assert "HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE" in readme
