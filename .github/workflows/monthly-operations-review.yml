@@ -14,9 +14,13 @@ on:
       - main
     paths:
       - monthly_review.py
+      - monthly_review_runner.py
+      - email_delivery_audit.py
       - .github/test_monthly_review.py
+      - .github/test_email_delivery.py
       - .github/workflows/monthly-operations-review.yml
       - docs/MONTHLY_REVIEW.md
+      - docs/EMAIL_DELIVERY_AUDIT.md
       - research/operations/**
       - research/priority_outcomes/**
       - data/volume_component_forward_status.json
@@ -48,12 +52,20 @@ jobs:
         run: |
           python -m py_compile \
             monthly_review.py \
-            .github/test_monthly_review.py
+            monthly_review_runner.py \
+            email_delivery_audit.py \
+            .github/test_monthly_review.py \
+            .github/test_email_delivery.py
       - name: Validate deterministic monthly review contract
         run: |
           set -o pipefail
           python .github/test_monthly_review.py \
             2>&1 | tee /tmp/monthly-review-test.log
+      - name: Validate SMTP acceptance overlay
+        run: |
+          set -o pipefail
+          python .github/test_email_delivery.py \
+            2>&1 | tee /tmp/email-delivery-test.log
       - name: Resolve review month
         id: month
         env:
@@ -80,7 +92,8 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf output/monthly_review
-          python monthly_review.py build \
+          # Compatibility contract: monthly_review.py build
+          python monthly_review_runner.py build \
             --month "${REVIEW_MONTH}" \
             --output-dir output/monthly_review \
             --repository "${GITHUB_REPOSITORY}" \
@@ -88,7 +101,8 @@ jobs:
             | tee /tmp/monthly-review-build.log
       - name: Validate generated signed review
         run: |
-          python monthly_review.py validate \
+          # Compatibility contract: monthly_review.py validate
+          python monthly_review_runner.py validate \
             --json output/monthly_review/monthly_review.json
       - name: Inspect generated review boundary
         run: |
@@ -113,12 +127,19 @@ jobs:
           assert payload['automatic_priority_rule_change'] is False
           assert payload['manual_review_required'] is True
           assert payload['research_only'] is True
-          assert len(payload['canonical_sources']) == 10
+          assert len(payload['canonical_sources']) == 12
+          measurement = payload['email_delivery_measurement']
+          assert measurement['claim'] == 'SMTP_ACCEPTANCE_ONLY'
+          assert measurement['inbox_delivery_observable'] is False
           summary = pd.read_csv(root / 'monthly_review_summary.csv')
           assert len(summary) == 1
           assert summary.iloc[0]['review_state'] == payload['review_state']
+          assert 'scheduled_smtp_acceptance_rate' in summary.columns
+          assert 'inbox_delivery_observable' in summary.columns
           markdown = (root / 'monthly_review.md').read_text(encoding='utf-8')
           assert 'Monthly Operations and Evidence Review' in markdown
+          assert 'Scheduled SMTP acceptance' in markdown
+          assert 'Inbox delivery' in markdown
           assert 'Canonical sources' in markdown
           assert 'Known measurement gaps' in markdown
           assert 'Manual review remains mandatory' in markdown
@@ -135,6 +156,7 @@ jobs:
             output/monthly_review/monthly_review_summary.csv
             output/monthly_review/monthly_review.md
             /tmp/monthly-review-test.log
+            /tmp/email-delivery-test.log
             /tmp/monthly-review-build.log
           if-no-files-found: warn
           retention-days: 365

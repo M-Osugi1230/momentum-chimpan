@@ -1,11 +1,12 @@
-"""Daily entrypoint for governed display, quality, and research focus.
+"""Daily entrypoint for governed display, quality, research focus, and mail audit.
 
 The governed screener still runs through ``main.main``. This wrapper augments
 human-facing Excel/email outputs and persisted ranking rows with research
 transparency and non-mutating data-quality metadata. It also converts the
 existing action-priority table into a concise daily research plan after paper
-execution has already completed. Momentum scores, ranks, thresholds, paper
-execution, and strategy fingerprints remain untouched.
+execution has already completed, and records a privacy-preserving SMTP
+acceptance receipt. Momentum scores, ranks, thresholds, paper execution, and
+strategy fingerprints remain untouched.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import pandas as pd
 
 import daily_research_focus
 import data_quality
+import email_delivery
 import main
 import research_transparency as transparency
 
@@ -82,6 +84,7 @@ def install_patches(
     original_excel: Callable[..., Any] = main_module.excel_report
     original_plain: Callable[..., str] = main_module.build_plain_email
     original_html: Callable[..., str] = main_module.build_html_email
+    original_send_email: Callable[..., Any] = main_module.send_email
     original_provenance: Callable[[pd.DataFrame], pd.DataFrame] = (
         main_module.attach_strategy_provenance
     )
@@ -170,10 +173,22 @@ def install_patches(
         )
         return insert_html_section(body, transparency.html_section(current))
 
+    @wraps(original_send_email)
+    def patched_send_email(*args: Any, **kwargs: Any) -> Any:
+        # Keep receipt classification aligned with the original mail function,
+        # which supports credentials loaded from a local .env file.
+        main_module.load_dotenv()
+        return email_delivery.send_with_receipt(
+            original_send_email,
+            *args,
+            **kwargs,
+        )
+
     main_module.attach_strategy_provenance = patched_provenance
     main_module.excel_report = patched_excel
     main_module.build_plain_email = patched_plain
     main_module.build_html_email = patched_html
+    main_module.send_email = patched_send_email
     _PATCHED = True
     return current
 
@@ -197,6 +212,11 @@ def run() -> None:
         daily_research_focus.load_policy()["policy"]["id"],
         daily_research_focus.load_policy()["limits"]["maximum_A_candidates"],
         daily_research_focus.load_policy()["limits"]["maximum_daily_action_list"],
+    )
+    main.logger.info(
+        "Email delivery receipt: version=%s output=%s inbox_delivery_claimed=false",
+        email_delivery.RECEIPT_VERSION,
+        email_delivery.DEFAULT_RECEIPT_PATH,
     )
     main.main()
 

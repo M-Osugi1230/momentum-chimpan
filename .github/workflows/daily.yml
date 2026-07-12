@@ -69,6 +69,7 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MOMENTUM_MAX_SYMBOLS: ${{ inputs.max_symbols || '0' }}
         run: |
           mkdir -p output
@@ -237,6 +238,7 @@ jobs:
           path: |
             output/daily_report.xlsx
             output/run.log
+            output/email_delivery_receipt.json
             output/state_maintenance.json
             output/evidence_stamp_audit.json
             output/recovery_snapshot_audit.json
