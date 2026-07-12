@@ -1,6 +1,6 @@
 # Momentum Chimpan KPI Dictionary
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 ## KPI design rules
 
@@ -90,13 +90,33 @@ A valid workbook must exist, open, and contain required Summary fields and sheet
 - Target: complete by 17:15 JST for at least 95% of full production runs.
 - Measure both total runtime and completion timestamp.
 
-### Email delivery success rate
+### SMTP receipt validity rate
 
-`confirmed_email_delivery_attempts_without_error / expected_daily_email_attempts`
+`valid_signed_smtp_receipts / daily_runs_expected_to_emit_a_receipt`
 
-Target: >= 99% monthly.
+Target: 100% monthly.
 
-Email failure is tracked separately from report and state success.
+A receipt is valid only when its status and integrity hashes pass validation. Missing or unreadable receipts remain failures rather than being inferred from workbook or workflow success.
+
+### Scheduled SMTP acceptance rate
+
+`smtp_accepted_scheduled_receipts / valid_scheduled_smtp_receipts`
+
+Target: >= 99% monthly after the email configuration is active.
+
+Statuses are reported separately:
+
+- `SMTP_ACCEPTED`;
+- `SKIPPED_SECRETS_MISSING`;
+- `FAILED`.
+
+This KPI proves only that the configured SMTP server accepted the message without an observed exception. It does not prove final inbox delivery, spam placement, opening, or reading.
+
+### Inbox-delivery success rate
+
+Not currently observable.
+
+The system must display `NOT_OBSERVED_BY_SMTP_ACCEPTANCE_RECEIPT` rather than converting SMTP acceptance into an inbox-delivery claim.
 
 ### Failure-notification coverage
 
@@ -218,126 +238,3 @@ Target: 0.
 Count of production changes activated automatically from research evidence.
 
 Target: 0.
-
-## Forward Evidence KPIs
-
-The canonical source is `data/volume_component_forward_status.json` after signature validation.
-
-### 10-session baseline outcome progress
-
-`baseline_10d_outcomes / 100`, capped at 100% for display.
-
-### 10-session tested outcome progress
-
-`drop_volume_ratio_10d_outcomes / 100`, capped at 100%.
-
-### 20-session baseline outcome progress
-
-`baseline_20d_outcomes / 100`, capped at 100%.
-
-### 20-session tested outcome progress
-
-`drop_volume_ratio_20d_outcomes / 100`, capped at 100%.
-
-### Paired-date progress
-
-For each required horizon:
-
-`paired_signal_dates / 20`, capped at 100%.
-
-### Forward sample adequacy
-
-PASS only when both 10- and 20-session horizons satisfy:
-
-- baseline outcomes >= 100;
-- tested outcomes >= 100;
-- paired dates >= 20.
-
-### Robust support gate
-
-For both required horizons, the registered study requires:
-
-- mean tested-minus-baseline difference < 0;
-- early difference < 0;
-- late difference < 0;
-- two-sided p-value <= 0.05;
-- bootstrap confidence-interval upper bound < 0.
-
-This KPI produces evidence status, not an automatic production decision.
-
-## Paper-validation KPIs
-
-### Closed paper trades
-
-Count of unique completed paper trades.
-
-Minimums depend on the registered review. Existing release-review logic includes a 20-trade minimum for its paper criterion.
-
-### Paper win rate
-
-`profitable_closed_trades / closed_trades`
-
-Must always be displayed with trade count.
-
-### Paper profit factor
-
-`gross_profit / absolute_gross_loss`
-
-Undefined when there is no loss; do not silently replace with an arbitrary finite number.
-
-### Paper maximum drawdown
-
-Worst peak-to-trough decline in the paper equity curve.
-
-### Paper excess return
-
-Paper portfolio return minus the registered benchmark return over aligned tradable dates.
-
-### Paper exposure
-
-Average deployed paper capital divided by paper equity/capital according to the engine's registered definition.
-
-## Future priority-calibration KPIs
-
-These become active with Issues #70 and #72.
-
-### Priority-class forward return
-
-Average 5/10/20-session return by A/B/C/Watch/Skip, with observation count and confidence interval.
-
-### Priority-class excess return
-
-Average forward return minus market and sector benchmark over the same horizon.
-
-### Positive excess rate
-
-`observations_with_positive_excess / eligible_observations`
-
-### Promotion value
-
-Difference in subsequent outcome for promoted names versus names that remained in the lower class, using pre-registered matching or comparison rules.
-
-### Demotion risk reduction
-
-Difference in downside or negative-excess frequency after a demotion signal, measured without treating demotion as an automatic sell instruction.
-
-### Calibration monotonicity
-
-Evidence that A has stronger subsequent research outcomes than B, and B than C, with uncertainty shown.
-
-No monotonicity claim is made before sufficient prospective samples exist.
-
-## Monthly review minimum
-
-Issue #74 should report at least:
-
-- workflow success and completion SLOs;
-- universe and price coverage;
-- stale, duplicate, identity, and error counts;
-- delivery health;
-- recovery readiness;
-- Forward Evidence counts and status;
-- paper metrics;
-- future priority calibration when available;
-- incidents and corrective actions;
-- explicit count of production strategy changes, expected to be zero unless separately approved.
