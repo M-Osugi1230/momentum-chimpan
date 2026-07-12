@@ -14,6 +14,19 @@ import volume_component_forward_status as status
 import volume_component_forward_status_publish as publish
 
 
+def resign(payload: dict) -> dict:
+    result = copy.deepcopy(payload)
+    evidence_core = dict(result)
+    evidence_core.pop("generated_at_utc", None)
+    evidence_core.pop("evidence_fingerprint", None)
+    evidence_core.pop("status_sha256", None)
+    result["evidence_fingerprint"] = status.canonical_hash(evidence_core)
+    envelope = dict(result)
+    envelope.pop("status_sha256", None)
+    result["status_sha256"] = status.canonical_hash(envelope)
+    return result
+
+
 initial = status.build_initial_status()
 assert status.validate_status(initial) == []
 semantic = publish.semantic_fingerprint(initial)
@@ -23,15 +36,9 @@ volatile_only = copy.deepcopy(initial)
 volatile_only["generated_at_utc"] = "2026-07-19T03:30:00+00:00"
 volatile_only["source_run_id"] = "999999"
 volatile_only["source_hashes"] = {"manifest_sha256": "f" * 64}
-substantive_for_envelope = dict(volatile_only)
-substantive_for_envelope.pop("status_sha256", None)
-substantive_for_envelope.pop("evidence_fingerprint", None)
-# The signed envelope remains valid for this synthetic status.
-volatile_only["evidence_fingerprint"] = initial["evidence_fingerprint"]
-envelope = dict(volatile_only)
-envelope.pop("status_sha256", None)
-volatile_only["status_sha256"] = status.canonical_hash(envelope)
+volatile_only = resign(volatile_only)
 assert status.validate_status(volatile_only) == []
+assert volatile_only["evidence_fingerprint"] != initial["evidence_fingerprint"]
 assert publish.semantic_fingerprint(volatile_only) == semantic
 
 changed = copy.deepcopy(initial)
@@ -39,14 +46,7 @@ changed["horizons"]["10"]["baseline_outcome_count"] = 10
 changed["horizons"]["10"]["tested_outcome_count"] = 9
 changed["horizons"]["10"]["minimum_variant_outcome_count"] = 9
 changed["horizons"]["10"]["outcome_progress_ratio"] = 0.09
-substantive = dict(changed)
-substantive.pop("generated_at_utc", None)
-substantive.pop("evidence_fingerprint", None)
-substantive.pop("status_sha256", None)
-changed["evidence_fingerprint"] = status.canonical_hash(substantive)
-envelope = dict(changed)
-envelope.pop("status_sha256", None)
-changed["status_sha256"] = status.canonical_hash(envelope)
+changed = resign(changed)
 assert status.validate_status(changed) == []
 assert publish.semantic_fingerprint(changed) != semantic
 
