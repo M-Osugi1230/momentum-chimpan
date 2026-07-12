@@ -1,0 +1,51 @@
+policy_version: 2026-07-13-strategy-release-gate-v1
+execution_mode: RESEARCH_AND_PAPER_ONLY
+automatic_activation: false
+manual_human_decision_required: true
+separate_production_change_pr_required: true
+minimum_shadow_market_sessions: 20
+
+protected_surface:
+  strategy_python: main.py
+  strategy_config: config.yaml
+  exact_files:
+    - research/daily_research_focus_policy.yaml
+    - research/data_quality_policy.yaml
+
+covered_change_types:
+  - SCORE_WEIGHT
+  - SCORE_COMPONENT
+  - FILTER
+  - EXIT
+  - PRIORITY_RULE
+  - PRODUCTION_ELIGIBILITY
+  - EXECUTION_ASSUMPTION
+
+required_evidence:
+  - preregistered_hypothesis_and_acceptance_criteria
+  - discovery_and_disjoint_holdout_separation
+  - prospective_or_shadow_evidence
+  - no_lookahead_execution_model
+  - transaction_cost_sensitivity
+  - early_late_and_market_regime_stability
+  - sample_size_and_confidence_interval
+  - current_and_proposed_release_fingerprints
+  - rollback_plan
+  - explicit_human_decision
+
+required_process:
+  - RESEARCH_PR
+  - EVIDENCE_REVIEW_PACKET
+  - SHADOW_COMPARISON
+  - MANUAL_DECISION
+  - SEPARATE_PRODUCTION_CHANGE_PR
+  - POST_RELEASE_AUDIT
+
+prohibited:
+  - DIRECT_PRODUCTION_EDIT_FROM_RESEARCH_RESULT
+  - AUTOMATIC_PROMOTION
+  - POST_RESULT_GATE_CHANGE
+  - FAVORABLE_RECENT_SUBPERIOD_ONLY
+
+candidate_registry: research/strategy_release_candidates.yaml
+approval_registry: research/strategy_approvals.yaml
