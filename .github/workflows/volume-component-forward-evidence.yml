@@ -15,6 +15,20 @@ on:
       - execution_realism.py
       - evidence_provenance.py
       - main.py
+  push:
+    branches:
+      - main
+    paths:
+      - volume_component_forward_evidence.py
+      - research/volume_component_forward_evidence.yaml
+      - .github/test_volume_component_forward_evidence.py
+      - .github/workflows/volume-component-forward-evidence.yml
+      - score_component_ablation.py
+      - replay.py
+      - live_execution_panel.py
+      - execution_realism.py
+      - evidence_provenance.py
+      - main.py
   workflow_dispatch:
     inputs:
       batch_size:
