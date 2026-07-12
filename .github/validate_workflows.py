@@ -83,6 +83,26 @@ def main() -> int:
     ])
     forbid("replay.yml", replay, ["strategy_governance.py audit"])
 
+    forward = load_workflow("volume-component-forward-evidence.yml")
+    require("volume-component-forward-evidence.yml", forward, [
+        "volume_component_forward_evidence.py",
+        "research/volume_component_forward_evidence.yaml",
+        "evidence_provenance.py prepare-live",
+        "live_strategy_history.csv",
+        "eligible_signal_date_from",
+        "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN",
+        "promotion_evidence_allowed",
+        "automatic_weight_change",
+        "production_state_mutations",
+        "contents: read",
+        "retention-days: 180",
+    ])
+    forbid("volume-component-forward-evidence.yml", forward, [
+        "git push",
+        "contents: write",
+        "EMAIL_APP_PASSWORD",
+    ])
+
     smoke = load_workflow("smoke.yml")
     require("smoke.yml", smoke, [
         "MOMENTUM_MAX_SYMBOLS",
@@ -166,6 +186,15 @@ def main() -> int:
     assert policy["require_manual_approval"] is True
     assert policy["allowed_promotion_evidence_origins"] == ["LIVE_FORWARD_RANKING_HISTORY"]
     assert policy["required_promotion_execution_model"] == "NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN"
+
+    forward_registry = yaml.safe_load(
+        (ROOT / "research" / "volume_component_forward_evidence.yaml").read_text(encoding="utf-8")
+    )
+    assert forward_registry["study"]["registered_at"] == "2026-07-12"
+    assert forward_registry["study"]["eligible_signal_date_from"] == "2026-07-13"
+    assert forward_registry["governance"]["promotion_evidence_allowed"] is False
+    assert forward_registry["governance"]["automatic_weight_change"] is False
+    assert forward_registry["governance"]["automatic_strategy_change"] is False
 
     print("workflow policy validation passed")
     return 0
