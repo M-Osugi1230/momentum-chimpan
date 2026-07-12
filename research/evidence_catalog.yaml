@@ -119,6 +119,7 @@ studies:
     source_actions_run_id: null
     result_files:
       - research/volume_component_forward_evidence.yaml
+      - data/volume_component_forward_status.json
     interpretation: Prospective next-session executable evidence is accumulating and takes precedence for the next decision.
     promotion_evidence_allowed: false
     automatic_weight_change_allowed: false
