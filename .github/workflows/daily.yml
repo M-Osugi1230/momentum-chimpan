@@ -73,7 +73,7 @@ jobs:
         run: |
           mkdir -p output
           set -o pipefail
-          python main.py 2>&1 | tee output/run.log
+          python daily_runner.py 2>&1 | tee output/run.log
 
       - name: Write operational heartbeat
         id: heartbeat
