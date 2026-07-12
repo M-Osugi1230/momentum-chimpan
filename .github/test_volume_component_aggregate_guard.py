@@ -84,7 +84,8 @@ with TemporaryDirectory() as temporary:
     assert summary["robustness_status"] == "ROBUSTLY_SUPPORTED"
     assert len(results["fold_summary"]) == 3
     assert set(results["fold_summary"]["fold_id"]) == {"fold_01", "fold_02", "fold_03"}
-    assert manifest["aggregate_fold_ids"] == ["fold_01", "fold_02"]
+    assert manifest["aggregate_fold_ids"] == "fold_01|fold_02"
+    assert int(manifest["aggregate_fold_id_count"]) == 2
     assert manifest["aggregate_uses_sample_adequate_folds_only"] is True
     assert manifest["aggregate_requires_complete_fold_date_coverage"] is True
 
@@ -93,5 +94,6 @@ with TemporaryDirectory() as temporary:
         assert Path(path).exists(), path
     saved_manifest = json.loads(Path(output["paths"]["manifest"]).read_text(encoding="utf-8"))
     assert saved_manifest["complete_case_date_count"] == 39
+    assert saved_manifest["aggregate_fold_id_count"] == 2
 
 print("volume component aggregate guard validation passed")
