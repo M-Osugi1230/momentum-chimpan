@@ -60,6 +60,9 @@ jobs:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
+          python -m py_compile \
+            volume_component_forward_status.py \
+            volume_component_forward_status_publish.py
           manifest=$(find downloaded-forward-evidence -type f -name volume_component_forward_manifest.json | head -1)
           evidence_status=$(find downloaded-forward-evidence -type f -name volume_component_forward_status.csv | head -1)
           variant_metrics=$(find downloaded-forward-evidence -type f -name volume_component_forward_variant_metrics.csv | head -1)
@@ -82,34 +85,14 @@ jobs:
           python volume_component_forward_status.py validate \
             --status output/volume-component-forward-status/candidate.json
 
-      - name: Compare with repository status
+      - name: Compare semantic evidence with repository status
         id: compare
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import shutil
-          from pathlib import Path
-
-          candidate_path = Path('output/volume-component-forward-status/candidate.json')
-          current_path = Path('data/volume_component_forward_status.json')
-          candidate = json.loads(candidate_path.read_text(encoding='utf-8'))
-          current = {}
-          if current_path.exists():
-              current = json.loads(current_path.read_text(encoding='utf-8'))
-          changed = current.get('evidence_fingerprint') != candidate.get('evidence_fingerprint')
-          if changed:
-              current_path.parent.mkdir(parents=True, exist_ok=True)
-              shutil.copyfile(candidate_path, current_path)
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
-              handle.write(f"changed={'true' if changed else 'false'}\n")
-          print(json.dumps({
-              'changed': changed,
-              'previous_fingerprint': current.get('evidence_fingerprint', ''),
-              'candidate_fingerprint': candidate.get('evidence_fingerprint', ''),
-              'evidence_status': candidate.get('evidence_status'),
-          }, ensure_ascii=False, indent=2))
-          PY
+          python volume_component_forward_status_publish.py \
+            --candidate output/volume-component-forward-status/candidate.json \
+            --current data/volume_component_forward_status.json \
+            --output data/volume_component_forward_status.json \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Persist signed status only
         if: steps.compare.outputs.changed == 'true'
