@@ -73,6 +73,11 @@ def main() -> None:
     assert len(payload_a["rows"]) == 2
     assert eligibility.canonical_hash(payload_a) == eligibility.canonical_hash(payload_b)
 
+    empty_status = eligibility.build_status(eligibility.empty_history())
+    assert empty_status["ledger_state"] == "EMPTY"
+    assert empty_status["run_count"] == 0
+    assert eligibility.validate_status(empty_status) == []
+
     history = eligibility.empty_history()
     history = eligibility.append_record(history, valid_record())
     assert eligibility.validate_history(history) == []
@@ -149,7 +154,11 @@ def main() -> None:
     assert "research/evidence/live_session_eligibility_status.json" in workflow_text
     assert ("EMAIL_" + "APP_PASSWORD") not in workflow_text
 
-    persistence = workflow_text.split("git add --", 1)[1].split("if git diff", 1)[0]
+    persistence = next(
+        step for step in workflow["jobs"]["publish"]["steps"]
+        if step.get("name") == "Persist eligibility research files only"
+    )["run"]
+    assert "git add --" in persistence
     assert "research/evidence/live_session_eligibility.csv" in persistence
     assert "research/evidence/live_session_eligibility_status.json" in persistence
     for forbidden in (
