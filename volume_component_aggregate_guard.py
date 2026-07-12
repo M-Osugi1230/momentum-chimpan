@@ -72,9 +72,10 @@ def _complete_case_dates(
         equities["fold_id"].astype(str).isin(evaluable_fold_ids)
         & equities["period"].astype(str).eq("full")
     ].copy()
-    full["date"] = pd.to_datetime(full["date"], errors="coerce").dt.date.astype(str)
+    full["_parsed_date"] = pd.to_datetime(full["date"], errors="coerce")
     full["daily_return"] = pd.to_numeric(full["daily_return"], errors="coerce")
-    full = full.dropna(subset=["date", "daily_return"])
+    full = full.dropna(subset=["_parsed_date", "daily_return"])
+    full["date"] = full["_parsed_date"].dt.date.astype(str)
 
     paired = full.pivot_table(
         index=["fold_id", "date"],
@@ -130,26 +131,32 @@ def aggregate_guarded(
                 all_equities["fold_id"].astype(str).eq(fold_id)
                 & all_equities["period"].astype(str).eq("full")
             ].copy()
-            equity["date"] = pd.to_datetime(equity["date"], errors="coerce").dt.date.astype(str)
-            equity = equity[equity["date"].isin(common_date_set)].copy()
+            equity["_parsed_date"] = pd.to_datetime(equity["date"], errors="coerce")
+            equity = equity.dropna(subset=["_parsed_date"])
+            equity["date"] = equity["_parsed_date"].dt.date.astype(str)
+            equity = equity[equity["date"].isin(common_date_set)].drop(
+                columns=["_parsed_date"], errors="ignore"
+            )
             summary.to_csv(analysis / "volume_fold_summary.csv", index=False)
             equity.to_csv(analysis / "volume_fold_equity.csv", index=False)
 
         results = robustness.aggregate_folds(str(filtered_root), registry)
 
+    aggregate_fold_ids = "|".join(evaluable_fold_ids)
     aggregate_summary = results["aggregate_summary"].copy()
     aggregate_summary.loc[:, "fold_count"] = int(len(all_summaries))
     aggregate_summary.loc[:, "evaluable_fold_count"] = int(len(evaluable_fold_ids))
     aggregate_summary.loc[:, "complete_case_date_count"] = int(len(common_dates))
     aggregate_summary.loc[:, "excluded_incomplete_date_count"] = int(incomplete_date_count)
-    aggregate_summary.loc[:, "aggregate_fold_ids"] = "|".join(evaluable_fold_ids)
+    aggregate_summary.loc[:, "aggregate_fold_ids"] = aggregate_fold_ids
 
     manifest = dict(results["manifest"])
     manifest.update({
         "aggregate_guard_version": GUARD_VERSION,
         "fold_count": int(len(all_summaries)),
         "evaluable_fold_count": int(len(evaluable_fold_ids)),
-        "aggregate_fold_ids": evaluable_fold_ids,
+        "aggregate_fold_ids": aggregate_fold_ids,
+        "aggregate_fold_id_count": int(len(evaluable_fold_ids)),
         "complete_case_date_count": int(len(common_dates)),
         "excluded_incomplete_date_count": int(incomplete_date_count),
         "aggregate_uses_sample_adequate_folds_only": True,
