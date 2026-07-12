@@ -1,0 +1,164 @@
+schema_version: 1
+policy:
+  id: strategy-release-governance-v1
+  registered_at: '2026-07-13'
+  purpose: Require governed evidence, shadow operation, explicit approval, a separate production PR, rollback readiness, and post-release audit for every production strategy change.
+  automatic_activation: false
+  automatic_merge: false
+  automatic_score_change: false
+  automatic_weight_change: false
+  automatic_strategy_change: false
+  automatic_priority_rule_change: false
+  live_orders: false
+  manual_review_required: true
+
+change_types:
+  - SCORE_WEIGHT
+  - SCORE_COMPONENT
+  - FILTER
+  - EXIT_RULE
+  - PRIORITY_RULE
+  - EXECUTION_RULE
+  - DATA_QUALITY_RULE
+
+statuses:
+  - REGISTERED_RESEARCH
+  - EVIDENCE_READY
+  - SHADOW_RUNNING
+  - READY_FOR_MANUAL_APPROVAL
+  - APPROVED_FOR_PRODUCTION_PR
+  - RELEASED
+  - POST_RELEASE_AUDIT_COMPLETE
+  - REJECTED
+  - ROLLED_BACK
+
+allowed_transitions:
+  REGISTERED_RESEARCH:
+    - EVIDENCE_READY
+    - REJECTED
+  EVIDENCE_READY:
+    - SHADOW_RUNNING
+    - REJECTED
+  SHADOW_RUNNING:
+    - READY_FOR_MANUAL_APPROVAL
+    - REJECTED
+  READY_FOR_MANUAL_APPROVAL:
+    - APPROVED_FOR_PRODUCTION_PR
+    - REJECTED
+  APPROVED_FOR_PRODUCTION_PR:
+    - RELEASED
+    - REJECTED
+  RELEASED:
+    - POST_RELEASE_AUDIT_COMPLETE
+    - ROLLED_BACK
+  POST_RELEASE_AUDIT_COMPLETE: []
+  REJECTED: []
+  ROLLED_BACK: []
+
+release_surface:
+  main_strategy:
+    main_path: main.py
+    config_path: config.yaml
+    config_sections:
+      - market
+      - ranking
+      - signals
+  additional_python_ast:
+    data_quality.py:
+      - evaluate_row
+      - apply_priority_gate
+    daily_research_focus.py:
+      - base_bucket
+      - attach_daily_focus
+  semantic_yaml:
+    research/data_quality_policy.yaml:
+      - thresholds
+      - grades
+      - priority_boundary
+    research/daily_research_focus_policy.yaml:
+      - limits
+      - bucket_mapping
+      - watch_rules
+      - governance.preserve_momentum_score
+      - governance.preserve_momentum_rank
+      - governance.preserve_paper_execution
+
+registration:
+  must_precede_first_evidence_at: true
+  acceptance_criteria_hash_required: true
+  hypothesis_required: true
+  expected_mechanism_required: true
+  primary_metric_required: true
+  failure_conditions_required: true
+  favorable_subperiod_only_prohibited: true
+  post_result_gate_change_prohibited: true
+
+research_evidence:
+  research_pr_required: true
+  discovery_holdout_separation_required: true
+  prospective_or_shadow_evidence_required: true
+  no_lookahead_required: true
+  required_entry_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  same_day_close_entry_allowed: false
+  transaction_cost_sensitivity_required: true
+  early_late_stability_required: true
+  regime_stability_required: true
+  sector_or_concentration_stability_required: true
+  sample_size_required: true
+  confidence_interval_required: true
+  multiple_testing_control_required_when_applicable: true
+  evidence_packet_sha256_required: true
+  review_packet_sha256_required: true
+  evidence_origin_must_be_registered: true
+
+shadow:
+  minimum_distinct_market_sessions: 20
+  current_and_proposed_run_in_parallel: true
+  production_behavior_unchanged_during_shadow: true
+  shadow_result_sha256_required: true
+  incident_count_must_be_zero_or_resolved: true
+
+approval:
+  registry_path: research/strategy_approvals.yaml
+  decision_required: APPROVE
+  scope_required: MANUAL_REVIEW_ONLY
+  exact_proposed_fingerprint_required: true
+  exact_evidence_status_sha256_required: true
+  exact_review_packet_sha256_required: true
+  approval_id_required: true
+
+production_pr:
+  separate_from_research_pr: true
+  exact_pr_number_required: true
+  base_fingerprint_must_match_candidate_current: true
+  head_fingerprint_must_match_candidate_proposed: true
+  candidate_status_required: APPROVED_FOR_PRODUCTION_PR
+  rollback_plan_required: true
+  rollback_commit_or_ref_required: true
+  rollback_owner_required: true
+  rollback_trigger_required: true
+  direct_research_result_activation_prohibited: true
+
+post_release:
+  minimum_audit_market_sessions: 10
+  operational_incident_review_required: true
+  performance_and_risk_review_required: true
+  rollback_decision_required: true
+  post_release_audit_sha256_required: true
+  completion_status: POST_RELEASE_AUDIT_COMPLETE
+
+candidate_registry:
+  path: research/strategy_release_candidates.yaml
+  release_id_unique: true
+  immutable_registration_fields:
+    - release_id
+    - registered_at_utc
+    - change_type
+    - hypothesis
+    - expected_mechanism
+    - primary_metric
+    - acceptance_criteria_sha256
+    - current_strategy_fingerprint
+    - proposed_strategy_fingerprint
+    - research_pr_number
+  production_state_mutations: []
