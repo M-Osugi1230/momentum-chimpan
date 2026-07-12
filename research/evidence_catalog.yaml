@@ -1,0 +1,139 @@
+catalog_version: 2026-07-12-research-evidence-catalog-v1
+updated_at: '2026-07-12'
+
+subject:
+  id: volume_ratio_score_component
+  label: 出来高倍率スコア構成要素
+  current_production_weight_points: 15
+  current_decision: HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE
+  decision_reason: Historical evidence conflicts across universe size and time windows; prospective evidence is accumulating.
+  governing_study_id: volume-component-forward-evidence-v1
+  historical_consensus: CONFLICTED_TIME_UNSTABLE
+  current_research_status: UNRESOLVED
+  next_decision_trigger: FORWARD_EVIDENCE_GATE_COMPLETION
+  promotion_evidence_allowed: false
+  automatic_weight_change_allowed: false
+  automatic_strategy_change_allowed: false
+  manual_review_required: true
+
+precedence:
+  - PROSPECTIVE_LIVE
+  - EXPANDED_DISJOINT_HISTORICAL
+  - DISJOINT_CROSS_FOLD_HISTORICAL
+  - SINGLE_HOLDOUT_HISTORICAL
+
+studies:
+  - id: score-component-ablation-v1
+    label: 単一holdoutスコア構成要素ablation
+    source_pr: 59
+    evidence_class: SINGLE_HOLDOUT_HISTORICAL
+    registered_at: '2026-07-11'
+    completed_at: '2026-07-11'
+    completion_state: COMPLETE
+    status: REMOVAL_HURTS_VALIDATED
+    evidence_origin: HISTORICAL_CURRENT_UNIVERSE_BACKFILL
+    universe_size: 72
+    fold_count: 1
+    lookback_calendar_days: 420
+    primary_delta_excess_return: -0.1474
+    two_sided_p_value: 0.0180
+    confidence_interval_low: -0.001025
+    confidence_interval_high: -0.000240
+    source_actions_run_id: null
+    result_files: []
+    interpretation: A single disjoint 72-symbol holdout showed strong harm from removing volume ratio.
+    promotion_evidence_allowed: false
+    automatic_weight_change_allowed: false
+
+  - id: volume-component-cross-fold-v1
+    label: 3fold出来高倍率cross-fold検証
+    source_pr: 60
+    evidence_class: DISJOINT_CROSS_FOLD_HISTORICAL
+    registered_at: '2026-07-11'
+    completed_at: '2026-07-12'
+    completion_state: COMPLETE
+    status: DIRECTIONALLY_SUPPORTED
+    evidence_origin: HISTORICAL_CURRENT_UNIVERSE_BACKFILL
+    universe_size: 144
+    fold_count: 3
+    lookback_calendar_days: 420
+    primary_delta_excess_return: -0.0232
+    mean_delta_excess_return: -0.0210
+    two_sided_p_value: 0.2429
+    confidence_interval_low: -0.000201
+    confidence_interval_high: 0.000025
+    source_actions_run_id: 29187910992
+    result_files: []
+    interpretation: All three folds showed harm directionally, but the aggregate confidence interval crossed zero.
+    promotion_evidence_allowed: false
+    automatic_weight_change_allowed: false
+
+  - id: volume-component-expanded-5fold-v1
+    label: 5fold・300銘柄拡張検証
+    source_pr: 62
+    evidence_class: EXPANDED_DISJOINT_HISTORICAL
+    registered_at: '2026-07-11'
+    completed_at: '2026-07-12'
+    completion_state: COMPLETE
+    status: NOT_SUPPORTED
+    evidence_origin: HISTORICAL_CURRENT_UNIVERSE_BACKFILL
+    universe_size: 300
+    fold_count: 5
+    lookback_calendar_days: 500
+    primary_delta_excess_return: 0.008510
+    mean_delta_excess_return: 0.004678
+    two_sided_p_value: 0.747126
+    confidence_interval_low: -0.000077
+    confidence_interval_high: 0.000108
+    early_harm_fraction: 0.20
+    late_harm_fraction: 1.00
+    source_actions_run_id: 29188906688
+    source_artifact_id: 8258998686
+    source_artifact_sha256: 4a75280ad477b918ee03830ae928e6b133afd37c788902214b91b8f571451952
+    result_files:
+      - research/results/volume_component_expanded_2026-07-12.md
+      - research/results/volume_component_expanded_2026-07-12_summary.csv
+      - research/results/volume_component_expanded_2026-07-12_folds.csv
+      - research/results/volume_component_expanded_2026-07-12_manifest.json
+    interpretation: The full-window effect did not reproduce at 300 symbols; late-period harm was 5/5 while early-period harm was 1/5.
+    promotion_evidence_allowed: false
+    automatic_weight_change_allowed: false
+
+  - id: volume-component-forward-evidence-v1
+    label: 事前登録ライブforward evidence
+    source_pr: 61
+    evidence_class: PROSPECTIVE_LIVE
+    registered_at: '2026-07-12'
+    eligible_signal_date_from: '2026-07-13'
+    completed_at: null
+    completion_state: ACCUMULATING
+    status: ACCUMULATING
+    evidence_origin: LIVE_FORWARD_RANKING_HISTORY
+    universe_size: null
+    fold_count: null
+    lookback_calendar_days: null
+    primary_delta_excess_return: null
+    two_sided_p_value: null
+    confidence_interval_low: null
+    confidence_interval_high: null
+    source_actions_run_id: null
+    result_files:
+      - research/volume_component_forward_evidence.yaml
+    interpretation: Prospective next-session executable evidence is accumulating and takes precedence for the next decision.
+    promotion_evidence_allowed: false
+    automatic_weight_change_allowed: false
+
+decision_rules:
+  supportive_statuses:
+    - REMOVAL_HURTS_VALIDATED
+    - DIRECTIONALLY_SUPPORTED
+    - ROBUSTLY_SUPPORTED
+  non_supportive_statuses:
+    - NOT_SUPPORTED
+  unresolved_statuses:
+    - ACCUMULATING
+  when_historical_conflict_exists: HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE
+  when_forward_is_accumulating: HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE
+  require_forward_gate_before_weight_research: true
+  forbid_recent_window_cherry_picking: true
+  forbid_automatic_activation: true
