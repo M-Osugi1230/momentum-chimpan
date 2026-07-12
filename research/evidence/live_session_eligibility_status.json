@@ -1,0 +1,20 @@
+{
+  "eligibility_version": "2026-07-13-live-session-eligibility-v1",
+  "ledger_state": "EMPTY",
+  "run_count": 0,
+  "eligible_forward_run_count": 0,
+  "eligible_forward_date_count": 0,
+  "latest_eligible_report_date": "",
+  "failed_readiness_run_count": 0,
+  "review_required_run_count": 0,
+  "duplicate_source_run_count": 0,
+  "automatic_score_change": false,
+  "automatic_weight_change": false,
+  "automatic_strategy_change": false,
+  "automatic_priority_rule_change": false,
+  "production_state_mutations": [],
+  "research_only": true,
+  "generated_at_utc": "2026-07-13T00:00:00+00:00",
+  "ledger_fingerprint": "39b12c7d0f028b0fba8c0f22c435226964515e381f815bceefcc3fc2e3be9a46",
+  "status_sha256": "0d6f7b1c60b85490ff97a4c6513a05797e590e7cca1326257e36fa073a898b87"
+}
