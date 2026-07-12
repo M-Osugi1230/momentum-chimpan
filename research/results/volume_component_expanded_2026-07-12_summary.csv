@@ -1,0 +1,2 @@
+fold_count,evaluable_fold_count,harm_fold_count,harm_direction_fraction,early_harm_fraction,late_harm_fraction,median_delta_excess_return,mean_delta_excess_return,median_delta_max_drawdown,mean_daily_difference,ci_low,ci_high,two_sided_p_value,improvement_p_value,harm_p_value,robustness_status,automatic_weight_change_allowed,complete_case_date_count,excluded_incomplete_date_count,aggregate_fold_ids
+5,5,2,0.4,0.2,1.0,0.00851,0.004678,-0.001511,0.000014,-0.000077,0.000108,0.747126,0.378311,0.622189,NOT_SUPPORTED,false,275,0,fold_01|fold_02|fold_03|fold_04|fold_05
