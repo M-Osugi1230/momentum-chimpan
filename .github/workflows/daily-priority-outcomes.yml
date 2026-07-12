@@ -1,0 +1,207 @@
+name: Daily Priority Outcomes
+
+on:
+  workflow_run:
+    workflows:
+      - Daily Momentum Report
+    types:
+      - completed
+  schedule:
+    - cron: '15 9 1 * *'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - priority_outcomes.py
+      - research/priority_outcomes/**
+      - .github/test_priority_outcomes.py
+      - .github/workflows/daily-priority-outcomes.yml
+      - docs/PRIORITY_OUTCOMES.md
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: daily-priority-outcomes-main
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile priority outcome tools
+        run: |
+          python -m py_compile \
+            priority_outcomes.py \
+            .github/test_priority_outcomes.py
+      - name: Validate prospective outcome contract
+        run: |
+          set -o pipefail
+          python .github/test_priority_outcomes.py \
+            2>&1 | tee /tmp/priority-outcomes-test.log
+      - name: Validate committed research state
+        run: |
+          python priority_outcomes.py validate \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md
+      - name: Validate read-only default boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/daily-priority-outcomes.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['actions'] == 'read'
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          assert 'production_state_mutations' in Path(
+              'research/priority_outcomes/policy.yaml'
+          ).read_text(encoding='utf-8')
+          PY
+      - name: Upload validation failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: priority-outcomes-validation-log
+          path: /tmp/priority-outcomes-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.event != 'pull_request')
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Prepare artifact directory
+        run: mkdir -p downloaded-daily-report
+      - name: Download exact upstream daily artifact
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: momentum-operations-*
+          path: downloaded-daily-report
+          merge-multiple: true
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ingest decisions and mature available outcomes
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
+        run: |
+          set -euo pipefail
+          python -m py_compile priority_outcomes.py
+          ARTIFACT_ARGUMENTS=()
+          if find downloaded-daily-report -type f -print -quit | grep -q .; then
+            ARTIFACT_ARGUMENTS=(--artifact-root downloaded-daily-report)
+          fi
+          RECORDED_AT="${SOURCE_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+          python priority_outcomes.py update \
+            "${ARTIFACT_ARGUMENTS[@]}" \
+            --source-run-id "${SOURCE_RUN_ID:-}" \
+            --source-run-url "${SOURCE_RUN_URL:-}" \
+            --recorded-at-utc "${RECORDED_AT}" \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md \
+            | tee /tmp/priority-outcomes-update.log
+          python priority_outcomes.py validate \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md
+      - name: Persist research outcome files only
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            research/priority_outcomes/daily_research_decisions.csv \
+            research/priority_outcomes/daily_research_outcomes.csv \
+            research/priority_outcomes/latest_calibration.json \
+            research/priority_outcomes/latest_calibration.md
+          if git diff --cached --quiet; then
+            echo "No priority outcome changes to commit"
+            exit 0
+          fi
+          git commit -m "Update daily research priority outcomes"
+          git fetch origin main
+          git rebase origin/main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Priority outcome push attempt ${attempt} failed"
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $((attempt * 10))
+              git fetch origin main
+              git rebase origin/main
+            fi
+          done
+          echo "Failed to persist priority outcome research" >&2
+          exit 1
+      - name: Upload outcome diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-priority-outcomes-${{ github.run_id }}
+          path: |
+            research/priority_outcomes/daily_research_decisions.csv
+            research/priority_outcomes/daily_research_outcomes.csv
+            research/priority_outcomes/latest_calibration.json
+            research/priority_outcomes/latest_calibration.md
+            /tmp/priority-outcomes-update.log
+          if-no-files-found: warn
+          retention-days: 90
