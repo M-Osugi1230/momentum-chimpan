@@ -20,7 +20,8 @@ Until the prospective evidence gate completes, engineering capacity should be al
 | Workstream | State | Evidence / next gate |
 |---|---|---|
 | Documentation and contracts | Implemented | PR #100; documentation contract active |
-| Ten-session production audit | `ACCUMULATING` | PR #101; Issue #68; first eligible session 2026-07-13; ten distinct full state-update sessions and recovery drill required |
+| Ten-session production audit | `ACCUMULATING` | PR #101; Issue #68; first eligible session 2026-07-13; ten distinct full state-update sessions and exact recovery evidence required |
+| Exact same-day recovery gate | Implemented; awaiting first live PASS | PR #119 and PR #120; each eligible daily source run must restore its own sealed snapshot in an isolated sandbox before maintenance, persistence, Priority Outcome ingestion, or Forward Evidence eligibility |
 | Forward Evidence publisher | `ACCUMULATING` | Issue #69; first eligible non-initial live source run, signed hashes, and daily-display parity still required |
 | Data Quality A/B/C/D | Implemented; observing | PR #102; full-universe production quality and coverage observation continues |
 | Daily Research Focus | Implemented; observing | PR #103; A/B/C/Watch/Skip and capped Action List require live observation |
@@ -78,7 +79,8 @@ Target: July–September 2026
 
 - ten-session audit table;
 - incident log and corrective actions;
-- recovery drill;
+- exact same-day isolated recovery drill for every eligible daily source run;
+- recurring weekly/manual recovery drill;
 - per-stock data-quality grades A/B/C/D;
 - stale-price, missing-session, abnormal-price, and corporate-action warnings;
 - coverage and freshness history.
@@ -94,7 +96,8 @@ Target: July–September 2026
 | Duplicate `code + date` rows | 0 |
 | Stale prices accepted as current | 0 |
 | Failure notification coverage | 100% |
-| Recovery drill | Passed |
+| Exact daily recovery | PASS for every eligible state-update session; valid SKIP only when no state update occurs |
+| Recurring recovery drill | Passed |
 
 ## Phase 2 — Three-minute research-priority experience
 
@@ -276,12 +279,13 @@ Target: only after recurring value is proven
 ## Immediate execution order
 
 1. Run and inspect the first eligible 2026-07-13 full-production session.
-2. Verify the first non-initial Forward Evidence publisher chain under #69.
-3. Accumulate ten distinct full state-update market sessions and complete the #68 recovery drill.
-4. Observe Data Quality and Daily Research Focus across the full production universe.
-5. Accumulate no-lookahead 5/10/20-session priority outcomes under #72.
-6. Use the monthly review from #74 for recurring operations and evidence governance.
-7. Keep #73 active: do not optimize scores or activate any strategy change while prospective evidence is `ACCUMULATING`.
+2. Confirm the exact same-day recovery drill is `PASS` and bound to the source run's snapshot date and manifest SHA-256.
+3. Verify the first non-initial Forward Evidence publisher chain under #69.
+4. Accumulate ten distinct full state-update market sessions and complete #68.
+5. Observe Data Quality and Daily Research Focus across the full production universe.
+6. Accumulate no-lookahead 5/10/20-session priority outcomes under #72.
+7. Use the monthly review from #74 for recurring operations and evidence governance.
+8. Keep #73 active: do not optimize scores or activate any strategy change while prospective evidence is `ACCUMULATING`.
 
 ## Backlog discipline
 
