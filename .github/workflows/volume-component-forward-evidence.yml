@@ -79,7 +79,7 @@ jobs:
           assert workflow['permissions']['contents'] == 'read'
           assert ('git' + ' push') not in workflow_text
           assert ('EMAIL_' + 'APP_PASSWORD') not in workflow_text
-          assert 'contents: write' not in workflow_text
+          assert ('contents:' + ' write') not in workflow_text
           assert registry['study']['registered_at'] == '2026-07-12'
           assert registry['study']['eligible_signal_date_from'] == '2026-07-13'
           assert registry['comparison']['preserved_daily_score_distribution'] is True
