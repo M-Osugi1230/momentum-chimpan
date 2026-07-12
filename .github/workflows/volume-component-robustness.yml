@@ -164,6 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           for fold_dir in output/volume_component/folds/fold_*; do
+            [ -d "${fold_dir}" ] || continue
             fold_id="$(basename "${fold_dir}")"
             mkdir -p "${fold_dir}/backfill/replay" "${fold_dir}/analysis"
             echo "Analyzing ${fold_id}"
