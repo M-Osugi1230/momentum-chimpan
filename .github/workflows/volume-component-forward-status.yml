@@ -1,0 +1,130 @@
+name: Publish Volume Component Forward Status
+
+on:
+  workflow_run:
+    workflows:
+      - Volume Component Forward Evidence
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: volume-component-forward-status-main
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event != 'pull_request' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Download source evidence artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: volume-component-forward-evidence-*
+          path: downloaded-forward-evidence
+          merge-multiple: true
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build signed compact status
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            volume_component_forward_status.py \
+            volume_component_forward_status_publish.py
+          manifest=$(find downloaded-forward-evidence -type f -name volume_component_forward_manifest.json | head -1)
+          evidence_status=$(find downloaded-forward-evidence -type f -name volume_component_forward_status.csv | head -1)
+          variant_metrics=$(find downloaded-forward-evidence -type f -name volume_component_forward_variant_metrics.csv | head -1)
+          statistics=$(find downloaded-forward-evidence -type f -name volume_component_forward_statistics.csv | head -1)
+          provenance=$(find downloaded-forward-evidence -type f -name evidence_provenance.json | head -1)
+          for path in "${manifest}" "${evidence_status}" "${variant_metrics}" "${statistics}" "${provenance}"; do
+            test -n "${path}"
+            test -f "${path}"
+          done
+          mkdir -p output/volume-component-forward-status
+          python volume_component_forward_status.py build \
+            --manifest "${manifest}" \
+            --evidence-status "${evidence_status}" \
+            --variant-metrics "${variant_metrics}" \
+            --statistics "${statistics}" \
+            --provenance "${provenance}" \
+            --registry research/volume_component_forward_evidence.yaml \
+            --source-run-id "${SOURCE_RUN_ID}" \
+            --output output/volume-component-forward-status/candidate.json
+          python volume_component_forward_status.py validate \
+            --status output/volume-component-forward-status/candidate.json
+
+      - name: Compare semantic evidence with repository status
+        id: compare
+        run: |
+          python volume_component_forward_status_publish.py \
+            --candidate output/volume-component-forward-status/candidate.json \
+            --current data/volume_component_forward_status.json \
+            --output data/volume_component_forward_status.json \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Persist signed status only
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- data/volume_component_forward_status.json
+          git commit -m "Update signed volume component forward status"
+          git fetch origin main
+          git rebase origin/main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} failed"
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $((attempt * 10))
+              git fetch origin main
+              git rebase origin/main
+            fi
+          done
+          echo "Failed to persist signed forward status" >&2
+          exit 1
+
+      - name: Upload compact status audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volume-component-forward-status-${{ github.event.workflow_run.id }}
+          path: |
+            output/volume-component-forward-status/candidate.json
+            data/volume_component_forward_status.json
+          if-no-files-found: warn
+          retention-days: 180

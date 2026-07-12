@@ -6,9 +6,15 @@ on:
       - main
     paths:
       - volume_component_forward_evidence.py
+      - volume_component_forward_status.py
+      - volume_component_forward_status_publish.py
+      - data/volume_component_forward_status.json
       - research/volume_component_forward_evidence.yaml
       - .github/test_volume_component_forward_evidence.py
+      - .github/test_volume_component_forward_status.py
+      - .github/test_volume_component_forward_status_publish.py
       - .github/workflows/volume-component-forward-evidence.yml
+      - .github/workflows/volume-component-forward-status.yml
       - score_component_ablation.py
       - replay.py
       - live_execution_panel.py
@@ -20,9 +26,14 @@ on:
       - main
     paths:
       - volume_component_forward_evidence.py
+      - volume_component_forward_status.py
+      - volume_component_forward_status_publish.py
       - research/volume_component_forward_evidence.yaml
       - .github/test_volume_component_forward_evidence.py
+      - .github/test_volume_component_forward_status.py
+      - .github/test_volume_component_forward_status_publish.py
       - .github/workflows/volume-component-forward-evidence.yml
+      - .github/workflows/volume-component-forward-status.yml
       - score_component_ablation.py
       - replay.py
       - live_execution_panel.py
@@ -69,16 +80,30 @@ jobs:
         run: |
           python -m py_compile \
             volume_component_forward_evidence.py \
+            volume_component_forward_status.py \
+            volume_component_forward_status_publish.py \
             score_component_ablation.py replay.py \
             live_execution_panel.py execution_realism.py \
             evidence_provenance.py main.py \
-            .github/test_volume_component_forward_evidence.py
+            .github/test_volume_component_forward_evidence.py \
+            .github/test_volume_component_forward_status.py \
+            .github/test_volume_component_forward_status_publish.py
       - name: Run synthetic prospective evidence validation
         run: |
           set -o pipefail
           python .github/test_volume_component_forward_evidence.py \
             2>&1 | tee /tmp/volume-component-forward-test.log
-      - name: Validate pre-registration and read-only policy
+      - name: Run signed status validation
+        run: |
+          set -o pipefail
+          python .github/test_volume_component_forward_status.py \
+            2>&1 | tee /tmp/volume-component-forward-status-test.log
+      - name: Run semantic publisher validation
+        run: |
+          set -o pipefail
+          python .github/test_volume_component_forward_status_publish.py \
+            2>&1 | tee /tmp/volume-component-forward-status-publish-test.log
+      - name: Validate pre-registration and read-only evidence policy
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -94,6 +119,8 @@ jobs:
           assert ('git' + ' push') not in workflow_text
           assert ('EMAIL_' + 'APP_PASSWORD') not in workflow_text
           assert ('contents:' + ' write') not in workflow_text
+          assert 'data/volume_component_forward_status.json' in workflow_text.split('push:', 1)[0]
+          assert 'data/volume_component_forward_status.json' not in workflow_text.split('push:', 1)[1].split('workflow_dispatch:', 1)[0]
           assert registry['study']['registered_at'] == '2026-07-12'
           assert registry['study']['eligible_signal_date_from'] == '2026-07-13'
           assert registry['comparison']['preserved_daily_score_distribution'] is True
@@ -103,12 +130,35 @@ jobs:
           assert registry['governance']['automatic_weight_change'] is False
           assert registry['governance']['automatic_strategy_change'] is False
           PY
-      - name: Upload validation failure log
+      - name: Validate isolated publisher permissions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          publisher_path = Path('.github/workflows/volume-component-forward-status.yml')
+          text = publisher_path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          permissions = workflow['permissions']
+          assert permissions['actions'] == 'read'
+          assert permissions['contents'] == 'write'
+          assert 'volume_component_forward_status_publish.py' in text
+          assert 'data/volume_component_forward_status.json' in text
+          assert 'git add -- data/volume_component_forward_status.json' in text
+          persistence = text.split('git add --', 1)[1]
+          assert 'main.py' not in persistence
+          assert 'config.yaml' not in persistence
+          assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          PY
+      - name: Upload validation failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: volume-component-forward-validation-log
-          path: /tmp/volume-component-forward-test.log
+          path: |
+            /tmp/volume-component-forward-test.log
+            /tmp/volume-component-forward-status-test.log
+            /tmp/volume-component-forward-status-publish-test.log
           if-no-files-found: ignore
           retention-days: 7
 

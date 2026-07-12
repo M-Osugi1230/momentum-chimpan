@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,13 +14,16 @@ if str(ROOT) not in sys.path:
 import daily_runner
 import research_evidence_catalog as evidence_catalog
 import research_transparency as transparency
+import volume_component_forward_status as forward_status
 
 
 snapshot = transparency.load_snapshot(
     ROOT / "research" / "evidence_catalog.yaml",
     ROOT,
+    ROOT / "data" / "volume_component_forward_status.json",
 )
 assert snapshot["catalog_health"] == "PASS"
+assert snapshot["forward_status_health"] == "PASS"
 assert snapshot["production_weight_points"] == 15
 assert snapshot["decision"] == evidence_catalog.HOLD_DECISION
 assert snapshot["historical_consensus"] == "CONFLICTED_TIME_UNSTABLE"
@@ -28,6 +32,14 @@ assert snapshot["governing_study_status"] == "ACCUMULATING"
 assert snapshot["automatic_weight_change_allowed"] is False
 assert snapshot["automatic_strategy_change_allowed"] is False
 assert len(snapshot["studies"]) == 4
+assert set(snapshot["forward_progress"]) == {"10", "20"}
+for horizon in ("10", "20"):
+    record = snapshot["forward_progress"][horizon]
+    assert record["baseline_outcome_count"] == 0
+    assert record["tested_outcome_count"] == 0
+    assert record["paired_date_count"] == 0
+    assert record["required_outcomes_per_variant"] == 100
+    assert record["required_paired_dates"] == 20
 
 summary = daily_runner.enrich_summary({"実行日": "2026-07-13"}, snapshot)
 assert summary["実行日"] == "2026-07-13"
@@ -35,6 +47,9 @@ assert summary["出来高倍率配点"] == 15
 assert summary["研究判断"] == evidence_catalog.HOLD_DECISION
 assert summary["歴史エビデンス"] == "CONFLICTED_TIME_UNSTABLE"
 assert summary["Forward Evidence"] == "ACCUMULATING"
+assert summary["Forward Status状態"] == "PASS"
+assert summary["Forward 10日進捗"] == "baseline 0/100・除外 0/100・paired 0/20日"
+assert summary["Forward 20日進捗"] == "baseline 0/100・除外 0/100・paired 0/20日"
 assert summary["自動配点変更"] == "DISABLED"
 
 plain = "\n".join(transparency.plain_section(snapshot))
@@ -42,6 +57,8 @@ assert "研究エビデンスの現在地" in plain
 assert "現行配点 15点（据え置き）" in plain
 assert "CONFLICTED_TIME_UNSTABLE" in plain
 assert "Forward Evidence: ACCUMULATING" in plain
+assert "Forward 10日: baseline 0/100・除外 0/100・paired 0/20日" in plain
+assert "Forward 20日: baseline 0/100・除外 0/100・paired 0/20日" in plain
 assert "自動配点変更・自動戦略変更は無効" in plain
 
 plain_body = "HEADER\n【Market Temperature】\nDETAIL"
@@ -59,6 +76,8 @@ assert "RESEARCH EVIDENCE" in html
 assert "15点のまま維持" in html
 assert "CONFLICTED_TIME_UNSTABLE" in html
 assert "ACCUMULATING" in html
+assert "10日: baseline 0/100・除外 0/100・paired 0/20日" in html
+assert "20日: baseline 0/100・除外 0/100・paired 0/20日" in html
 assert "自動配点変更なし" in html
 
 html_body = f"<html><body>HEADER{daily_runner.HTML_MARKER}DETAIL</body></html>"
@@ -71,12 +90,35 @@ assert html_patched.count("RESEARCH EVIDENCE") == 1
 fallback = transparency.load_snapshot(
     ROOT / "research" / "definitely-missing-catalog.yaml",
     ROOT,
+    ROOT / "data" / "volume_component_forward_status.json",
 )
 assert fallback["catalog_health"] == "WARN"
 assert fallback["production_weight_points"] == 15
 assert fallback["decision"] == evidence_catalog.HOLD_DECISION
 assert fallback["automatic_weight_change_allowed"] is False
 assert "SAFE HOLD" in transparency.html_section(fallback)
+
+with TemporaryDirectory() as temporary:
+    root = Path(temporary)
+    tampered_path = root / "tampered-status.json"
+    tampered = forward_status.load_json(
+        ROOT / "data" / "volume_component_forward_status.json"
+    )
+    tampered["horizons"]["10"]["baseline_outcome_count"] = 999
+    tampered_path.write_text(
+        json.dumps(tampered, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    safe = transparency.load_snapshot(
+        ROOT / "research" / "evidence_catalog.yaml",
+        ROOT,
+        tampered_path,
+    )
+    assert safe["catalog_health"] == "PASS"
+    assert safe["forward_status_health"] == "WARN"
+    assert safe["governing_study_status"] == "ACCUMULATING"
+    assert safe["forward_progress"]["10"]["baseline_outcome_count"] == 0
+    assert "status_sha256 mismatch" in safe["forward_status_error"]
+    assert "SAFE HOLD" in transparency.html_section(safe)
 
 with TemporaryDirectory() as temporary:
     workbook_path = Path(temporary) / "report.xlsx"
@@ -95,9 +137,13 @@ with TemporaryDirectory() as temporary:
     assert evidence_sheet.freeze_panes == "A2"
     values = [cell.value for row in evidence_sheet.iter_rows() for cell in row]
     assert "Current Decision" in values
+    assert "Forward Progress" in values
     assert "volume-component-forward-evidence-v1" in values
+    assert "volume-component-forward-evidence-v1:10d" in values
+    assert "volume-component-forward-evidence-v1:20d" in values
     assert "NOT_SUPPORTED" in values
     assert "ACCUMULATING" in values
+    assert "baseline 0/100・除外 0/100・paired 0/20日" in values
 
 workflow_text = (
     ROOT / ".github" / "workflows" / "daily.yml"

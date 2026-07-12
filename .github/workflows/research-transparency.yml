@@ -7,10 +7,13 @@ on:
     paths:
       - research_transparency.py
       - daily_runner.py
+      - volume_component_forward_status.py
+      - data/volume_component_forward_status.json
       - research/evidence_catalog.yaml
       - research/evidence_catalog.md
       - research_evidence_catalog.py
       - .github/test_research_transparency.py
+      - .github/test_volume_component_forward_status.py
       - .github/workflows/research-transparency.yml
       - .github/workflows/daily.yml
   push:
@@ -19,10 +22,13 @@ on:
     paths:
       - research_transparency.py
       - daily_runner.py
+      - volume_component_forward_status.py
+      - data/volume_component_forward_status.json
       - research/evidence_catalog.yaml
       - research/evidence_catalog.md
       - research_evidence_catalog.py
       - .github/test_research_transparency.py
+      - .github/test_volume_component_forward_status.py
       - .github/workflows/research-transparency.yml
       - .github/workflows/daily.yml
 
@@ -57,8 +63,17 @@ jobs:
         run: |
           python -m py_compile \
             main.py research_evidence_catalog.py \
+            volume_component_forward_status.py \
             research_transparency.py daily_runner.py \
+            .github/test_volume_component_forward_status.py \
             .github/test_research_transparency.py
+      - name: Validate signed forward status
+        run: |
+          set -o pipefail
+          python .github/test_volume_component_forward_status.py \
+            2>&1 | tee /tmp/volume-component-forward-status-test.log
+          python volume_component_forward_status.py validate \
+            --status data/volume_component_forward_status.json
       - name: Validate transparency dashboard
         run: |
           set -o pipefail
@@ -103,11 +118,17 @@ jobs:
           assert row['研究判断'] == 'HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE'
           assert row['歴史エビデンス'] == 'CONFLICTED_TIME_UNSTABLE'
           assert row['Forward Evidence'] == 'ACCUMULATING'
+          assert row['Forward Status状態'] == 'PASS'
+          assert row['Forward 10日進捗'] == 'baseline 0/100・除外 0/100・paired 0/20日'
+          assert row['Forward 20日進捗'] == 'baseline 0/100・除外 0/100・paired 0/20日'
           assert row['自動配点変更'] == 'DISABLED'
           assert row['自動戦略変更'] == 'DISABLED'
           assert not evidence.empty
           assert 'Current Decision' in set(evidence['section'].astype(str))
+          assert 'Forward Progress' in set(evidence['section'].astype(str))
           assert 'volume-component-forward-evidence-v1' in set(evidence['study_id'].astype(str))
+          assert 'volume-component-forward-evidence-v1:10d' in set(evidence['study_id'].astype(str))
+          assert 'volume-component-forward-evidence-v1:20d' in set(evidence['study_id'].astype(str))
           assert 'NOT_SUPPORTED' in set(evidence['status'].astype(str))
           assert 'ACCUMULATING' in set(evidence['status'].astype(str))
           PY
@@ -129,6 +150,7 @@ jobs:
           assert 'paper_portfolio' not in panel
           assert 'score_volume_ratio' not in panel
           assert 'automatic_weight_change_allowed' in panel
+          assert 'volume_component_forward_status.json' in panel
           assert 'python daily_runner.py' in daily
           assert workflow.count('contents: read') >= 1
           assert ('contents:' + ' write') not in workflow
@@ -140,8 +162,10 @@ jobs:
         with:
           name: research-transparency-diagnostics-${{ github.run_id }}
           path: |
+            /tmp/volume-component-forward-status-test.log
             /tmp/research-transparency-test.log
             /tmp/research-transparency-integration.log
             output/daily_report.xlsx
+            data/volume_component_forward_status.json
           if-no-files-found: ignore
           retention-days: 14
