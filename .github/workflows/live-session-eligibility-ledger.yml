@@ -99,8 +99,13 @@ jobs:
           assert workflow['permissions']['actions'] == 'read'
           assert workflow['permissions']['contents'] == 'read'
           assert ('EMAIL_' + 'APP_PASSWORD') not in text
-          assert 'git add -- \\\n            research/evidence/live_session_eligibility.csv \\\n            research/evidence/live_session_eligibility_status.json' in text
-          persistence = text.split('git add --', 1)[1]
+          persist = next(
+              step for step in workflow['jobs']['publish']['steps']
+              if step.get('name') == 'Persist eligibility research files only'
+          )['run']
+          assert 'git add --' in persist
+          assert 'research/evidence/live_session_eligibility.csv' in persist
+          assert 'research/evidence/live_session_eligibility_status.json' in persist
           for forbidden in (
               'main.py',
               'config.yaml',
@@ -108,7 +113,7 @@ jobs:
               'paper_portfolio.csv',
               'research/priority_outcomes/daily_research_decisions.csv',
           ):
-              assert forbidden not in persistence
+              assert forbidden not in persist
           PY
       - name: Upload validation failure logs
         if: failure()
