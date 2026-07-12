@@ -161,11 +161,15 @@ def main() -> None:
     workflow_text = workflow_path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
     steps = workflow["jobs"]["report"]["steps"]
-    names = [step.get("name", "") for step in steps]
-    seal_index = names.index("Seal recoverable state snapshot")
-    drill_index = names.index("Verify exact sealed snapshot in isolated sandbox")
-    maintenance_index = names.index("Maintain persisted state")
-    persist_index = names.index("Persist state")
+    step_indexes = {
+        step["id"]: index
+        for index, step in enumerate(steps)
+        if step.get("id")
+    }
+    seal_index = step_indexes["recovery"]
+    drill_index = step_indexes["recovery_drill"]
+    maintenance_index = step_indexes["maintenance"]
+    persist_index = step_indexes["persist"]
     assert seal_index < drill_index < maintenance_index < persist_index
 
     drill_step = steps[drill_index]
