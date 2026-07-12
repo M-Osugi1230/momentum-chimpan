@@ -16,6 +16,7 @@ on:
       - live_session_readiness.py
       - research/priority_outcomes/**
       - .github/test_priority_outcomes.py
+      - .github/test_priority_outcome_readiness_gate.py
       - .github/workflows/daily-priority-outcomes.yml
       - docs/PRIORITY_OUTCOMES.md
       - docs/LIVE_SESSION_READINESS.md
@@ -52,12 +53,18 @@ jobs:
           python -m py_compile \
             priority_outcomes.py \
             live_session_readiness.py \
-            .github/test_priority_outcomes.py
+            .github/test_priority_outcomes.py \
+            .github/test_priority_outcome_readiness_gate.py
       - name: Validate prospective outcome contract
         run: |
           set -o pipefail
           python .github/test_priority_outcomes.py \
             2>&1 | tee /tmp/priority-outcomes-test.log
+      - name: Validate exact-artifact readiness gate
+        run: |
+          set -o pipefail
+          python .github/test_priority_outcome_readiness_gate.py \
+            2>&1 | tee /tmp/priority-outcomes-readiness-test.log
       - name: Validate committed research state
         run: |
           python priority_outcomes.py validate \
@@ -87,7 +94,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: priority-outcomes-validation-log
-          path: /tmp/priority-outcomes-test.log
+          path: |
+            /tmp/priority-outcomes-test.log
+            /tmp/priority-outcomes-readiness-test.log
           if-no-files-found: ignore
           retention-days: 7
 
