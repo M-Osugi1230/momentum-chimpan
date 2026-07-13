@@ -1,0 +1,166 @@
+name: Publish Momentum Dashboard
+
+on:
+  workflow_run:
+    workflows:
+      - Daily Momentum Report
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Exact successful Daily Momentum Report run ID to publish.'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: momentum-dashboard-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.source_run_id != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      report_date: ${{ steps.site.outputs.report_date }}
+      source_run_id: ${{ steps.source.outputs.run_id }}
+    steps:
+      - name: Check out current presentation code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Resolve and verify exact daily source run
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          DISPATCH_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          run_id="${EVENT_SOURCE_RUN_ID:-${DISPATCH_SOURCE_RUN_ID:-}}"
+          if [ -z "${run_id}" ]; then
+            echo "Exact source_run_id is required" >&2
+            exit 1
+          fi
+
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+          workflow_name="$(jq -r '.name // ""' <<<"${run_json}")"
+          head_branch="$(jq -r '.head_branch // ""' <<<"${run_json}")"
+          source_event="$(jq -r '.event // ""' <<<"${run_json}")"
+          source_status="$(jq -r '.status // ""' <<<"${run_json}")"
+          source_conclusion="$(jq -r '.conclusion // ""' <<<"${run_json}")"
+
+          if [ "${workflow_name}" != "Daily Momentum Report" ]; then
+            echo "Source run is not Daily Momentum Report: ${workflow_name}" >&2
+            exit 1
+          fi
+          if [ "${head_branch}" != "main" ]; then
+            echo "Source run is not from main: ${head_branch}" >&2
+            exit 1
+          fi
+          if [ "${source_event}" = "pull_request" ]; then
+            echo "Pull-request source runs are ineligible" >&2
+            exit 1
+          fi
+          if [ "${source_status}" != "completed" ] || [ "${source_conclusion}" != "success" ]; then
+            echo "Source run is not a completed success: ${source_status}/${source_conclusion}" >&2
+            exit 1
+          fi
+
+          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          echo "head_sha=$(jq -r '.head_sha // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
+          echo "run_url=$(jq -r '.html_url // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dashboard dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pandas openpyxl
+
+      - name: Download exact successful daily artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: momentum-operations-*
+          path: downloaded-daily-report
+          merge-multiple: true
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and validate static dashboard
+        id: site
+        env:
+          PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: |
+          set -euo pipefail
+          workbook="downloaded-daily-report/output/daily_report.xlsx"
+          ranking="downloaded-daily-report/data/momentum_daily_ranking.csv"
+          temperature="downloaded-daily-report/data/market_temperature.csv"
+          test -f "${workbook}"
+          test -f "${ranking}"
+          test -f "${temperature}"
+          python -m py_compile site_builder.py
+          python site_builder.py build \
+            --workbook "${workbook}" \
+            --ranking-history "${ranking}" \
+            --market-temperature "${temperature}" \
+            --output-dir output/site \
+            --site-url "${PAGES_URL}"
+          python site_builder.py validate --output-dir output/site
+          report_date="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('output/site/site_manifest.json').read_text(encoding='utf-8'))
+          print(payload.get('report_date', ''))
+          PY
+          )"
+          echo "report_date=${report_date}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload exact dashboard Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: output/site
+
+      - name: Upload dashboard diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-dashboard-${{ steps.source.outputs.run_id }}
+          path: |
+            output/site/site_manifest.json
+            output/site/assets/data.js
+          if-no-files-found: warn
+          retention-days: 90
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy exact dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
