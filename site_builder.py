@@ -35,8 +35,8 @@ FORBIDDEN_TEXT = (
     "EMAIL_FROM",
     "EMAIL_TO",
     "smtp.gmail.com",
-    "osugimurata@icloud.com",
-    "osugimurata0809@gmail.com",
+    "@icloud.com",
+    "@gmail.com",
 )
 
 
