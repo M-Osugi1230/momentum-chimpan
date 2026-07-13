@@ -138,7 +138,7 @@ def main() -> None:
         str(ROOT / eligibility.DEFAULT_STATUS),
     )
     assert committed["passed"] is True
-    assert committed["status"]["ledger_state"] == "EMPTY"
+    assert committed["status"]["ledger_state"] in {"EMPTY", "ACCUMULATING"}
 
     workflow_path = ROOT / ".github" / "workflows" / "live-session-eligibility-ledger.yml"
     workflow_text = workflow_path.read_text(encoding="utf-8")
@@ -146,8 +146,12 @@ def main() -> None:
     assert workflow["permissions"]["actions"] == "read"
     assert workflow["permissions"]["contents"] == "read"
     assert "actions/download-artifact@v4" in workflow_text
-    assert "run-id: ${{ github.event.workflow_run.id }}" in workflow_text
-    assert "live_session_eligibility.py update" in workflow_text
+    assert "run-id: ${{ steps.source.outputs.run_id }}" in workflow_text
+    assert "source_run_id:" in workflow_text
+    assert "gh api" in workflow_text
+    assert "live_session_readiness_with_recovery.py" in workflow_text
+    assert "live_session_eligibility_with_recovery.py update" in workflow_text
+    assert "python live_session_eligibility.py update" not in workflow_text
     assert "--source-run-id" in workflow_text
     assert "--upstream-conclusion" in workflow_text
     assert "research/evidence/live_session_eligibility.csv" in workflow_text
