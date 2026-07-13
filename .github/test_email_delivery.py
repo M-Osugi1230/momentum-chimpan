@@ -243,10 +243,18 @@ with TemporaryDirectory() as temporary:
 
 committed_history = email_delivery_audit.load_history(ROOT / email_delivery_audit.DEFAULT_HISTORY)
 committed_status = json.loads((ROOT / email_delivery_audit.DEFAULT_STATUS).read_text(encoding="utf-8"))
-assert committed_history.empty
 assert email_delivery_audit.validate_status(committed_status) == []
-assert committed_status["audited_run_count"] == 0
+assert committed_status["audited_run_count"] == len(committed_history)
+assert committed_status["valid_receipt_count"] <= committed_status["audited_run_count"]
 assert committed_status["delivery_claim"] == "SMTP_ACCEPTANCE_ONLY"
+assert committed_status["inbox_delivery_claimed"] is False
+assert committed_status["automatic_retry"] is False
+assert committed_status["automatic_strategy_change"] is False
+assert committed_status["production_state_mutations"] == []
+if not committed_history.empty:
+    latest = committed_history.iloc[-1]
+    assert str(committed_status["latest_workflow_run_id"]) == str(latest["workflow_run_id"])
+    assert committed_status["latest_receipt_status"] == latest["receipt_status"]
 
 monthly_review_runner.install_email_overlay()
 payload = monthly_review_runner.build_review(
