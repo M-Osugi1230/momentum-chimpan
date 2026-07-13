@@ -1,12 +1,11 @@
-"""Daily entrypoint for governed display, quality, research focus, and mail audit.
+"""Daily entrypoint for governed display, quality, research focus, site, and mail audit.
 
 The governed screener still runs through ``main.main``. This wrapper augments
-human-facing Excel/email outputs and persisted ranking rows with research
-transparency and non-mutating data-quality metadata. It also converts the
-existing action-priority table into a concise daily research plan after paper
-execution has already completed, and records a privacy-preserving SMTP
-acceptance receipt. Momentum scores, ranks, thresholds, paper execution, and
-strategy fingerprints remain untouched.
+human-facing Excel output and persisted ranking rows with research transparency
+and non-mutating data-quality metadata. The downstream Pages workflow builds the
+static web dashboard from the exact successful artifact, while this wrapper
+replaces the long mail body with a concise decision digest. Momentum scores,
+ranks, thresholds, paper execution, and strategy fingerprints remain untouched.
 """
 from __future__ import annotations
 
@@ -18,31 +17,11 @@ import pandas as pd
 import daily_research_focus
 import data_quality
 import email_delivery
+import email_digest
 import main
 import research_transparency as transparency
 
-PLAIN_MARKER = "【Market Temperature】"
-HTML_MARKER = (
-    '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;'
-    'padding:16px;margin-top:14px"><b>Market Temperature</b>'
-)
 _PATCHED = False
-
-
-def insert_plain_section(body: str, section: list[str]) -> str:
-    block = "\n".join(section)
-    if PLAIN_MARKER in body:
-        return body.replace(PLAIN_MARKER, f"{block}\n{PLAIN_MARKER}", 1)
-    return f"{block}\n{body}"
-
-
-def insert_html_section(body: str, section: str) -> str:
-    if HTML_MARKER in body:
-        return body.replace(HTML_MARKER, f"{section}{HTML_MARKER}", 1)
-    closing = "</div></body></html>"
-    if closing in body:
-        return body.replace(closing, f"{section}{closing}", 1)
-    return f"{section}{body}"
 
 
 def enrich_summary(
@@ -143,35 +122,21 @@ def install_patches(
 
     @wraps(original_plain)
     def patched_plain(*args: Any, **kwargs: Any) -> str:
-        body = original_plain(*args, **kwargs)
-        body = insert_plain_section(
-            body,
-            daily_research_focus.plain_section(display_context["daily_focus"]),
+        return email_digest.build_plain(
+            *args,
+            **kwargs,
+            daily_focus=display_context["daily_focus"],
+            snapshot=current,
         )
-        body = insert_plain_section(
-            body,
-            data_quality.plain_section(
-                display_context["top100"],
-                display_context["action_priority"],
-            ),
-        )
-        return insert_plain_section(body, transparency.plain_section(current))
 
     @wraps(original_html)
     def patched_html(*args: Any, **kwargs: Any) -> str:
-        body = original_html(*args, **kwargs)
-        body = insert_html_section(
-            body,
-            daily_research_focus.html_section(display_context["daily_focus"]),
+        return email_digest.build_html(
+            *args,
+            **kwargs,
+            daily_focus=display_context["daily_focus"],
+            snapshot=current,
         )
-        body = insert_html_section(
-            body,
-            data_quality.html_section(
-                display_context["top100"],
-                display_context["action_priority"],
-            ),
-        )
-        return insert_html_section(body, transparency.html_section(current))
 
     @wraps(original_send_email)
     def patched_send_email(*args: Any, **kwargs: Any) -> Any:
@@ -217,6 +182,10 @@ def run() -> None:
         "Email delivery receipt: version=%s output=%s inbox_delivery_claimed=false",
         email_delivery.RECEIPT_VERSION,
         email_delivery.DEFAULT_RECEIPT_PATH,
+    )
+    main.logger.info(
+        "Presentation split: email=concise_decision_digest site=rich_static_dashboard site_url=%s",
+        email_digest.resolve_site_url(main.load_config()),
     )
     main.main()
 
