@@ -1,0 +1,20 @@
+{
+  "operations_version": "2026-07-11-operations-v1",
+  "generated_at_utc": "2026-07-13T10:58:25+00:00",
+  "workflow_run_id": "29243611472",
+  "workflow_run_url": "https://github.com/M-Osugi1230/momentum-chimpan/actions/runs/29243611472",
+  "workflow_event": "schedule",
+  "workflow_status": "SUCCESS",
+  "app_version": "2026-07-11-dashboard-relative-strength-lifecycle-v19",
+  "report_date": "2026-07-13",
+  "market_data_freshness": "FRESH",
+  "latest_price_date": "2026-07-13",
+  "current_day_price_ratio": 0.9898931562229281,
+  "state_update_executed": true,
+  "run_health": "PASS",
+  "release_status": "RESEARCH",
+  "p0_alerts": 0,
+  "p1_alerts": 0,
+  "execution_mode": "RESEARCH_AND_PAPER_ONLY",
+  "research_only": true
+}
