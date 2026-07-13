@@ -10,8 +10,11 @@ on:
     branches:
       - main
     paths:
+      - daily_recovery_drill.py
       - live_session_readiness.py
+      - live_session_readiness_with_recovery.py
       - live_session_eligibility.py
+      - live_session_eligibility_with_recovery.py
       - forward_eligible_history.py
       - evidence_provenance.py
       - research/evidence/live_session_eligibility.csv
@@ -25,8 +28,11 @@ on:
     branches:
       - main
     paths:
+      - daily_recovery_drill.py
       - live_session_readiness.py
+      - live_session_readiness_with_recovery.py
       - live_session_eligibility.py
+      - live_session_eligibility_with_recovery.py
       - forward_eligible_history.py
       - evidence_provenance.py
       - research/evidence/live_session_eligibility.csv
@@ -37,6 +43,11 @@ on:
       - .github/workflows/volume-component-forward-evidence.yml
       - docs/LIVE_SESSION_ELIGIBILITY.md
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Exact completed Daily Momentum Report run ID to backfill
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -67,8 +78,11 @@ jobs:
       - name: Compile eligibility tools
         run: |
           python -m py_compile \
+            daily_recovery_drill.py \
             live_session_readiness.py \
+            live_session_readiness_with_recovery.py \
             live_session_eligibility.py \
+            live_session_eligibility_with_recovery.py \
             forward_eligible_history.py \
             .github/test_live_session_eligibility.py \
             .github/test_forward_eligible_history.py
@@ -99,8 +113,23 @@ jobs:
           assert workflow['permissions']['actions'] == 'read'
           assert workflow['permissions']['contents'] == 'read'
           assert ('EMAIL_' + 'APP_PASSWORD') not in text
+          publish_steps = workflow['jobs']['publish']['steps']
+          resolver = next(
+              step for step in publish_steps
+              if step.get('name') == 'Resolve and verify exact source run'
+          )['run']
+          assert 'gh api' in resolver
+          assert 'Daily Momentum Report' in resolver
+          assert 'head_branch' in resolver
+          assert 'pull_request' in resolver
+          append = next(
+              step for step in publish_steps
+              if step.get('name') == 'Append signed eligibility record'
+          )['run']
+          assert 'live_session_eligibility_with_recovery.py update' in append
+          assert 'live_session_eligibility.py update' not in append
           persist = next(
-              step for step in workflow['jobs']['publish']['steps']
+              step for step in publish_steps
               if step.get('name') == 'Persist eligibility research files only'
           )['run']
           assert 'git add --' in persist
@@ -128,9 +157,11 @@ jobs:
 
   publish:
     if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.event != 'pull_request'
+      needs.validate.result == 'success' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.event != 'pull_request') ||
+       (github.event_name == 'workflow_dispatch' && inputs.source_run_id != ''))
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -156,32 +187,80 @@ jobs:
           else
             python -m pip install -r requirements.txt
           fi
+      - name: Resolve and verify exact source run
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          DISPATCH_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          run_id="${EVENT_SOURCE_RUN_ID:-${DISPATCH_SOURCE_RUN_ID:-}}"
+          if [ -z "${run_id}" ]; then
+            echo "Exact source_run_id is required" >&2
+            exit 1
+          fi
+
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+          workflow_name="$(jq -r '.name // ""' <<<"${run_json}")"
+          head_branch="$(jq -r '.head_branch // ""' <<<"${run_json}")"
+          source_event="$(jq -r '.event // ""' <<<"${run_json}")"
+          source_status="$(jq -r '.status // ""' <<<"${run_json}")"
+
+          if [ "${workflow_name}" != "Daily Momentum Report" ]; then
+            echo "Source run is not Daily Momentum Report: ${workflow_name}" >&2
+            exit 1
+          fi
+          if [ "${head_branch}" != "main" ]; then
+            echo "Source run is not from main: ${head_branch}" >&2
+            exit 1
+          fi
+          if [ "${source_event}" = "pull_request" ]; then
+            echo "Pull-request source runs are ineligible" >&2
+            exit 1
+          fi
+          if [ "${source_status}" != "completed" ]; then
+            echo "Source run is not completed: ${source_status}" >&2
+            exit 1
+          fi
+
+          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          echo "run_url=$(jq -r '.html_url // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
+          echo "conclusion=$(jq -r '.conclusion // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
+          echo "event=${source_event}" >> "${GITHUB_OUTPUT}"
+          echo "head_sha=$(jq -r '.head_sha // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
+          echo "created_at=$(jq -r '.created_at // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
+          echo "updated_at=$(jq -r '.updated_at // ""' <<<"${run_json}")" >> "${GITHUB_OUTPUT}"
       - name: Prepare exact-artifact directories
         run: |
           mkdir -p downloaded-daily-report
           mkdir -p output/live-session-eligibility
       - name: Download exact upstream daily artifact
-        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           pattern: momentum-operations-*
           path: downloaded-daily-report
           merge-multiple: true
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.source.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Append signed eligibility record
         env:
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
-          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
-          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          SOURCE_CREATED_AT: ${{ github.event.workflow_run.created_at }}
-          SOURCE_UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          SOURCE_RUN_URL: ${{ steps.source.outputs.run_url }}
+          SOURCE_CONCLUSION: ${{ steps.source.outputs.conclusion }}
+          SOURCE_EVENT: ${{ steps.source.outputs.event }}
+          SOURCE_HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+          SOURCE_CREATED_AT: ${{ steps.source.outputs.created_at }}
+          SOURCE_UPDATED_AT: ${{ steps.source.outputs.updated_at }}
         run: |
           set -euo pipefail
-          python -m py_compile live_session_readiness.py live_session_eligibility.py
-          python live_session_eligibility.py update \
+          python -m py_compile \
+            daily_recovery_drill.py \
+            live_session_readiness.py \
+            live_session_readiness_with_recovery.py \
+            live_session_eligibility.py \
+            live_session_eligibility_with_recovery.py
+          python live_session_eligibility_with_recovery.py update \
             --artifact-root downloaded-daily-report \
             --source-run-id "${SOURCE_RUN_ID}" \
             --source-run-url "${SOURCE_RUN_URL}" \
@@ -230,7 +309,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-session-eligibility-${{ github.run_id }}
+          name: live-session-eligibility-${{ steps.source.outputs.run_id }}
           path: |
             research/evidence/live_session_eligibility.csv
             research/evidence/live_session_eligibility_status.json
