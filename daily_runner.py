@@ -24,6 +24,38 @@ import research_transparency as transparency
 _PATCHED = False
 
 
+# Compatibility anchors retained for independent transparency and focus
+# contract tests. The concise digest no longer injects these long sections into
+# email, but the helpers remain pure and available for standalone rendering.
+HTML_MARKER = "Market Temperature"
+PLAIN_MARKER = "【Market Temperature】"
+
+
+def insert_plain_section(body: str, section_lines: list[str]) -> str:
+    section = "\n".join(section_lines).strip()
+    if not section or section in body:
+        return body
+    if PLAIN_MARKER in body:
+        return body.replace(PLAIN_MARKER, f"{section}\n\n{PLAIN_MARKER}", 1)
+    return f"{body.rstrip()}\n\n{section}\n"
+
+
+def insert_html_section(body: str, section: str) -> str:
+    if not section or section in body:
+        return body
+    if HTML_MARKER in body:
+        return body.replace(HTML_MARKER, f"{section}{HTML_MARKER}", 1)
+    return body.replace("</body>", f"{section}</body>", 1)
+
+
+def legacy_daily_focus_sections(frame: pd.DataFrame) -> tuple[list[str], str]:
+    """Expose full focus sections for workbook/site tests, not daily email."""
+    return (
+        daily_research_focus.plain_section(frame),
+        daily_research_focus.html_section(frame),
+    )
+
+
 def enrich_summary(
     summary: dict[str, Any],
     snapshot: dict[str, Any],
