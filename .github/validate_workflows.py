@@ -111,8 +111,12 @@ def main() -> int:
     require("live-session-eligibility-ledger.yml", eligibility, [
         "Daily Momentum Report",
         "actions/download-artifact@v4",
-        "run-id: ${{ github.event.workflow_run.id }}",
-        "live_session_eligibility.py update",
+        "run-id: ${{ steps.source.outputs.run_id }}",
+        "source_run_id:",
+        "gh api",
+        "live_session_readiness_with_recovery.py",
+        "live_session_eligibility_with_recovery.py",
+        "live_session_eligibility_with_recovery.py update",
         "research/evidence/live_session_eligibility.csv",
         "research/evidence/live_session_eligibility_status.json",
         "git add --",
@@ -120,6 +124,7 @@ def main() -> int:
         "retention-days: 90",
     ])
     forbid("live-session-eligibility-ledger.yml", eligibility, [
+        "python live_session_eligibility.py update",
         "EMAIL_APP_PASSWORD",
         "data/momentum_daily_ranking.csv \\",
         "config.yaml \\",
