@@ -39,7 +39,11 @@ def main() -> None:
         "run-id: ${{ steps.source.outputs.run_id }}",
         "downloaded-daily-report/output/daily_report.xlsx",
         "python site_builder.py build",
+        "python site_experience.py apply",
         "python site_builder.py validate",
+        "python site_experience.py validate",
+        "output/site/assets/experience.css",
+        "output/site/assets/experience.js",
         "actions/configure-pages@v5",
         "actions/upload-pages-artifact@v4",
         "actions/deploy-pages@v4",
@@ -76,6 +80,23 @@ def main() -> None:
         '"production_state_mutations": []',
         "downloads/daily_report.xlsx",
         "site_manifest.json",
+    ])
+    experience_source = (ROOT / "site_experience.py").read_text(encoding="utf-8")
+    require(experience_source, [
+        "momentum-watchlist-v2",
+        "momentum-compare-v2",
+        "URLSearchParams",
+        "ux-mobile-ranking",
+        '"research_only": True',
+        '"production_state_mutations": []',
+        "reseal_manifest",
+    ])
+    forbid(experience_source, [
+        "EMAIL_APP_PASSWORD",
+        "smtp.gmail.com",
+        "automatic_score_change = True",
+        "automatic_weight_change = True",
+        "automatic_strategy_change = True",
     ])
     print("dashboard delivery safety validation passed")
 
