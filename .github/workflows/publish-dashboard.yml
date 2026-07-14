@@ -105,7 +105,7 @@ jobs:
           run-id: ${{ steps.source.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and validate static dashboard
+      - name: Build, enhance and validate static dashboard
         id: site
         env:
           PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
@@ -117,14 +117,16 @@ jobs:
           test -f "${workbook}"
           test -f "${ranking}"
           test -f "${temperature}"
-          python -m py_compile site_builder.py
+          python -m py_compile site_builder.py site_experience.py
           python site_builder.py build \
             --workbook "${workbook}" \
             --ranking-history "${ranking}" \
             --market-temperature "${temperature}" \
             --output-dir output/site \
             --site-url "${PAGES_URL}"
+          python site_experience.py apply --output-dir output/site
           python site_builder.py validate --output-dir output/site
+          python site_experience.py validate --output-dir output/site
           report_date="$(python - <<'PY'
           import json
           from pathlib import Path
@@ -150,6 +152,8 @@ jobs:
           path: |
             output/site/site_manifest.json
             output/site/assets/data.js
+            output/site/assets/experience.css
+            output/site/assets/experience.js
           if-no-files-found: warn
           retention-days: 90
 
