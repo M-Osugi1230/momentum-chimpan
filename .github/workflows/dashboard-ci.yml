@@ -7,12 +7,14 @@ on:
     paths:
       - email_digest.py
       - site_builder.py
+      - site_experience.py
       - site_template.py
       - site_styles.py
       - site_script.py
       - daily_runner.py
       - .github/test_email_digest.py
       - .github/test_site_builder.py
+      - .github/test_site_experience.py
       - .github/test_dashboard_delivery.py
       - .github/workflows/dashboard-ci.yml
       - .github/workflows/publish-dashboard.yml
@@ -23,12 +25,14 @@ on:
     paths:
       - email_digest.py
       - site_builder.py
+      - site_experience.py
       - site_template.py
       - site_styles.py
       - site_script.py
       - daily_runner.py
       - .github/test_email_digest.py
       - .github/test_site_builder.py
+      - .github/test_site_experience.py
       - .github/test_dashboard_delivery.py
       - .github/workflows/dashboard-ci.yml
       - .github/workflows/publish-dashboard.yml
@@ -60,16 +64,20 @@ jobs:
           python -m py_compile \
             email_digest.py \
             site_builder.py \
+            site_experience.py \
             site_template.py \
             site_styles.py \
             site_script.py \
             daily_runner.py \
             .github/test_email_digest.py \
             .github/test_site_builder.py \
+            .github/test_site_experience.py \
             .github/test_dashboard_delivery.py
-      - name: Validate concise email
+      - name: Validate decision-first email
         run: python .github/test_email_digest.py
-      - name: Validate static dashboard
+      - name: Validate static dashboard data contract
         run: python .github/test_site_builder.py
+      - name: Validate repeat-use dashboard experience
+        run: python .github/test_site_experience.py
       - name: Validate delivery safety boundary
         run: python .github/test_dashboard_delivery.py
