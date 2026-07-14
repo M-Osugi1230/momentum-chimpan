@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-RECEIPT_VERSION = "2026-07-13-smtp-acceptance-receipt-v1"
+RECEIPT_VERSION = "2026-07-14-smtp-acceptance-receipt-v2"
 DEFAULT_RECEIPT_PATH = "output/email_delivery_receipt.json"
 ALLOWED_STATUSES = {
     "SMTP_ACCEPTED",
@@ -44,7 +44,10 @@ def safe_report_date(summary: Any) -> str:
     return ""
 
 
-def subject_for(summary: Any) -> str:
+def subject_for(summary: Any, subject_text: str = "") -> str:
+    explicit = str(subject_text or "").strip()
+    if explicit:
+        return explicit
     return f"【モメンタムチンパン】{safe_report_date(summary)} 引け後レポート"
 
 
@@ -56,6 +59,7 @@ def build_receipt(
     recipient_text: str,
     started_at_utc: str,
     completed_at_utc: str,
+    subject_text: str = "",
     error_class: str = "",
 ) -> dict[str, Any]:
     if status not in ALLOWED_STATUSES:
@@ -74,7 +78,8 @@ def build_receipt(
         "sender_identity_sha256": identity_hash(sender),
         "recipient_set_sha256": canonical_hash(recipient_list) if recipient_list else "",
         "recipient_count": len(recipient_list),
-        "subject_sha256": identity_hash(subject_for(summary)),
+        "subject_sha256": identity_hash(subject_for(summary, subject_text)),
+        "subject_source": "explicit" if str(subject_text or "").strip() else "legacy_default",
         "error_class": str(error_class or "")[:120],
         "error_message_stored": False,
         "run_id": str(os.getenv("GITHUB_RUN_ID", "")),
@@ -115,6 +120,10 @@ def validate_receipt(payload: dict[str, Any]) -> list[str]:
         issues.append("automatic_strategy_change must be false")
     if payload.get("production_state_mutations") != []:
         issues.append("production_state_mutations must be empty")
+    if payload.get("subject_source") not in {"explicit", "legacy_default"}:
+        issues.append("invalid subject_source")
+    if not payload.get("subject_sha256"):
+        issues.append("subject_sha256 is required")
     if status == "SMTP_ACCEPTED":
         if payload.get("secret_configuration_complete") is not True:
             issues.append("SMTP_ACCEPTED requires complete secret configuration")
@@ -156,6 +165,7 @@ def send_with_receipt(
     original_send: Callable[..., Any],
     *args: Any,
     receipt_path: str | Path = DEFAULT_RECEIPT_PATH,
+    subject_text: str = "",
     **kwargs: Any,
 ) -> Any:
     summary = args[0] if args else kwargs.get("summary", {})
@@ -174,6 +184,7 @@ def send_with_receipt(
                 recipient_text=recipient_text,
                 started_at_utc=started,
                 completed_at_utc=completed,
+                subject_text=subject_text,
             ),
             receipt_path,
         )
@@ -190,6 +201,7 @@ def send_with_receipt(
                 recipient_text=recipient_text,
                 started_at_utc=started,
                 completed_at_utc=completed,
+                subject_text=subject_text,
                 error_class=type(exc).__name__,
             ),
             receipt_path,
@@ -204,6 +216,7 @@ def send_with_receipt(
             recipient_text=recipient_text,
             started_at_utc=started,
             completed_at_utc=completed,
+            subject_text=subject_text,
         ),
         receipt_path,
     )

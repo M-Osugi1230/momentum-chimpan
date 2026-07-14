@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - email_digest.py
+      - email_delivery.py
       - site_builder.py
       - site_experience.py
       - site_template.py
@@ -13,17 +14,21 @@ on:
       - site_script.py
       - daily_runner.py
       - .github/test_email_digest.py
+      - .github/test_email_production_contract.py
       - .github/test_site_builder.py
       - .github/test_site_experience.py
       - .github/test_dashboard_delivery.py
       - .github/workflows/dashboard-ci.yml
       - .github/workflows/publish-dashboard.yml
       - docs/WEB_DASHBOARD.md
+      - docs/EMAIL_SITE_ACCEPTANCE_CONTRACT.md
+      - docs/REAL_DATA_VALIDATION_NOTES.md
   push:
     branches:
       - main
     paths:
       - email_digest.py
+      - email_delivery.py
       - site_builder.py
       - site_experience.py
       - site_template.py
@@ -31,12 +36,15 @@ on:
       - site_script.py
       - daily_runner.py
       - .github/test_email_digest.py
+      - .github/test_email_production_contract.py
       - .github/test_site_builder.py
       - .github/test_site_experience.py
       - .github/test_dashboard_delivery.py
       - .github/workflows/dashboard-ci.yml
       - .github/workflows/publish-dashboard.yml
       - docs/WEB_DASHBOARD.md
+      - docs/EMAIL_SITE_ACCEPTANCE_CONTRACT.md
+      - docs/REAL_DATA_VALIDATION_NOTES.md
 
 permissions:
   contents: read
@@ -63,6 +71,7 @@ jobs:
         run: |
           python -m py_compile \
             email_digest.py \
+            email_delivery.py \
             site_builder.py \
             site_experience.py \
             site_template.py \
@@ -70,11 +79,14 @@ jobs:
             site_script.py \
             daily_runner.py \
             .github/test_email_digest.py \
+            .github/test_email_production_contract.py \
             .github/test_site_builder.py \
             .github/test_site_experience.py \
             .github/test_dashboard_delivery.py
-      - name: Validate decision-first email
+      - name: Validate production-shaped decision email
         run: python .github/test_email_digest.py
+      - name: Validate enriched summary handoff and receipt subject
+        run: python .github/test_email_production_contract.py
       - name: Validate static dashboard data contract
         run: python .github/test_site_builder.py
       - name: Validate repeat-use dashboard experience
