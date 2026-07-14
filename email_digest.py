@@ -1,8 +1,8 @@
 """Decision-first daily email for the Momentum Chimpan research dashboard.
 
-The full analytical detail lives in the web dashboard and workbook.  This module
+The full analytical detail lives in the web dashboard and workbook. This module
 keeps the mail intentionally small: freshness, market conclusion, the most
-important caution, and three-to-five Daily Action List names.  It never changes
+important caution, and three-to-five Daily Action List names. It never changes
 ranking, scores, priorities, paper execution, or production state.
 """
 from __future__ import annotations
@@ -19,9 +19,9 @@ DEFAULT_SITE_URL = "https://momentum-chimpan.osugimurata.chatgpt.site/"
 DISCLAIMER = (
     "売買推奨ではなく、今日どの銘柄から詳しく調査するかを整理するための研究支援情報です。"
 )
-MAX_REASON_CHARS = 92
-MAX_CHANGE_CHARS = 64
-MAX_RISK_CHARS = 72
+MAX_REASON_CHARS = 112
+MAX_CHANGE_CHARS = 72
+MAX_RISK_CHARS = 88
 
 
 def optional_text(value: Any) -> str:
@@ -79,6 +79,132 @@ def compact_text(value: Any, limit: int) -> str:
     return f"{clipped}…"
 
 
+def split_items(value: Any) -> list[str]:
+    """Split generated slash prose into stable, unique evidence items."""
+    text = optional_text(value)
+    if not text:
+        return []
+    text = re.sub(r"\s*[｜|]\s*", " / ", text)
+    raw = re.split(r"\s*/\s*|\s*\n\s*|\s*;\s*", text)
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        normalized = re.sub(r"\s+", " ", item).strip(" ・、。")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _first_matching(items: list[str], keywords: tuple[str, ...], used: set[str]) -> str:
+    for item in items:
+        if item in used:
+            continue
+        if any(keyword in item for keyword in keywords):
+            used.add(item)
+            return item
+    return ""
+
+
+def _display_item(item: str) -> str:
+    return re.sub(r"^重点候補ライフサイクル:\s*", "", item).strip()
+
+
+def _join_compact(items: list[str], limit: int) -> str:
+    return compact_text(" / ".join(_display_item(item) for item in items if item), limit)
+
+
+def summarize_reason(row: pd.Series) -> str:
+    """Select decision-useful evidence rather than truncating source order."""
+    items = split_items(row.get("why_today") or row.get("positive_reasons"))
+    used: set[str] = set()
+    selected = [
+        _first_matching(items, ("相対強度", "中央値比", "市場比", "同業比"), used),
+        _first_matching(items, ("出来高",), used),
+        _first_matching(items, ("売買代金", "大型資金"), used),
+        _first_matching(items, ("初動", "加速", "継続", "再浮上"), used),
+    ]
+    selected = [item for item in selected if item]
+    if len(selected) < 3:
+        for keywords in (("Momentum #", "Momentum上位"), ("自己最高順位",), ("期待値",)):
+            item = _first_matching(items, keywords, used)
+            if item:
+                selected.append(item)
+            if len(selected) >= 4:
+                break
+    if not selected:
+        selected = items[:4]
+    return _join_compact(selected[:4], MAX_REASON_CHARS)
+
+
+def summarize_change(row: pd.Series) -> str:
+    items = split_items(row.get("what_changed"))
+    used: set[str] = set()
+    selected = [
+        _first_matching(items, ("新規ランクイン", "Top100新規", "再ランクイン"), used),
+        _first_matching(items, ("前回比",), used),
+        _first_matching(items, ("自己最高順位", "最高順位"), used),
+        _first_matching(items, ("ライフサイクル", "初登場", "再浮上", "定着"), used),
+    ]
+    selected = [item for item in selected if item]
+    if not selected:
+        selected = items[:3]
+    return _join_compact(selected[:3], MAX_CHANGE_CHARS)
+
+
+def _is_positive_non_risk(item: str) -> bool:
+    normalized = item.replace(" ", "")
+    return bool(
+        normalized.startswith("DataQualityA")
+        or "流動性十分" in normalized
+        or "過熱注意なし" in normalized
+        or normalized in {"特記事項なし", "警告なし", "なし"}
+    )
+
+
+def summarize_risk(row: pd.Series) -> str:
+    items = [
+        item
+        for item in split_items(row.get("risk_summary") or row.get("caution_reasons"))
+        if not _is_positive_non_risk(item)
+    ]
+    risk_keywords = (
+        "乖離", "過熱", "不足", "低い", "欠損", "異常", "注意", "警告",
+        "corporate", "調整", "D", "C", "下振れ", "減速",
+    )
+    selected = [item for item in items if any(keyword in item for keyword in risk_keywords)]
+    for item in items:
+        if item not in selected:
+            selected.append(item)
+    selected = selected[:2]
+
+    lifecycle = optional_text(row.get("lifecycle_status"))
+    change_text = optional_text(row.get("what_changed"))
+    is_new_entry = str(row.get("is_new_entry")).strip().lower() in {"true", "1", "yes"}
+    new_or_returning = bool(
+        is_new_entry
+        or "初登場" in lifecycle
+        or "再浮上" in lifecycle
+        or "初登場" in change_text
+        or "再浮上" in change_text
+        or "新規ランクイン" in change_text
+    )
+    continuity = ""
+    if "再浮上" in lifecycle or "再浮上" in change_text:
+        continuity = "再浮上のため、翌日以降の出来高と順位継続を確認"
+    elif "初登場" in lifecycle or "初登場" in change_text:
+        continuity = "初登場のため、翌日以降の出来高と順位継続を確認"
+    elif is_new_entry or new_or_returning:
+        continuity = "新規シグナルの出来高と順位継続を確認"
+
+    if continuity and len(selected) < 2:
+        selected.append(continuity)
+    if not selected:
+        selected = [continuity or "最新開示と翌日以降の継続性を確認"]
+    return _join_compact(selected[:2], MAX_RISK_CHARS)
+
+
 def resolve_site_url(config: dict[str, Any] | None = None) -> str:
     configured = os.getenv("MOMENTUM_SITE_URL", "").strip()
     if not configured and isinstance(config, dict):
@@ -119,7 +245,10 @@ def _daily_candidates(focus: pd.DataFrame, limit: int = 5) -> pd.DataFrame:
     if focus is None or focus.empty:
         return pd.DataFrame()
     work = focus.copy()
-    bucket = work.get("research_bucket", work.get("action_priority", pd.Series(index=work.index, dtype=str)))
+    bucket = work.get(
+        "research_bucket",
+        work.get("action_priority", pd.Series(index=work.index, dtype=str)),
+    )
     if "daily_action_list" in work.columns:
         selected = work[work["daily_action_list"].fillna(False).astype(bool)].copy()
     else:
@@ -141,6 +270,28 @@ def _daily_candidates(focus: pd.DataFrame, limit: int = 5) -> pd.DataFrame:
     return selected.sort_values(
         ["_priority", "_rank", "_score"], ascending=[True, True, False]
     ).head(limit)
+
+
+def subject(summary: dict[str, Any], daily_focus: pd.DataFrame | None = None) -> str:
+    """Build a compact subject that matches the visible email conclusion."""
+    summary = summary if isinstance(summary, dict) else {}
+    report_date = optional_text(summary.get("実行日"))
+    regime = optional_text(summary.get("Market Regime")) or "判定待ち"
+    regime_score = integer(summary.get("Market Regime Score"))
+    p0 = integer(summary.get("運用P0アラート"))
+    p1 = integer(summary.get("運用P1アラート"))
+    freshness = optional_text(summary.get("市場データ鮮度")).upper()
+    state_updated = optional_text(summary.get("状態更新実行")).upper()
+    attention = bool(
+        (freshness and freshness not in {"FRESH", "PASS"})
+        or state_updated == "NO"
+        or p0 > 0
+        or p1 > 0
+    )
+    candidates = _daily_candidates(_frame(daily_focus))
+    candidate_count = integer(summary.get("Daily Action List"), len(candidates))
+    status = "要確認" if attention else f"{regime}{regime_score}"
+    return f"【モメンタムチンパン】{report_date} {status}｜調査{candidate_count}件"
 
 
 def _market_guidance(regime: str) -> str:
@@ -170,7 +321,9 @@ def _regime_colors(regime: str) -> tuple[str, str, str]:
 def _transition_text(summary: dict[str, Any], regime: str) -> str:
     explicit = optional_text(summary.get("Market Regime転換"))
     transition_type = optional_text(summary.get("Market Regime転換種別"))
-    score_delta = pd.to_numeric(pd.Series([summary.get("Market Regime Score前回比")]), errors="coerce").iloc[0]
+    score_delta = pd.to_numeric(
+        pd.Series([summary.get("Market Regime Score前回比")]), errors="coerce"
+    ).iloc[0]
     streak = integer(summary.get("Market Regime継続日数"), 1)
     if explicit and "履歴開始" not in explicit:
         suffix = f"・{transition_type}" if transition_type and transition_type != "維持" else ""
@@ -183,19 +336,17 @@ def _transition_text(summary: dict[str, Any], regime: str) -> str:
 def _primary_caution(ctx: dict[str, Any]) -> str:
     candidates = ctx["candidates"]
     if ctx["data_stale"]:
-        return "株価データが当日基準を満たしていません。銘柄評価より先に更新状況を確認してください。"
+        return "株価データの鮮度または状態更新に問題があります。銘柄評価より先に更新状況を確認してください。"
     if ctx["p0"] > 0:
         return f"P0アラートが{ctx['p0']}件あります。詳細確認までランキング利用を保留してください。"
     if ctx["p1"] > 0:
         return f"P1アラートが{ctx['p1']}件あります。運用詳細を確認してから利用してください。"
     if not candidates.empty:
-        risks = [
-            compact_text(row.get("risk_summary") or row.get("caution_reasons"), MAX_RISK_CHARS)
-            for _, row in candidates.iterrows()
-        ]
-        risks = [risk for risk in risks if risk and risk not in {"特記事項なし", "過熱注意なし"}]
-        if risks:
-            return risks[0]
+        for _, row in candidates.iterrows():
+            risk = summarize_risk(row)
+            if risk:
+                name = optional_text(row.get("name")) or _normalize_code(row.get("code"))
+                return f"{name}: {risk}"
     if ctx["quality_c"] > 0 or ctx["quality_d"] > 0:
         return f"品質C/Dが{ctx['quality_c'] + ctx['quality_d']}件あります。候補ごとの品質表示を確認してください。"
     if ctx["overheat_count"] > 0:
@@ -264,10 +415,16 @@ def _context(
     report_date = optional_text(summary.get("実行日"))
     freshness = optional_text(summary.get("市場データ鮮度"))
     state_updated = optional_text(summary.get("状態更新実行"))
+    has_governed_freshness = bool(freshness)
     data_stale = bool(
         (freshness and freshness.upper() not in {"FRESH", "PASS"})
-        or (report_date and price_date and report_date != price_date)
         or state_updated.upper() == "NO"
+        or (
+            not has_governed_freshness
+            and report_date
+            and price_date
+            and report_date != price_date
+        )
     )
 
     evidence = snapshot or {}
@@ -298,8 +455,12 @@ def _context(
         "p0": p0,
         "p1": p1,
         "overheat_count": integer(summary.get("Top100 過熱銘柄数")),
-        "forward_status": optional_text(summary.get("Forward Evidence", evidence.get("governing_study_status"))) or "ACCUMULATING",
-        "production_weight": integer(summary.get("出来高倍率配点", evidence.get("production_weight_points", 15)), 15),
+        "forward_status": optional_text(
+            summary.get("Forward Evidence", evidence.get("governing_study_status"))
+        ) or "ACCUMULATING",
+        "production_weight": integer(
+            summary.get("出来高倍率配点", evidence.get("production_weight_points", 15)), 15
+        ),
     }
     context["primary_caution"] = _primary_caution(context)
     context["attention_required"] = bool(data_stale or p0 > 0 or p1 > 0)
@@ -313,9 +474,9 @@ def _candidate_values(row: pd.Series) -> dict[str, Any]:
         "code": _normalize_code(row.get("code")),
         "name": optional_text(row.get("name")),
         "action_score": number(row.get("action_score")),
-        "reason": compact_text(row.get("why_today") or row.get("positive_reasons"), MAX_REASON_CHARS),
-        "change": compact_text(row.get("what_changed"), MAX_CHANGE_CHARS),
-        "risk": compact_text(row.get("risk_summary") or row.get("caution_reasons"), MAX_RISK_CHARS),
+        "reason": summarize_reason(row),
+        "change": summarize_change(row),
+        "risk": summarize_risk(row),
     }
 
 
@@ -328,7 +489,7 @@ def _candidate_plain(row: pd.Series, position: int, site_url: str) -> list[str]:
     if value["change"]:
         lines.append(f"   変化: {value['change']}")
     lines.extend([
-        f"   注意: {value['risk'] or '特記事項なし'}",
+        f"   注意: {value['risk'] or '最新開示と継続性を確認'}",
         f"   詳細: {stock_url(site_url, value['code'])}",
     ])
     return lines
@@ -388,7 +549,7 @@ def _candidate_card(row: pd.Series, position: int, site_url: str) -> str:
 <div style="font-size:15px;font-weight:900;color:#0f172a">{position}. [{escape(value['bucket'])}] {escape(value['code'])} {escape(value['name'])} <span style="float:right;color:{accent}">{value['action_score']:.1f}</span></div>
 <div style="clear:both;font-size:12px;line-height:1.65;color:#334155;margin-top:6px"><b>理由:</b> {escape(value['reason'] or '-')}</div>
 {change_html}
-<div style="font-size:12px;line-height:1.65;color:#9a3412;margin-top:5px"><b>注意:</b> {escape(value['risk'] or '特記事項なし')}</div>
+<div style="font-size:12px;line-height:1.65;color:#9a3412;margin-top:5px"><b>注意:</b> {escape(value['risk'] or '最新開示と継続性を確認')}</div>
 <a href="{escape(stock_url(site_url, value['code']))}" style="display:inline-block;margin-top:9px;color:{accent};font-size:12px;font-weight:900;text-decoration:none">銘柄詳細を見る →</a>
 </div>'''
 
@@ -416,7 +577,7 @@ def build_html(
     return f'''<!doctype html><html lang="ja"><body style="margin:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic',Meiryo,Arial,sans-serif;color:#0f172a">
 <div style="display:none;max-height:0;overflow:hidden">{escape(ctx['regime'])} {ctx['regime_score']}点。調査候補{len(candidates)}件。最大の注意: {escape(ctx['primary_caution'])}</div>
 <div style="max-width:680px;margin:0 auto;padding:16px">
-<div style="background:linear-gradient(135deg,#0f172a,#1e3a8a);color:#fff;border-radius:20px;padding:20px">
+<div style="background:#0f172a;color:#fff;border-radius:20px;padding:20px">
 <div style="font-size:12px;color:#bfdbfe;font-weight:800;letter-spacing:.08em">MOMENTUM CHIMPAN ・ 90 SEC</div>
 <div style="font-size:24px;font-weight:900;margin-top:3px">{escape(ctx['date'])} 引け後ダイジェスト</div>
 <div style="font-size:12px;color:#dbeafe;margin-top:7px">株価データ日 {escape(ctx['price_date'])} ・ 鮮度 {escape(ctx['freshness'])}</div>
