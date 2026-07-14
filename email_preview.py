@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 PREVIEW_VERSION = "2026-07-14-email-preview-v1"
 DEFAULT_OUTPUT_DIR = "output/email_preview"
+OUTPUT_ENV = "MOMENTUM_EMAIL_PREVIEW_DIR"
 REQUIRED_FILES = ("subject.txt", "plain.txt", "email.html", "manifest.json")
 FORBIDDEN_MARKERS = (
     "EMAIL_APP_PASSWORD",
@@ -50,6 +52,13 @@ def atomic_write(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
+def resolve_output_dir(output_dir: str | Path | None = None) -> Path:
+    if output_dir is not None and str(output_dir).strip():
+        return Path(output_dir)
+    configured = os.getenv(OUTPUT_ENV, "").strip()
+    return Path(configured or DEFAULT_OUTPUT_DIR)
+
+
 def summary_value(summary: Any, *keys: str) -> str:
     if not isinstance(summary, dict):
         return ""
@@ -67,7 +76,7 @@ def write_preview(
     html: str,
     summary: dict[str, Any] | None = None,
     candidate_count: int = 0,
-    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Atomically write the exact presentation strings and a signed manifest."""
     subject_text = str(subject or "").strip()
@@ -82,7 +91,7 @@ def write_preview(
     if not html_text.strip():
         raise ValueError("email preview HTML body is required")
 
-    output = Path(output_dir)
+    output = resolve_output_dir(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     atomic_write(output / "subject.txt", subject_text + "\n")
     atomic_write(output / "plain.txt", plain_text)
@@ -128,8 +137,8 @@ def write_preview(
     return {"manifest": manifest, "validation": validation}
 
 
-def validate_preview(output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
-    output = Path(output_dir)
+def validate_preview(output_dir: str | Path | None = None) -> dict[str, Any]:
+    output = resolve_output_dir(output_dir)
     issues: list[str] = []
     for name in REQUIRED_FILES:
         if not (output / name).is_file():
@@ -220,7 +229,7 @@ def validate_preview(output_dir: str | Path = DEFAULT_OUTPUT_DIR) -> dict[str, A
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate a generated daily email preview")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-dir", default=None)
     return parser.parse_args()
 
 
