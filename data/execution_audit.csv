@@ -1,2 +1,3 @@
 run_id,date,app_version,execution_mode,release_status,run_health,p0_alerts,p1_alerts,p2_alerts,state_files_ok,state_files_total,snapshots_created,manifest_sha256
 2026-07-13-2026-07-11-dashboard-relative-strength-lifecycle-v19,2026-07-13,2026-07-11-dashboard-relative-strength-lifecycle-v19,RESEARCH_AND_PAPER_ONLY,RESEARCH,PASS,0,0,4,6,6,6,e0200e7300441164559b7f24504134540f807a40e17170ba6ddf35f34b0b1ee4
+2026-07-14-2026-07-11-dashboard-relative-strength-lifecycle-v19,2026-07-14,2026-07-11-dashboard-relative-strength-lifecycle-v19,RESEARCH_AND_PAPER_ONLY,RESEARCH,PASS,0,0,3,6,6,6,f3aa27360a5727124ca1fe128a7ea9f06db8b06baa910ef4fe1777bb4d3b3612

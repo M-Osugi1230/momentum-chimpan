@@ -1,0 +1,3 @@
+date,initial_capital,cash,invested_cost,market_value,equity,realized_pnl,unrealized_pnl,exposure_ratio,peak_equity,drawdown,open_positions,closed_trades,win_rate
+2026-07-13,10000000.0,6956500.0,3043500.0,3043500.0,10000000.0,0.0,0.0,0.30435,10000000.0,0.0,3,0,
+2026-07-14,10000000.0,4158900.0,5841100.0,5912900.0,10071800.0,0.0,71800.0,0.5870748029150697,10071800.0,0.0,6,0,
