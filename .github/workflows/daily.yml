@@ -61,7 +61,7 @@ jobs:
           echo "MOMENTUM_STRATEGY_FINGERPRINT=${fingerprint}" >> "${GITHUB_ENV}"
           echo "MOMENTUM_STRATEGY_STAMP_SOURCE=DAILY_GOVERNED_WORKFLOW" >> "${GITHUB_ENV}"
 
-      - name: Run report
+      - name: Run report and validate exact email preview
         id: report
         if: steps.strategy.outcome == 'success'
         continue-on-error: true
@@ -75,6 +75,7 @@ jobs:
           mkdir -p output
           set -o pipefail
           python daily_runner.py 2>&1 | tee output/run.log
+          python email_preview.py --output-dir output/email_preview
 
       - name: Write operational heartbeat
         id: heartbeat
@@ -261,6 +262,7 @@ jobs:
             output/daily_report.xlsx
             output/run.log
             output/email_delivery_receipt.json
+            output/email_preview/**
             output/state_maintenance.json
             output/evidence_stamp_audit.json
             output/recovery_snapshot_audit.json
