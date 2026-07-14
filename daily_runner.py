@@ -2,10 +2,10 @@
 
 The governed screener still runs through ``main.main``. This wrapper augments
 human-facing Excel output and persisted ranking rows with research transparency
-and non-mutating data-quality metadata. The downstream Pages workflow builds the
-static web dashboard from the exact successful artifact, while this wrapper
-replaces the long mail body with a concise decision digest. Momentum scores,
-ranks, thresholds, paper execution, and strategy fingerprints remain untouched.
+and non-mutating data-quality metadata. The downstream site consumes the exact
+successful artifact, while this wrapper replaces the long mail body with a
+concise decision digest. Momentum scores, ranks, thresholds, paper execution,
+and strategy fingerprints remain untouched.
 """
 from __future__ import annotations
 
@@ -23,10 +23,8 @@ import research_transparency as transparency
 
 _PATCHED = False
 
-
-# Compatibility anchors retained for independent transparency and focus
-# contract tests. The concise digest no longer injects these long sections into
-# email, but the helpers remain pure and available for standalone rendering.
+# Compatibility anchors retained for independent transparency and focus contract
+# tests. The concise digest no longer injects these long sections into email.
 HTML_MARKER = "Market Temperature"
 PLAIN_MARKER = "【Market Temperature】"
 
@@ -83,6 +81,21 @@ def argument_frame(
     return value if isinstance(value, pd.DataFrame) else pd.DataFrame()
 
 
+def _with_summary(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    summary: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Replace only the presentation summary while preserving every data frame."""
+    if not summary:
+        return args, kwargs
+    if args:
+        return (dict(summary), *args[1:]), kwargs
+    prepared = dict(kwargs)
+    prepared["summary"] = dict(summary)
+    return args, prepared
+
+
 def install_patches(
     snapshot: dict[str, Any] | None = None,
     main_module: Any = main,
@@ -93,18 +106,16 @@ def install_patches(
 
     current = snapshot or transparency.load_snapshot()
     original_excel: Callable[..., Any] = main_module.excel_report
-    original_plain: Callable[..., str] = main_module.build_plain_email
-    original_html: Callable[..., str] = main_module.build_html_email
-    original_send_email: Callable[..., Any] = main_module.send_email
     original_provenance: Callable[[pd.DataFrame], pd.DataFrame] = (
         main_module.attach_strategy_provenance
     )
     config = main_module.load_config()
     minimum_trading_value = float(config["market"]["min_trading_value"])
-    display_context: dict[str, pd.DataFrame] = {
+    display_context: dict[str, Any] = {
         "top100": pd.DataFrame(),
         "action_priority": pd.DataFrame(),
         "daily_focus": pd.DataFrame(),
+        "email_summary": {},
     }
 
     @wraps(original_provenance)
@@ -136,14 +147,20 @@ def install_patches(
         display_context["daily_focus"] = focused_priority.copy()
         quality_fields = data_quality.summary_fields(top100, focused_priority)
         focus_fields = daily_research_focus.summary_fields(focused_priority)
+        enriched = enrich_summary(
+            summary,
+            current,
+            quality_fields,
+            focus_fields,
+        )
+        # The same enriched summary must reach both workbook and email. Mutating
+        # this display dictionary does not affect ranking or strategy state.
+        summary.clear()
+        summary.update(enriched)
+        display_context["email_summary"] = dict(enriched)
         result = original_excel(
             path,
-            enrich_summary(
-                summary,
-                current,
-                quality_fields,
-                focus_fields,
-            ),
+            summary,
             *args,
             **kwargs,
         )
@@ -152,33 +169,82 @@ def install_patches(
         daily_research_focus.patch_workbook(path, focused_priority)
         return result
 
-    @wraps(original_plain)
     def patched_plain(*args: Any, **kwargs: Any) -> str:
+        prepared_args, prepared_kwargs = _with_summary(
+            args,
+            kwargs,
+            display_context["email_summary"],
+        )
         return email_digest.build_plain(
-            *args,
-            **kwargs,
+            *prepared_args,
+            **prepared_kwargs,
             daily_focus=display_context["daily_focus"],
             snapshot=current,
         )
 
-    @wraps(original_html)
     def patched_html(*args: Any, **kwargs: Any) -> str:
+        prepared_args, prepared_kwargs = _with_summary(
+            args,
+            kwargs,
+            display_context["email_summary"],
+        )
         return email_digest.build_html(
-            *args,
-            **kwargs,
+            *prepared_args,
+            **prepared_kwargs,
             daily_focus=display_context["daily_focus"],
             snapshot=current,
         )
 
-    @wraps(original_send_email)
-    def patched_send_email(*args: Any, **kwargs: Any) -> Any:
-        # Keep receipt classification aligned with the original mail function,
-        # which supports credentials loaded from a local .env file.
+    def send_decision_email(*args: Any, **kwargs: Any) -> None:
+        """Use the original SMTP contract with the decision-first subject/body."""
         main_module.load_dotenv()
+        sender = main_module.os.getenv("EMAIL_FROM")
+        recipient = main_module.os.getenv("EMAIL_TO")
+        password = main_module.os.getenv("EMAIL_APP_PASSWORD")
+        if not sender or not recipient or not password:
+            main_module.logger.info("Email secrets are not set; skip email")
+            return
+        summary = args[0] if args else kwargs.get("summary", {})
+        msg = main_module.MIMEMultipart("alternative")
+        msg["Subject"] = email_digest.subject(
+            summary,
+            display_context["daily_focus"],
+        )
+        msg["From"], msg["To"] = sender, recipient
+        msg.attach(
+            main_module.MIMEText(
+                main_module.build_plain_email(*args, **kwargs),
+                "plain",
+                "utf-8",
+            )
+        )
+        msg.attach(
+            main_module.MIMEText(
+                main_module.build_html_email(*args, **kwargs),
+                "html",
+                "utf-8",
+            )
+        )
+        with main_module.smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(sender, password)
+            smtp.send_message(msg)
+
+    def patched_send_email(*args: Any, **kwargs: Any) -> Any:
+        # Keep receipt classification aligned with the exact summary and subject
+        # that are passed to SMTP.
+        main_module.load_dotenv()
+        prepared_args, prepared_kwargs = _with_summary(
+            args,
+            kwargs,
+            display_context["email_summary"],
+        )
+        summary = prepared_args[0] if prepared_args else prepared_kwargs.get("summary", {})
+        subject_text = email_digest.subject(summary, display_context["daily_focus"])
         return email_delivery.send_with_receipt(
-            original_send_email,
-            *args,
-            **kwargs,
+            send_decision_email,
+            *prepared_args,
+            **prepared_kwargs,
+            subject_text=subject_text,
         )
 
     main_module.attach_strategy_provenance = patched_provenance
