@@ -90,10 +90,13 @@ def main() -> None:
         '"research_only": True',
         '"production_state_mutations": []',
         "reseal_manifest",
+        "for forbidden in",
+        "forbidden private marker",
     ])
+    # The overlay intentionally contains private-marker names as detection rules.
+    # Validate that it never contains strategy mutation switches instead of
+    # mistaking its secret-leak scanner for leaked secret values.
     forbid(experience_source, [
-        "EMAIL_APP_PASSWORD",
-        "smtp.gmail.com",
         "automatic_score_change = True",
         "automatic_weight_change = True",
         "automatic_strategy_change = True",
