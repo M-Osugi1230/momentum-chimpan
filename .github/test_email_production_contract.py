@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import pandas as pd
@@ -17,12 +19,79 @@ import daily_research_focus
 import data_quality
 import email_delivery
 import email_digest
+import email_preview
 import research_transparency
 
 
 class Logger:
     def info(self, *args, **kwargs):
         return None
+
+
+class FakeMIMEText:
+    def __init__(self, content: str, subtype: str, charset: str):
+        self.content = content
+        self.subtype = subtype
+        self.charset = charset
+
+
+class FakeMultipart:
+    def __init__(self, subtype: str):
+        self.subtype = subtype
+        self.headers: dict[str, str] = {}
+        self.parts: list[FakeMIMEText] = []
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self.headers[key] = value
+
+    def attach(self, part: FakeMIMEText) -> None:
+        self.parts.append(part)
+
+
+class FakeSMTP:
+    sent: list[FakeMultipart] = []
+
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.logged_in = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def login(self, sender: str, password: str) -> None:
+        assert sender == "sender@secure.test"
+        assert password == "test-password"
+        self.logged_in = True
+
+    def send_message(self, message: FakeMultipart) -> None:
+        assert self.logged_in is True
+        self.sent.append(message)
+
+
+class Environment:
+    def __init__(self, values: dict[str, str | None]):
+        self.values = values
+        self.previous: dict[str, str | None] = {}
+
+    def __enter__(self):
+        for key, value in self.values.items():
+            self.previous[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        for key, value in self.previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 captured: dict[str, object] = {}
@@ -47,9 +116,9 @@ fake_main = SimpleNamespace(
     load_dotenv=lambda: None,
     logger=Logger(),
     os=os,
-    smtplib=SimpleNamespace(),
-    MIMEMultipart=object,
-    MIMEText=object,
+    smtplib=SimpleNamespace(SMTP_SSL=FakeSMTP),
+    MIMEMultipart=FakeMultipart,
+    MIMEText=FakeMIMEText,
 )
 
 originals = {
@@ -154,6 +223,50 @@ try:
     assert email_delivery.validate_receipt(receipt) == []
     assert receipt["subject_source"] == "explicit"
     assert receipt["subject_sha256"] == hashlib.sha256(subject_text.lower().encode("utf-8")).hexdigest()
+
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        preview_dir = root / "preview"
+        receipt_path = root / "receipt.json"
+        FakeSMTP.sent.clear()
+        with Environment({
+            "EMAIL_FROM": "sender@secure.test",
+            "EMAIL_TO": "recipient@secure.test",
+            "EMAIL_APP_PASSWORD": "test-password",
+            email_preview.OUTPUT_ENV: str(preview_dir),
+        }):
+            fake_main.send_email(*mail_args, receipt_path=receipt_path)
+
+        validation = email_preview.validate_preview(preview_dir)
+        assert validation["passed"] is True
+        manifest = validation["manifest"]
+        assert manifest["candidate_count"] == 1
+        assert manifest["report_date"] == "2026-07-13"
+        assert manifest["research_only"] is True
+        assert manifest["production_state_mutations"] == []
+        preview_subject = (preview_dir / "subject.txt").read_text(encoding="utf-8").strip()
+        preview_plain = (preview_dir / "plain.txt").read_text(encoding="utf-8")
+        preview_html = (preview_dir / "email.html").read_text(encoding="utf-8")
+        combined = preview_subject + preview_plain + preview_html
+        assert "sender@secure.test" not in combined
+        assert "recipient@secure.test" not in combined
+        assert "test-password" not in combined
+
+        assert len(FakeSMTP.sent) == 1
+        message = FakeSMTP.sent[0]
+        assert message.headers["Subject"] == preview_subject
+        assert message.headers["From"] == "sender@secure.test"
+        assert message.headers["To"] == "recipient@secure.test"
+        assert len(message.parts) == 2
+        assert message.parts[0].subtype == "plain"
+        assert message.parts[0].content == preview_plain
+        assert message.parts[1].subtype == "html"
+        assert message.parts[1].content == preview_html
+
+        stored_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        assert email_delivery.validate_receipt(stored_receipt) == []
+        assert stored_receipt["status"] == "SMTP_ACCEPTED"
+        assert stored_receipt["subject_sha256"] == email_delivery.identity_hash(preview_subject)
 finally:
     data_quality.apply_priority_gate = originals["dq_apply"]
     data_quality.replace_frame_in_place = originals["dq_replace"]
@@ -166,4 +279,4 @@ finally:
     research_transparency.patch_workbook = originals["transparency_patch"]
     daily_runner._PATCHED = False
 
-print("production email summary handoff validation passed")
+print("production email summary, preview, and SMTP handoff validation passed")
