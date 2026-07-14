@@ -91,7 +91,7 @@ def main() -> None:
         '"production_state_mutations": []',
         "reseal_manifest",
         "for forbidden in",
-        "forbidden private marker",
+        "experience.js contains private marker",
     ])
     # The overlay intentionally contains private-marker names as detection rules.
     # Validate that it never contains strategy mutation switches instead of
