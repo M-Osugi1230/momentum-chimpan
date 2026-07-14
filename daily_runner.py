@@ -18,6 +18,7 @@ import daily_research_focus
 import data_quality
 import email_delivery
 import email_digest
+import email_preview
 import main
 import research_transparency as transparency
 
@@ -116,6 +117,7 @@ def install_patches(
         "action_priority": pd.DataFrame(),
         "daily_focus": pd.DataFrame(),
         "email_summary": {},
+        "email_render": {},
     }
 
     @wraps(original_provenance)
@@ -196,7 +198,7 @@ def install_patches(
         )
 
     def send_decision_email(*args: Any, **kwargs: Any) -> None:
-        """Use the original SMTP contract with the decision-first subject/body."""
+        """Send exactly the already persisted preview strings over SMTP."""
         main_module.load_dotenv()
         sender = main_module.os.getenv("EMAIL_FROM")
         recipient = main_module.os.getenv("EMAIL_TO")
@@ -204,34 +206,29 @@ def install_patches(
         if not sender or not recipient or not password:
             main_module.logger.info("Email secrets are not set; skip email")
             return
-        summary = args[0] if args else kwargs.get("summary", {})
+
+        render = display_context.get("email_render", {})
+        subject_text = str(render.get("subject", ""))
+        plain_text = str(render.get("plain", ""))
+        html_text = str(render.get("html", ""))
+        if not subject_text or not plain_text or not html_text:
+            summary = args[0] if args else kwargs.get("summary", {})
+            subject_text = email_digest.subject(summary, display_context["daily_focus"])
+            plain_text = main_module.build_plain_email(*args, **kwargs)
+            html_text = main_module.build_html_email(*args, **kwargs)
+
         msg = main_module.MIMEMultipart("alternative")
-        msg["Subject"] = email_digest.subject(
-            summary,
-            display_context["daily_focus"],
-        )
+        msg["Subject"] = subject_text
         msg["From"], msg["To"] = sender, recipient
-        msg.attach(
-            main_module.MIMEText(
-                main_module.build_plain_email(*args, **kwargs),
-                "plain",
-                "utf-8",
-            )
-        )
-        msg.attach(
-            main_module.MIMEText(
-                main_module.build_html_email(*args, **kwargs),
-                "html",
-                "utf-8",
-            )
-        )
+        msg.attach(main_module.MIMEText(plain_text, "plain", "utf-8"))
+        msg.attach(main_module.MIMEText(html_text, "html", "utf-8"))
         with main_module.smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(sender, password)
             smtp.send_message(msg)
 
     def patched_send_email(*args: Any, **kwargs: Any) -> Any:
-        # Keep receipt classification aligned with the exact summary and subject
-        # that are passed to SMTP.
+        # Render once, persist a privacy-safe exact preview, then pass those same
+        # strings to SMTP. The preview is produced even when secrets are absent.
         main_module.load_dotenv()
         prepared_args, prepared_kwargs = _with_summary(
             args,
@@ -240,6 +237,21 @@ def install_patches(
         )
         summary = prepared_args[0] if prepared_args else prepared_kwargs.get("summary", {})
         subject_text = email_digest.subject(summary, display_context["daily_focus"])
+        plain_text = main_module.build_plain_email(*prepared_args, **prepared_kwargs)
+        html_text = main_module.build_html_email(*prepared_args, **prepared_kwargs)
+        selected = email_digest._daily_candidates(display_context["daily_focus"])
+        email_preview.write_preview(
+            subject=subject_text,
+            plain=plain_text,
+            html=html_text,
+            summary=summary,
+            candidate_count=len(selected),
+        )
+        display_context["email_render"] = {
+            "subject": subject_text,
+            "plain": plain_text,
+            "html": html_text,
+        }
         return email_delivery.send_with_receipt(
             send_decision_email,
             *prepared_args,
@@ -280,6 +292,11 @@ def run() -> None:
         "Email delivery receipt: version=%s output=%s inbox_delivery_claimed=false",
         email_delivery.RECEIPT_VERSION,
         email_delivery.DEFAULT_RECEIPT_PATH,
+    )
+    main.logger.info(
+        "Email preview: version=%s output=%s private_identity_stored=false",
+        email_preview.PREVIEW_VERSION,
+        email_preview.DEFAULT_OUTPUT_DIR,
     )
     main.logger.info(
         "Presentation split: email=concise_decision_digest site=rich_static_dashboard site_url=%s",

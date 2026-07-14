@@ -63,16 +63,59 @@ def main() -> None:
     daily_runner = (ROOT / "daily_runner.py").read_text(encoding="utf-8")
     require(daily_runner, [
         "import email_digest",
+        "import email_preview",
         "email_digest.build_plain",
         "email_digest.build_html",
+        "email_preview.write_preview",
+        'display_context["email_render"]',
         "main_module.build_plain_email = patched_plain",
         "main_module.build_html_email = patched_html",
     ])
+    assert daily_runner.index("email_preview.write_preview") < daily_runner.index(
+        "email_delivery.send_with_receipt"
+    )
     forbid(daily_runner, [
         "automatic_score_change = True",
         "automatic_weight_change = True",
         "automatic_strategy_change = True",
     ])
+
+    preview_source = (ROOT / "email_preview.py").read_text(encoding="utf-8")
+    require(preview_source, [
+        "subject.txt",
+        "plain.txt",
+        "email.html",
+        "manifest.json",
+        '"research_only": True',
+        '"automatic_strategy_change": False',
+        '"production_state_mutations": []',
+        '"contains_recipient_identity": False',
+        '"contains_sender_identity": False',
+        '"contains_credentials": False',
+        "manifest_fingerprint",
+        "status_sha256",
+        "private marker found",
+    ])
+    forbid(preview_source, [
+        "automatic_score_change = True",
+        "automatic_weight_change = True",
+        "automatic_strategy_change = True",
+    ])
+
+    daily_workflow_path = ROOT / ".github" / "workflows" / "daily.yml"
+    daily_text = daily_workflow_path.read_text(encoding="utf-8")
+    daily_workflow = yaml.safe_load(daily_text)
+    assert isinstance(daily_workflow, dict)
+    require(daily_text, [
+        "python daily_runner.py",
+        "python email_preview.py --output-dir output/email_preview",
+        "output/email_preview/**",
+        "output/email_delivery_receipt.json",
+        "momentum-operations-${{ github.run_id }}",
+    ])
+    assert daily_text.index("python daily_runner.py") < daily_text.index(
+        "python email_preview.py --output-dir output/email_preview"
+    )
 
     site_source = (ROOT / "site_builder.py").read_text(encoding="utf-8")
     require(site_source, [
@@ -101,7 +144,7 @@ def main() -> None:
         "automatic_weight_change = True",
         "automatic_strategy_change = True",
     ])
-    print("dashboard delivery safety validation passed")
+    print("dashboard and email preview delivery safety validation passed")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ on:
     paths:
       - email_digest.py
       - email_delivery.py
+      - email_preview.py
       - site_builder.py
       - site_experience.py
       - site_template.py
@@ -14,11 +15,13 @@ on:
       - site_script.py
       - daily_runner.py
       - .github/test_email_digest.py
+      - .github/test_email_preview.py
       - .github/test_email_production_contract.py
       - .github/test_site_builder.py
       - .github/test_site_experience.py
       - .github/test_dashboard_delivery.py
       - .github/workflows/dashboard-ci.yml
+      - .github/workflows/daily.yml
       - .github/workflows/publish-dashboard.yml
       - docs/WEB_DASHBOARD.md
       - docs/EMAIL_SITE_ACCEPTANCE_CONTRACT.md
@@ -29,6 +32,7 @@ on:
     paths:
       - email_digest.py
       - email_delivery.py
+      - email_preview.py
       - site_builder.py
       - site_experience.py
       - site_template.py
@@ -36,11 +40,13 @@ on:
       - site_script.py
       - daily_runner.py
       - .github/test_email_digest.py
+      - .github/test_email_preview.py
       - .github/test_email_production_contract.py
       - .github/test_site_builder.py
       - .github/test_site_experience.py
       - .github/test_dashboard_delivery.py
       - .github/workflows/dashboard-ci.yml
+      - .github/workflows/daily.yml
       - .github/workflows/publish-dashboard.yml
       - docs/WEB_DASHBOARD.md
       - docs/EMAIL_SITE_ACCEPTANCE_CONTRACT.md
@@ -72,6 +78,7 @@ jobs:
           python -m py_compile \
             email_digest.py \
             email_delivery.py \
+            email_preview.py \
             site_builder.py \
             site_experience.py \
             site_template.py \
@@ -79,13 +86,16 @@ jobs:
             site_script.py \
             daily_runner.py \
             .github/test_email_digest.py \
+            .github/test_email_preview.py \
             .github/test_email_production_contract.py \
             .github/test_site_builder.py \
             .github/test_site_experience.py \
             .github/test_dashboard_delivery.py
       - name: Validate production-shaped decision email
         run: python .github/test_email_digest.py
-      - name: Validate enriched summary handoff and receipt subject
+      - name: Validate signed privacy-safe email preview
+        run: python .github/test_email_preview.py
+      - name: Validate enriched summary, preview, SMTP, and receipt handoff
         run: python .github/test_email_production_contract.py
       - name: Validate static dashboard data contract
         run: python .github/test_site_builder.py
