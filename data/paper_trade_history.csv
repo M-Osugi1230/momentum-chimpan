@@ -1,1 +1,2 @@
 position_id,status,code,name,sector33,entry_date,entry_price,quantity,cost_basis,current_price,market_value,highest_close,stop_price,target_price,trailing_stop_pct,holding_days,sector_research_priority,sector_leader_score,sector_rotation,unrealized_pnl,unrealized_return,exit_date,exit_price,exit_reason,realized_pnl,realized_return
+2026-07-15-8624,CLOSED,8624,いちよし証券,証券、商品先物取引業,2026-07-15,1630.0,700,1141000.0,1501.0,1050700.0,1630.0,1515.9,1858.2,0.1,2,優先,80.7,加速,0.0,-0.07914110429447851,2026-07-17,1501.0,STOP_LOSS,-90300.0,-0.07914110429447851
