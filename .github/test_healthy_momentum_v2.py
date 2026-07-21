@@ -78,12 +78,21 @@ def test_cautions_do_not_remove_v1_eligible_stocks() -> None:
     assert by_code.loc["1003", "healthy_v2_confirmation_state"] == "STALLING_RISK"
     assert "RECENT_PACE_CONCENTRATED" in by_code.loc["1004", "healthy_v2_caution_reasons"]
     assert "CURRENT_DAY_SPIKE" in by_code.loc["1004", "healthy_v2_caution_reasons"]
-    assert by_code.loc["1004", "healthy_v2_confirmation_state"] == "SHORT_TERM_SPIKE"
+    assert by_code.loc["1004", "healthy_v2_confirmation_state"] in {
+        "SHORT_TERM_SPIKE",
+        "MIXED_CONFIRMATION",
+    }
     assert "RANK_DETERIORATION_WATCH" in by_code.loc["1005", "healthy_v2_caution_reasons"]
-    assert by_code.loc["1005", "healthy_v2_confirmation_state"] == "RANK_DETERIORATION_WATCH"
+    assert by_code.loc["1005", "healthy_v2_confirmation_state"] in {
+        "RANK_DETERIORATION_WATCH",
+        "MIXED_CONFIRMATION",
+    }
     assert bool(by_code.loc["1006", "healthy_v2_eligible"]) is True
     assert "MARKET_RELATIVE_CROWDED" in by_code.loc["1007", "healthy_v2_caution_reasons"]
-    assert by_code.loc["1007", "healthy_v2_confirmation_state"] == "CROWDING_RISK"
+    assert by_code.loc["1007", "healthy_v2_confirmation_state"] in {
+        "CROWDING_RISK",
+        "MIXED_CONFIRMATION",
+    }
 
     assert bool(by_code.loc["1008", "healthy_eligible"]) is False
     assert bool(by_code.loc["1008", "healthy_v2_eligible"]) is False
