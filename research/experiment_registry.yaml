@@ -58,3 +58,39 @@ experiments:
   automatic_promotion: false
   notes: Research and paper validation only. Registration permits governed measurement
     but does not authorize automatic threshold changes, promotion, or live order execution.
+- experiment_id: healthy-momentum-v1-shadow
+  experiment_type: ranking-selection-shadow
+  status: running
+  hypothesis: A two-stage ranking that first excludes falling, structurally broken,
+    illiquid, overheated, and data-risk stocks, then ranks moderate upward momentum,
+    will improve 5-report forward outcomes versus the current production Momentum rank.
+  strategy_fingerprint: healthy-momentum-v1-shadow-module-2026-07-21
+  change_summary: Add a read-only Healthy Momentum shadow rank. Eligibility requires
+    positive 5-day momentum, moderate 20-day momentum, price above 20/60-day averages,
+    bounded MA20 deviation and volume, limited current-day decline and drawdown, and
+    adequate liquidity. Rank score blends 75% bounded healthy quality with 25% current
+    Momentum score. Production rank and paper execution remain unchanged.
+  evidence_scope:
+    group_type: overall
+    group_value: all
+    horizon_days: 5
+  success_criteria:
+    minimum_outcome_count: 100
+    minimum_live_report_dates: 20
+    minimum_mean_excess_improvement: 0.005
+    minimum_outperformance_rate: 0.55
+    required_robustness_status: ROBUST
+    maximum_fdr_q_value: 0.05
+    positive_early_period: true
+    positive_late_period: true
+    positive_leave_one_sector: true
+    evidence_origin: LIVE_FORWARD_RANKING_HISTORY
+    execution_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  manual_approval:
+    approved: false
+    approved_by: ''
+    approved_at: ''
+  automatic_promotion: false
+  notes: Historical report-close replay is diagnostic only and cannot promote this
+    experiment. The shadow workflow is read-only. A separate reviewed release is required
+    before production rank, Daily Action List, or paper execution may consume this score.
