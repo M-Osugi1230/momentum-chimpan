@@ -1,0 +1,66 @@
+version: 2026-07-22-detailed-oos-protocol-v1
+mode: RESEARCH_ONLY_NON_PROMOTABLE
+promotion_evidence_allowed: false
+automatic_strategy_change: false
+automatic_threshold_optimization: false
+production_ranking_change: false
+
+study:
+  evaluation_start: '2022-01-01'
+  evaluation_end: '2025-12-31'
+  design_relationship: PRE_2026_HEALTHY_DESIGN
+  universe_stage_1: DETERMINISTIC_SECTOR_BALANCED_CURRENT_LIST_SAMPLE_1500
+  ranking_frequency_stage_1: EVERY_5_TRADING_SESSIONS
+  future_stage_2: POINT_IN_TIME_FULL_UNIVERSE_DAILY
+
+evaluation:
+  horizons: [1, 3, 5, 10, 20, 40, 60]
+  top_sizes: [10, 30, 100]
+  round_trip_cost_bps: 20
+  random_placebo_repetitions: 200
+  entry_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  exit_model: ADJUSTED_CLOSE_AT_FIXED_SESSION
+  primary_return_metric: DATE_WEIGHTED_MEAN_NET_RETURN
+  secondary_metrics:
+    - MEDIAN_NET_RETURN
+    - WIN_RATE
+    - MARKET_CROSS_SECTION_MEDIAN_EXCESS
+    - SECTOR_CROSS_SECTION_MEDIAN_EXCESS
+    - MFE
+    - MAE
+    - MAX_CLOSE_DRAWDOWN
+    - RANK_IC
+
+primary_hypotheses:
+  - id: H1
+    statement: Healthy v1 Top10 and Top30 outperform Production at 5, 10, and 20 sessions across multiple years.
+  - id: H2
+    statement: Higher Healthy rank has positive cross-sectional Rank IC and broadly monotonic rank-band outcomes.
+  - id: H3
+    statement: Healthy v1 improvement is not explained by one sector, a few outliers, or smaller eligible counts.
+  - id: H4
+    statement: Balanced v2 must independently beat Healthy v1 before any promotion discussion.
+  - id: H5
+    statement: Momentum signals are more useful for 5 to 20 sessions than for one-session outcomes.
+
+evidence_gates:
+  primary_horizons: [5, 10, 20]
+  primary_top_sizes: [10, 30]
+  minimum_years_positive: 3
+  minimum_rank_ic_positive_rate: 0.55
+  minimum_leave_one_sector_positive_rate: 0.80
+  require_positive_market_excess: true
+  require_cost_robustness_bps: [20, 50]
+  live_forward_confirmation_required: true
+
+multiple_testing:
+  primary_cells_are_pre_registered: true
+  exploratory_cells_do_not_change_thresholds: true
+  fdr_required_before_strategy_change: true
+
+known_limitations:
+  - CURRENT_LIST_SURVIVORSHIP_AND_MEMBERSHIP_BIAS
+  - YFINANCE_ADJUSTED_PRICE_DEPENDENCY
+  - CURRENT_METADATA_MAY_DIFFER_FROM_HISTORICAL_METADATA
+  - SAMPLE_CROSS_SECTION_MEDIAN_IS_NOT_TOPIX
+  - HISTORICAL_BACKFILL_IS_NOT_PROMOTION_EVIDENCE
