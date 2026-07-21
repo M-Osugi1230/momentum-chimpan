@@ -1,14 +1,48 @@
 """Safe entrypoint for the historical OOS analyzer.
 
 This wrapper keeps the main analysis module readable while enforcing unique selection
-columns for production, Healthy v1, and Balanced v2 before running the full analysis.
+columns for production, Healthy v1, and Balanced v2 and correcting historical market
+breadth regime classification before running the full analysis.
 """
 from __future__ import annotations
 
+from typing import Iterable
+
+import numpy as np
 import pandas as pd
 
 import analyze_historical_oos as analysis
 import main
+
+
+_ORIGINAL_BUILD_UNIVERSE_OUTCOMES = analysis.build_universe_outcomes
+
+
+def build_universe_outcomes_fixed(
+    ranking: pd.DataFrame,
+    panel_by_code: dict[str, pd.DataFrame],
+    horizons: Iterable[int],
+) -> pd.DataFrame:
+    outcomes = _ORIGINAL_BUILD_UNIVERSE_OUTCOMES(ranking, panel_by_code, horizons)
+    if outcomes.empty:
+        return outcomes
+    daily_breadth = (
+        outcomes.drop_duplicates(["signal_date", "code"])
+        .groupby("signal_date")["return_20d"]
+        .median()
+    )
+    outcomes = outcomes.drop(columns=["market_breadth_quintile"], errors="ignore")
+    if daily_breadth.dropna().nunique() >= 5:
+        percentiles = daily_breadth.rank(method="average", pct=True)
+        quintiles = np.ceil(
+            percentiles.clip(lower=1e-12, upper=1.0) * 5
+        ).astype("Int64")
+        outcomes = outcomes.join(
+            quintiles.rename("market_breadth_quintile"), on="signal_date"
+        )
+    else:
+        outcomes["market_breadth_quintile"] = pd.NA
+    return outcomes
 
 
 def select_method_events_fixed(
@@ -107,6 +141,7 @@ def select_method_events_fixed(
 
 
 def main_cli() -> int:
+    analysis.build_universe_outcomes = build_universe_outcomes_fixed
     analysis.select_method_events = select_method_events_fixed
     return analysis.main_cli()
 
