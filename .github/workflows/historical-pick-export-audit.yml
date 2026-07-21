@@ -6,6 +6,7 @@ on:
       - tools/export_full_pick_history.py
       - tools/run_full_pick_history_audit.py
       - tools/refresh_full_pick_latest_prices.py
+      - tools/calculate_full_pick_adjusted_returns.py
       - .github/workflows/historical-pick-export-audit.yml
 
 permissions:
@@ -14,7 +15,7 @@ permissions:
 jobs:
   export:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
@@ -54,6 +55,18 @@ jobs:
           cat output/full_pick_history/latest_price_refresh.log
           exit $status
 
+      - name: Calculate adjusted returns
+        run: |
+          set +e
+          python tools/calculate_full_pick_adjusted_returns.py \
+            --audit-dir output/full_pick_history \
+            --start 2026-06-20 \
+            --end 2026-07-23 \
+            > output/full_pick_history/adjusted_return.log 2>&1
+          status=$?
+          cat output/full_pick_history/adjusted_return.log
+          exit $status
+
       - name: Assert Daido Metal and output integrity
         run: |
           python - <<'PY'
@@ -62,6 +75,7 @@ jobs:
           base = Path('output/full_pick_history')
           data = json.loads((base / 'summary.json').read_text(encoding='utf-8'))
           latest = json.loads((base / 'latest_price_summary.json').read_text(encoding='utf-8'))
+          adjusted = json.loads((base / 'adjusted_return_summary.json').read_text(encoding='utf-8'))
           assert data['daido_metal_included'] is True
           assert data['unique_picked_stocks'] > 14
           assert data['legacy_first_report_timestamp'].startswith('2026-06-23')
@@ -69,11 +83,14 @@ jobs:
           assert data['included_dashboard_runs'] >= 10
           assert latest['requested_codes'] == data['unique_picked_stocks']
           assert latest['codes_with_any_recent_price'] >= int(data['unique_picked_stocks'] * 0.95)
+          assert adjusted['usable_unique_stocks'] >= int(data['unique_picked_stocks'] * 0.95)
           assert data['scope']['strategy_changed'] is False
           assert data['scope']['production_state_mutated'] is False
           assert latest['strategy_changed'] is False
           assert latest['production_state_mutated'] is False
-          print(json.dumps({'history': data, 'latest': latest}, ensure_ascii=False, indent=2))
+          assert adjusted['strategy_changed'] is False
+          assert adjusted['production_state_mutated'] is False
+          print(json.dumps({'history': data, 'latest': latest, 'adjusted': adjusted}, ensure_ascii=False, indent=2))
           PY
 
       - name: Upload full historical pick audit
