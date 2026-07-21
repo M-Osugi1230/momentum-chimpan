@@ -41,7 +41,7 @@ def synthetic_frame() -> pd.DataFrame:
             {**common, "rank": 2, "code": "1004", "name": "Short spike", "return_5d": 0.15, "close": 114.0, "prev_close": 110.0, "recent_high": 115.0},
             {**common, "rank": 3, "code": "1005", "name": "Rank falling", "rank_change": -30},
             {**common, "rank": 4, "code": "1006", "name": "Long trend weak", "return_60d": -0.02},
-            {**common, "rank": 5, "code": "1007", "name": "Relative crowded", "return_5d": 0.08},
+            {**common, "rank": 5, "code": "1007", "name": "Relative crowded", "return_5d": 0.20},
             {**common, "rank": 6, "code": "1008", "name": "V1 broken", "return_5d": -0.02, "above_ma20": False},
         ]
     )
@@ -89,8 +89,10 @@ def test_cautions_do_not_remove_v1_eligible_stocks() -> None:
     }
     assert bool(by_code.loc["1006", "healthy_v2_eligible"]) is True
     assert "MARKET_RELATIVE_CROWDED" in by_code.loc["1007", "healthy_v2_caution_reasons"]
+    assert "SECTOR_RELATIVE_CROWDED" in by_code.loc["1007", "healthy_v2_caution_reasons"]
     assert by_code.loc["1007", "healthy_v2_confirmation_state"] in {
         "CROWDING_RISK",
+        "SHORT_TERM_SPIKE",
         "MIXED_CONFIRMATION",
     }
 
