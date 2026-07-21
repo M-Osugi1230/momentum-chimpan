@@ -1,0 +1,152 @@
+name: Healthy Momentum V2 Shadow
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - healthy_momentum.py
+      - healthy_momentum_v2.py
+      - tools/backtest_healthy_momentum.py
+      - tools/backtest_healthy_momentum_v2.py
+      - research/healthy_momentum_policy.yaml
+      - research/healthy_momentum_v2_policy.yaml
+      - research/experiment_registry.yaml
+      - .github/test_healthy_momentum_v2.py
+      - .github/workflows/healthy-momentum-v2-shadow.yml
+      - docs/HEALTHY_MOMENTUM_V2.md
+  workflow_run:
+    workflows:
+      - Daily Momentum Report
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile v2 research tools
+        run: |
+          python -m py_compile \
+            healthy_momentum.py \
+            healthy_momentum_v2.py \
+            tools/backtest_healthy_momentum.py \
+            tools/backtest_healthy_momentum_v2.py \
+            .github/test_healthy_momentum_v2.py
+
+      - name: Test v2 ranking invariants
+        run: |
+          mkdir -p output/healthy-momentum-v2-shadow
+          set -o pipefail
+          python .github/test_healthy_momentum_v2.py \
+            2>&1 | tee output/healthy-momentum-v2-shadow/test.log
+
+      - name: Run production v1 v2 historical comparison
+        run: |
+          python tools/backtest_healthy_momentum_v2.py \
+            --history data/momentum_daily_ranking.csv \
+            --policy research/healthy_momentum_v2_policy.yaml \
+            --output-dir output/healthy-momentum-v2-shadow \
+            2>&1 | tee output/healthy-momentum-v2-shadow/backtest.log
+
+      - name: Verify output and safety boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/healthy-momentum-v2-shadow')
+          summary = json.loads((root / 'summary.json').read_text(encoding='utf-8'))
+          methods = pd.read_csv(root / 'method_summary.csv')
+          comparison = pd.read_csv(root / 'v1_vs_v2.csv')
+          latest = pd.read_csv(root / 'latest_healthy_v2_top100.csv', dtype={'code': str})
+          exclusions = pd.read_csv(root / 'latest_v2_exclusion_summary.csv')
+
+          assert summary['mode'] == 'SHADOW_ONLY'
+          assert summary['research_only'] is True
+          assert summary['automatic_promotion'] is False
+          assert summary['production_ranking_changed'] is False
+          assert summary['healthy_v1_ranking_changed'] is False
+          assert summary['paper_strategy_changed'] is False
+          assert summary['historical_results_are_promotion_evidence'] is False
+          assert summary['canonical_report_dates'] >= 6
+          assert set(methods['method']) == {'production', 'healthy_v1', 'healthy_v2'}
+          assert len(comparison) == 9
+          assert len(latest) > 0
+          assert latest['healthy_v2_eligible'].astype(str).str.lower().isin({'true', '1'}).all()
+          assert latest['healthy_v2_rank'].tolist() == list(range(1, len(latest) + 1))
+          assert 'healthy_v2_confirmation_score' in latest.columns
+          assert 'healthy_v2_exclusion_reasons' in latest.columns
+          assert len(exclusions) > 0
+          # Performance may improve or worsen. The lab must report either result without
+          # automatically changing production or v1.
+          assert summary['v2_total_comparisons'] == 9
+          PY
+
+      - name: Confirm remote read-only workflow
+        run: |
+          git status --short --untracked-files=no | tee output/healthy-momentum-v2-shadow/tracked_worktree_status.txt
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          workflow_path = Path('.github/workflows/healthy-momentum-v2-shadow.yml')
+          workflow_text = workflow_path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(workflow_text)
+          assert workflow['permissions']['contents'] == 'read'
+          forbidden = [
+              'contents: write',
+              'pull-requests: write',
+              'actions: write',
+              'EMAIL_APP_PASSWORD',
+              'smtp.',
+          ]
+          for token in forbidden:
+              assert token not in workflow_text
+          for source_path in [
+              Path('healthy_momentum_v2.py'),
+              Path('tools/backtest_healthy_momentum_v2.py'),
+          ]:
+              source = source_path.read_text(encoding='utf-8')
+              assert 'git push' not in source
+              assert 'requests.post' not in source
+              assert 'smtplib' not in source
+          PY
+
+      - name: Upload v2 shadow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthy-momentum-v2-shadow-${{ github.run_id }}
+          path: output/healthy-momentum-v2-shadow/**
+          retention-days: 90
+          if-no-files-found: warn
