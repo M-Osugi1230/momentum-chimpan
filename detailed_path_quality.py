@@ -1,4 +1,4 @@
-"""Compute selected-signal price-path quality in an isolated process."""
+"""Compute freshness-safe selected-signal price-path quality in an isolated process."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ import pandas as pd
 
 import detailed_oos_analysis as core
 
-VERSION = "2026-07-22-detailed-path-quality-v1"
+VERSION = "2026-07-22-detailed-path-quality-v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,8 +33,9 @@ def main() -> int:
     panel = pd.read_csv(args.prices, dtype={"code": str}, low_memory=False)
     panel["code"] = panel["code"].astype(str).str.split(".").str[0].str.zfill(4)
     panel["date"] = pd.to_datetime(panel["date"], errors="coerce").dt.normalize()
-    for column in ("adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close"):
-        panel[column] = pd.to_numeric(panel[column], errors="coerce")
+    for column in ("adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close", "volume"):
+        if column in panel.columns:
+            panel[column] = pd.to_numeric(panel[column], errors="coerce")
     panel = panel.dropna(
         subset=["date", "code", "adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close"]
     )
@@ -56,6 +57,12 @@ def main() -> int:
         "selected_signal_rows": len(methods),
         "path_detail_rows": len(detail),
         "path_summary_rows": len(summary),
+        "path_quality_rules": {
+            "max_entry_gap_days": core.MAX_ENTRY_GAP_DAYS,
+            "max_session_gap_days": core.MAX_SESSION_GAP_DAYS,
+            "max_adjacent_price_multiplier": core.MAX_ADJACENT_PRICE_MULTIPLIER,
+            "require_positive_volume_for_all_path_sessions": True,
+        },
         "research_only": True,
         "promotion_evidence_allowed": False,
         "automatic_strategy_change": False,
@@ -73,6 +80,12 @@ def main() -> int:
         allowed = {"UP_5_FIRST", "DOWN_5_FIRST", "BOTH_SAME_SESSION", "NEITHER"}
         if not detail["first_touch_5pct"].isin(allowed).all():
             raise RuntimeError("invalid first-touch state")
+        if not detail["path_data_quality"].eq("OK").all():
+            raise RuntimeError("non-fresh price path entered output")
+        if detail["entry_gap_days"].gt(core.MAX_ENTRY_GAP_DAYS).any():
+            raise RuntimeError("stale path entry detected")
+        if detail["max_session_gap_days"].gt(core.MAX_SESSION_GAP_DAYS).any():
+            raise RuntimeError("discontinuous path detected")
         if manifest["production_state_mutations"]:
             raise RuntimeError("production state mutated")
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
