@@ -1,0 +1,80 @@
+schema_version: 1
+policy_id: healthy-momentum-v2-confirmation-shadow
+mode: SHADOW_ONLY
+research_only: true
+automatic_promotion: false
+automatic_production_ranking_change: false
+automatic_paper_change: false
+
+base_policy: research/healthy_momentum_policy.yaml
+
+confirmation_eligibility:
+  min_return_60d: 0.0
+  min_recent_pace_ratio: 0.10
+  max_recent_pace_ratio: 0.80
+  min_market_relative_20d: 0.0
+  min_sector_relative_20d: -0.02
+  min_rank_change: -20
+  min_current_day_return: -0.015
+  min_drawdown_from_recent_high: -0.08
+
+confirmation_components:
+  recent_pace_ratio:
+    weight: 25
+    low: 0.10
+    peak: 0.25
+    high: 0.80
+  market_relative_5d:
+    weight: 15
+    method: report_percentile
+  sector_relative_5d:
+    weight: 15
+    method: report_sector_percentile
+  rank_direction:
+    weight: 15
+    low: -20
+    high: 20
+    missing_score: 0.50
+  current_day_return:
+    weight: 10
+    low: -0.015
+    peak: 0.01
+    high: 0.05
+  drawdown_from_recent_high:
+    weight: 10
+    low: -0.08
+    peak: -0.02
+    high: 0.005
+  long_relative_strength:
+    weight: 10
+    method: healthy_relative_strength_score
+
+selection_score:
+  healthy_v1_weight: 0.60
+  confirmation_weight: 0.40
+
+shadow_backtest:
+  top_sizes: [10, 30, 100]
+  horizons: [1, 3, 5]
+  minimum_unique_report_dates: 6
+  historical_results_are_promotion_evidence: false
+  compare_methods:
+    - production
+    - healthy_v1
+    - healthy_v2
+  reason: Historical report-close replay is diagnostic only. V2 may not replace v1 or production without live forward evidence and explicit manual approval.
+
+promotion_policy:
+  minimum_live_forward_outcomes: 100
+  minimum_live_report_dates: 20
+  required_horizon: 5
+  required_execution_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  required_evidence_origin: LIVE_FORWARD_RANKING_HISTORY
+  minimum_mean_excess_improvement_vs_production: 0.005
+  minimum_mean_excess_improvement_vs_v1: 0.002
+  minimum_outperformance_rate_vs_production: 0.55
+  minimum_outperformance_rate_vs_v1: 0.52
+  require_positive_early_period: true
+  require_positive_late_period: true
+  require_positive_leave_one_sector: true
+  require_manual_approval: true
