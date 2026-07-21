@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - tools/export_full_pick_history.py
+      - tools/run_full_pick_history_audit.py
       - .github/workflows/historical-pick-export-audit.yml
 
 permissions:
@@ -33,7 +34,7 @@ jobs:
         run: |
           mkdir -p output/full_pick_history
           set +e
-          python tools/export_full_pick_history.py \
+          python tools/run_full_pick_history_audit.py \
             --output-dir output/full_pick_history \
             > output/full_pick_history/audit.log 2>&1
           status=$?
