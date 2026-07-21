@@ -19,6 +19,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          show-progress: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,12 +27,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install audit dependency
-        run: python -m pip install --disable-pip-version-check pandas
+        run: python -m pip install -q --disable-pip-version-check pandas
 
       - name: Export every historical positive pick
         run: |
+          mkdir -p output/full_pick_history
+          set +e
           python tools/export_full_pick_history.py \
-            --output-dir output/full_pick_history
+            --output-dir output/full_pick_history \
+            > output/full_pick_history/audit.log 2>&1
+          status=$?
+          cat output/full_pick_history/audit.log
+          exit $status
 
       - name: Assert Daido Metal and output integrity
         run: |
@@ -51,6 +58,7 @@ jobs:
           PY
 
       - name: Upload full historical pick audit
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: full-pick-history-${{ github.run_id }}
