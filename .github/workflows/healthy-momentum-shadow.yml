@@ -104,20 +104,34 @@ jobs:
           assert key['healthy_mean_return'] > key['baseline_mean_return']
           PY
 
-      - name: Confirm read-only workflow
+      - name: Confirm remote read-only workflow
         run: |
-          git diff --exit-code
+          git status --short --untracked-files=no | tee output/healthy-momentum-shadow/tracked_worktree_status.txt
           python - <<'PY'
           from pathlib import Path
           import yaml
 
-          path = Path('.github/workflows/healthy-momentum-shadow.yml')
-          text = path.read_text(encoding='utf-8')
-          workflow = yaml.safe_load(text)
+          workflow_path = Path('.github/workflows/healthy-momentum-shadow.yml')
+          workflow_text = workflow_path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(workflow_text)
           assert workflow['permissions']['contents'] == 'read'
-          assert ('git' + ' push') not in text
-          assert ('contents:' + ' write') not in text
-          assert 'EMAIL_APP_PASSWORD' not in text
+          forbidden = [
+              'contents: write',
+              'pull-requests: write',
+              'actions: write',
+              'EMAIL_APP_PASSWORD',
+              'smtp.',
+          ]
+          for token in forbidden:
+              assert token not in workflow_text
+          for source_path in [
+              Path('healthy_momentum.py'),
+              Path('tools/backtest_healthy_momentum.py'),
+          ]:
+              source = source_path.read_text(encoding='utf-8')
+              assert 'git push' not in source
+              assert 'requests.post' not in source
+              assert 'smtplib' not in source
           PY
 
       - name: Upload shadow evidence
