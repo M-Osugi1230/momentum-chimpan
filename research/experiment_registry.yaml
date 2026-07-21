@@ -94,3 +94,42 @@ experiments:
   notes: Historical report-close replay is diagnostic only and cannot promote this
     experiment. The shadow workflow is read-only. A separate reviewed release is required
     before production rank, Daily Action List, or paper execution may consume this score.
+- experiment_id: healthy-momentum-v2-confirmation-shadow
+  experiment_type: ranking-confirmation-shadow
+  status: running
+  hypothesis: Among Healthy Momentum v1 eligible stocks, requiring a continuing 60-day
+    trend, balanced 5-day-to-20-day pace, non-weak market and sector relative strength,
+    and no rapid rank deterioration will reduce stale momentum and short-lived spikes and
+    improve 5-report forward outcomes versus both production and Healthy Momentum v1.
+  strategy_fingerprint: healthy-momentum-v2-confirmation-shadow-module-2026-07-21
+  change_summary: Add a read-only confirmation layer on top of Healthy Momentum v1.
+    Confirmation measures recent pace consistency, 5-day market and sector relative
+    strength, rank direction, current-day continuation, distance from the recent high,
+    and long relative strength. V2 blends 60% v1 selection score with 40% confirmation
+    score. Production, v1, Daily Action List, and paper execution remain unchanged.
+  evidence_scope:
+    group_type: overall
+    group_value: all
+    horizon_days: 5
+  success_criteria:
+    minimum_outcome_count: 100
+    minimum_live_report_dates: 20
+    minimum_mean_excess_improvement_vs_production: 0.005
+    minimum_mean_excess_improvement_vs_v1: 0.002
+    minimum_outperformance_rate_vs_production: 0.55
+    minimum_outperformance_rate_vs_v1: 0.52
+    required_robustness_status: ROBUST
+    maximum_fdr_q_value: 0.05
+    positive_early_period: true
+    positive_late_period: true
+    positive_leave_one_sector: true
+    evidence_origin: LIVE_FORWARD_RANKING_HISTORY
+    execution_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  manual_approval:
+    approved: false
+    approved_by: ''
+    approved_at: ''
+  automatic_promotion: false
+  notes: V2 historical results may improve or worsen and must be reported unchanged.
+    Historical report-close replay is diagnostic only. A separate reviewed release and
+    explicit approval are required before any production or paper consumer may use v2.
