@@ -5,6 +5,7 @@ on:
     paths:
       - tools/export_full_pick_history.py
       - tools/run_full_pick_history_audit.py
+      - tools/refresh_full_pick_latest_prices.py
       - .github/workflows/historical-pick-export-audit.yml
 
 permissions:
@@ -13,7 +14,7 @@ permissions:
 jobs:
   export:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
@@ -27,8 +28,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install audit dependency
-        run: python -m pip install -q --disable-pip-version-check pandas
+      - name: Install audit dependencies
+        run: python -m pip install -q --disable-pip-version-check pandas yfinance
 
       - name: Export every historical positive pick
         run: |
@@ -41,21 +42,38 @@ jobs:
           cat output/full_pick_history/audit.log
           exit $status
 
+      - name: Refresh latest closes for every picked stock
+        run: |
+          set +e
+          python tools/refresh_full_pick_latest_prices.py \
+            --audit-dir output/full_pick_history \
+            --start 2026-07-16 \
+            --end 2026-07-23 \
+            > output/full_pick_history/latest_price_refresh.log 2>&1
+          status=$?
+          cat output/full_pick_history/latest_price_refresh.log
+          exit $status
+
       - name: Assert Daido Metal and output integrity
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          p = Path('output/full_pick_history/summary.json')
-          data = json.loads(p.read_text(encoding='utf-8'))
+          base = Path('output/full_pick_history')
+          data = json.loads((base / 'summary.json').read_text(encoding='utf-8'))
+          latest = json.loads((base / 'latest_price_summary.json').read_text(encoding='utf-8'))
           assert data['daido_metal_included'] is True
           assert data['unique_picked_stocks'] > 14
           assert data['legacy_first_report_timestamp'].startswith('2026-06-23')
           assert data['included_legacy_runs'] >= 9
           assert data['included_dashboard_runs'] >= 10
+          assert latest['requested_codes'] == data['unique_picked_stocks']
+          assert latest['codes_with_any_recent_price'] >= int(data['unique_picked_stocks'] * 0.95)
           assert data['scope']['strategy_changed'] is False
           assert data['scope']['production_state_mutated'] is False
-          print(json.dumps(data, ensure_ascii=False, indent=2))
+          assert latest['strategy_changed'] is False
+          assert latest['production_state_mutated'] is False
+          print(json.dumps({'history': data, 'latest': latest}, ensure_ascii=False, indent=2))
           PY
 
       - name: Upload full historical pick audit
