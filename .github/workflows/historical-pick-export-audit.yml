@@ -1,0 +1,57 @@
+name: Historical Pick Export Audit
+
+on:
+  pull_request:
+    paths:
+      - tools/export_full_pick_history.py
+      - .github/workflows/historical-pick-export-audit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install audit dependency
+        run: python -m pip install --disable-pip-version-check pandas
+
+      - name: Export every historical positive pick
+        run: |
+          python tools/export_full_pick_history.py \
+            --legacy-ref 29d6a0791c208758cbbe7f1089e51d9c5f687277 \
+            --output-dir output/full_pick_history
+
+      - name: Assert Daido Metal and output integrity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('output/full_pick_history/summary.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          assert data['daido_metal_included'] is True
+          assert data['unique_picked_stocks'] > 14
+          assert data['scope']['strategy_changed'] is False
+          assert data['scope']['production_state_mutated'] is False
+          print(json.dumps(data, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload full historical pick audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-pick-history-${{ github.run_id }}
+          path: output/full_pick_history/**
+          retention-days: 30
+          if-no-files-found: error
