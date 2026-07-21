@@ -1,0 +1,314 @@
+name: Detailed OOS Evidence 2022-2025
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - detailed_historical_oos_backfill.py
+      - detailed_oos_analysis.py
+      - detailed_oos_shared.py
+      - detailed_oos_metrics.py
+      - detailed_oos_path.py
+      - detailed_oos_experiments.py
+      - detailed_oos_cli.py
+      - detailed_path_quality.py
+      - detailed_ablation_baseline.py
+      - detailed_robustness.py
+      - detailed_robust_statistics.py
+      - finalize_detailed_oos_report.py
+      - run_detailed_historical_oos.py
+      - augment_detailed_oos_analysis.py
+      - research/detailed_oos_protocol.yaml
+      - docs/DETAILED_OOS_EVIDENCE.md
+      - .github/test_detailed_oos.py
+      - .github/workflows/detailed-oos-evidence.yml
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: '0 means all current JPX issues; default stage-1 sample is 1500'
+        required: false
+        default: '1500'
+        type: string
+      sample_every:
+        description: 'Ranking snapshot every N trading sessions; stage-1 default is 5'
+        required: false
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: detailed-oos-evidence-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONHASHSEED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile detailed research tools
+        run: |
+          python -m py_compile \
+            detailed_historical_oos_backfill.py \
+            run_detailed_historical_oos.py \
+            augment_detailed_oos_analysis.py \
+            detailed_oos_analysis.py \
+            detailed_oos_shared.py \
+            detailed_oos_metrics.py \
+            detailed_oos_path.py \
+            detailed_oos_experiments.py \
+            detailed_oos_cli.py \
+            detailed_path_quality.py \
+            detailed_ablation_baseline.py \
+            detailed_robustness.py \
+            detailed_robust_statistics.py \
+            finalize_detailed_oos_report.py \
+            .github/test_detailed_oos.py
+
+      - name: Run detailed invariant tests
+        run: |
+          set -o pipefail
+          python .github/test_detailed_oos.py 2>&1 | tee detailed-oos-test.log
+
+      - name: Resolve study parameters
+        id: parameters
+        env:
+          INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+        run: |
+          echo "max_symbols=${INPUT_MAX_SYMBOLS:-1500}" >> "$GITHUB_OUTPUT"
+          echo "sample_every=${INPUT_SAMPLE_EVERY:-5}" >> "$GITHUB_OUTPUT"
+
+      - name: Build freshness-safe 2022-2025 ranking snapshots
+        env:
+          MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+        run: |
+          mkdir -p output/detailed-oos
+          set -o pipefail
+          python detailed_historical_oos_backfill.py \
+            --strict \
+            --download-start 2020-10-01 \
+            --download-end 2026-04-30 \
+            --evaluation-start 2022-01-01 \
+            --evaluation-end 2025-12-31 \
+            --max-symbols "$MAX_SYMBOLS" \
+            --sample-every "$SAMPLE_EVERY" \
+            --batch-size 50 \
+            --minimum-coverage-ratio 0.70 \
+            --top-limit 100 \
+            --lookback-rows 260 \
+            --output-dir output/detailed-oos \
+            2>&1 | tee output/detailed-oos/backfill.log
+
+      - name: Build strict extended historical outcomes
+        run: |
+          mkdir -p output/detailed-oos/base-analysis
+          set -o pipefail
+          python run_detailed_historical_oos.py \
+            --strict \
+            --ranking output/detailed-oos/historical_ranking.csv \
+            --prices output/detailed-oos/historical_price_panel.csv \
+            --backfill-manifest output/detailed-oos/backfill_manifest.json \
+            --output-dir output/detailed-oos/base-analysis \
+            2>&1 | tee output/detailed-oos/base-analysis/analysis.log
+
+      - name: Build matched-count diagnostics
+        run: |
+          set -o pipefail
+          python augment_detailed_oos_analysis.py \
+            --strict \
+            --events output/detailed-oos/base-analysis/selection_events.csv \
+            --ranking output/detailed-oos/base-analysis/enriched_historical_ranking.csv \
+            --output-dir output/detailed-oos/base-analysis \
+            2>&1 | tee output/detailed-oos/base-analysis/matched-count.log
+
+      - name: Run detailed core analysis
+        run: |
+          mkdir -p output/detailed-oos/core
+          set -o pipefail
+          python detailed_oos_analysis.py \
+            --strict \
+            --enriched-ranking output/detailed-oos/base-analysis/enriched_historical_ranking.csv \
+            --universe-outcomes output/detailed-oos/base-analysis/universe_outcomes.csv \
+            --selection-events output/detailed-oos/base-analysis/selection_events.csv \
+            --prices output/detailed-oos/historical_price_panel.csv \
+            --backfill-manifest output/detailed-oos/backfill_manifest.json \
+            --protocol research/detailed_oos_protocol.yaml \
+            --output-dir output/detailed-oos/core \
+            2>&1 | tee output/detailed-oos/core/run.log
+
+      - name: Analyze price paths
+        run: |
+          mkdir -p output/detailed-oos/path
+          set -o pipefail
+          python detailed_path_quality.py \
+            --strict \
+            --enriched-ranking output/detailed-oos/base-analysis/enriched_historical_ranking.csv \
+            --prices output/detailed-oos/historical_price_panel.csv \
+            --output-dir output/detailed-oos/path \
+            --max-horizon 60 \
+            2>&1 | tee output/detailed-oos/path/run.log
+
+      - name: Run ablations and simple baselines
+        run: |
+          mkdir -p output/detailed-oos/ablation
+          set -o pipefail
+          python detailed_ablation_baseline.py \
+            --strict \
+            --enriched-ranking output/detailed-oos/base-analysis/enriched_historical_ranking.csv \
+            --universe-outcomes output/detailed-oos/base-analysis/universe_outcomes.csv \
+            --protocol research/detailed_oos_protocol.yaml \
+            --output-dir output/detailed-oos/ablation \
+            2>&1 | tee output/detailed-oos/ablation/run.log
+
+      - name: Run placebo and preliminary robustness
+        run: |
+          mkdir -p output/detailed-oos/robustness
+          set -o pipefail
+          python detailed_robustness.py \
+            --strict \
+            --ranking output/detailed-oos/base-analysis/enriched_historical_ranking.csv \
+            --universe-outcomes output/detailed-oos/base-analysis/universe_outcomes.csv \
+            --selection-events output/detailed-oos/base-analysis/selection_events.csv \
+            --method-summary output/detailed-oos/core/method_summary_by_year.csv \
+            --rank-ic-summary output/detailed-oos/core/rank_ic_summary.csv \
+            --protocol research/detailed_oos_protocol.yaml \
+            --output-dir output/detailed-oos/robustness \
+            2>&1 | tee output/detailed-oos/robustness/run.log
+
+      - name: Build robust paired benchmark scorecard
+        run: |
+          set -o pipefail
+          python detailed_robust_statistics.py \
+            --strict \
+            --selection-events output/detailed-oos/base-analysis/selection_events.csv \
+            --rank-ic-summary output/detailed-oos/core/rank_ic_summary.csv \
+            --random-placebo output/detailed-oos/robustness/random_placebo.csv \
+            --protocol research/detailed_oos_protocol.yaml \
+            --output-dir output/detailed-oos/robustness \
+            2>&1 | tee output/detailed-oos/robustness/robust-statistics.log
+
+      - name: Finalize audited report
+        run: |
+          mkdir -p output/detailed-oos/final
+          set -o pipefail
+          python finalize_detailed_oos_report.py \
+            --strict \
+            --backfill-manifest output/detailed-oos/backfill_manifest.json \
+            --analysis-manifest output/detailed-oos/base-analysis/analysis_manifest.json \
+            --core-dir output/detailed-oos/core \
+            --path-dir output/detailed-oos/path \
+            --ablation-dir output/detailed-oos/ablation \
+            --robustness-dir output/detailed-oos/robustness \
+            --output-dir output/detailed-oos/final \
+            2>&1 | tee output/detailed-oos/final/run.log
+
+      - name: Validate evidence boundaries and freshness
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root=Path('output/detailed-oos')
+          backfill=json.loads((root/'backfill_manifest.json').read_text())
+          core=json.loads((root/'core/detailed_manifest.json').read_text())
+          path=json.loads((root/'path/path_quality_manifest.json').read_text())
+          ablation=json.loads((root/'ablation/ablation_baseline_manifest.json').read_text())
+          robustness=json.loads((root/'robustness/robustness_manifest.json').read_text())
+          robust_stats=json.loads((root/'robustness/robust_statistics_manifest.json').read_text())
+          final=json.loads((root/'final/combined_manifest.json').read_text())
+          summary=pd.read_csv(root/'core/method_summary_by_year.csv')
+          scorecard=pd.read_csv(root/'robustness/evidence_scorecard_v2.csv')
+          ranking=pd.read_csv(root/'historical_ranking.csv', low_memory=False)
+          events=pd.read_csv(root/'base-analysis/selection_events.csv', low_memory=False)
+
+          for manifest in (backfill, core, path, ablation, robustness, robust_stats, final):
+              assert manifest['promotion_evidence_allowed'] is False
+              assert manifest['automatic_strategy_change'] is False
+              assert manifest['production_state_mutations'] == []
+          assert backfill['evaluation_start']=='2022-01-01'
+          assert backfill['evaluation_end']=='2025-12-31'
+          assert backfill['selected_universe_count'] >= 1000
+          assert backfill['ranking_date_count'] >= 180
+          assert backfill['ranking_session_filter']=='POSITIVE_VOLUME_ON_EVALUATION_DATE'
+          assert ranking['history_freshness_status'].eq('OK').all()
+          assert pd.to_numeric(ranking['trading_value'],errors='coerce').gt(0).all()
+          assert set(summary['year']) == {2022, 2023, 2024, 2025}
+          assert set(summary['method']) == {'production','healthy_v1','balanced_v2'}
+          assert set(summary['horizon_sessions']) == {1,3,5,10,20,40,60}
+          assert events['net_return'].abs().max() < 20
+          assert len(scorecard) == 12
+          assert set(scorecard['benchmark_method']) == {'production','healthy_v1'}
+          assert set(scorecard['promotion_status']) == {'RESEARCH_SUPPORT_ONLY_NON_PROMOTABLE'}
+          PY
+
+      - name: Confirm read-only workflow
+        run: |
+          git status --short --untracked-files=no | tee output/detailed-oos/final/tracked_worktree_status.txt
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          path=Path('.github/workflows/detailed-oos-evidence.yml')
+          text=path.read_text(encoding='utf-8')
+          workflow=yaml.safe_load(text)
+          assert workflow['permissions']['contents']=='read'
+          for token in ['contents:'+' write','pull-requests:'+' write','git'+' push','smtp'+'.','EMAIL_'+'APP_PASSWORD']:
+              assert token not in text
+          PY
+
+      - name: Upload detailed evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detailed-oos-evidence-${{ github.run_id }}
+          path: |
+            output/detailed-oos/backfill_manifest.json
+            output/detailed-oos/backfill_coverage.csv
+            output/detailed-oos/backfill_freshness_audit.csv
+            output/detailed-oos/backfill_data_quality.csv
+            output/detailed-oos/backfill_errors.csv
+            output/detailed-oos/backfill.log
+            output/detailed-oos/base-analysis/**
+            output/detailed-oos/core/**
+            output/detailed-oos/path/**
+            output/detailed-oos/ablation/**
+            output/detailed-oos/robustness/**
+            output/detailed-oos/final/**
+            detailed-oos-test.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Upload reproducibility price panel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detailed-oos-price-panel-${{ github.run_id }}
+          path: output/detailed-oos/historical_price_panel.csv
+          retention-days: 30
+          if-no-files-found: warn
