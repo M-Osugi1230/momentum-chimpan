@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - detailed_historical_oos_backfill.py
       - detailed_oos_analysis.py
       - detailed_oos_shared.py
       - detailed_oos_metrics.py
@@ -13,6 +14,7 @@ on:
       - detailed_path_quality.py
       - detailed_ablation_baseline.py
       - detailed_robustness.py
+      - detailed_robust_statistics.py
       - finalize_detailed_oos_report.py
       - run_detailed_historical_oos.py
       - augment_detailed_oos_analysis.py
@@ -71,6 +73,7 @@ jobs:
       - name: Compile detailed research tools
         run: |
           python -m py_compile \
+            detailed_historical_oos_backfill.py \
             run_detailed_historical_oos.py \
             augment_detailed_oos_analysis.py \
             detailed_oos_analysis.py \
@@ -82,6 +85,7 @@ jobs:
             detailed_path_quality.py \
             detailed_ablation_baseline.py \
             detailed_robustness.py \
+            detailed_robust_statistics.py \
             finalize_detailed_oos_report.py \
             .github/test_detailed_oos.py
 
@@ -99,14 +103,14 @@ jobs:
           echo "max_symbols=${INPUT_MAX_SYMBOLS:-1500}" >> "$GITHUB_OUTPUT"
           echo "sample_every=${INPUT_SAMPLE_EVERY:-5}" >> "$GITHUB_OUTPUT"
 
-      - name: Build 2022-2025 ranking snapshots
+      - name: Build freshness-safe 2022-2025 ranking snapshots
         env:
           MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
           SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
         run: |
           mkdir -p output/detailed-oos
           set -o pipefail
-          python historical_oos_backfill.py \
+          python detailed_historical_oos_backfill.py \
             --strict \
             --download-start 2020-10-01 \
             --download-end 2026-04-30 \
@@ -121,7 +125,7 @@ jobs:
             --output-dir output/detailed-oos \
             2>&1 | tee output/detailed-oos/backfill.log
 
-      - name: Build extended historical outcomes
+      - name: Build strict extended historical outcomes
         run: |
           mkdir -p output/detailed-oos/base-analysis
           set -o pipefail
@@ -182,7 +186,7 @@ jobs:
             --output-dir output/detailed-oos/ablation \
             2>&1 | tee output/detailed-oos/ablation/run.log
 
-      - name: Run robustness and scorecard
+      - name: Run placebo and preliminary robustness
         run: |
           mkdir -p output/detailed-oos/robustness
           set -o pipefail
@@ -196,6 +200,18 @@ jobs:
             --protocol research/detailed_oos_protocol.yaml \
             --output-dir output/detailed-oos/robustness \
             2>&1 | tee output/detailed-oos/robustness/run.log
+
+      - name: Build robust paired benchmark scorecard
+        run: |
+          set -o pipefail
+          python detailed_robust_statistics.py \
+            --strict \
+            --selection-events output/detailed-oos/base-analysis/selection_events.csv \
+            --rank-ic-summary output/detailed-oos/core/rank_ic_summary.csv \
+            --random-placebo output/detailed-oos/robustness/random_placebo.csv \
+            --protocol research/detailed_oos_protocol.yaml \
+            --output-dir output/detailed-oos/robustness \
+            2>&1 | tee output/detailed-oos/robustness/robust-statistics.log
 
       - name: Finalize audited report
         run: |
@@ -212,7 +228,7 @@ jobs:
             --output-dir output/detailed-oos/final \
             2>&1 | tee output/detailed-oos/final/run.log
 
-      - name: Validate evidence boundaries
+      - name: Validate evidence boundaries and freshness
         run: |
           python - <<'PY'
           import json
@@ -225,11 +241,14 @@ jobs:
           path=json.loads((root/'path/path_quality_manifest.json').read_text())
           ablation=json.loads((root/'ablation/ablation_baseline_manifest.json').read_text())
           robustness=json.loads((root/'robustness/robustness_manifest.json').read_text())
+          robust_stats=json.loads((root/'robustness/robust_statistics_manifest.json').read_text())
           final=json.loads((root/'final/combined_manifest.json').read_text())
           summary=pd.read_csv(root/'core/method_summary_by_year.csv')
-          scorecard=pd.read_csv(root/'robustness/evidence_scorecard.csv')
+          scorecard=pd.read_csv(root/'robustness/evidence_scorecard_v2.csv')
+          ranking=pd.read_csv(root/'historical_ranking.csv', low_memory=False)
+          events=pd.read_csv(root/'base-analysis/selection_events.csv', low_memory=False)
 
-          for manifest in (backfill, core, path, ablation, robustness, final):
+          for manifest in (backfill, core, path, ablation, robustness, robust_stats, final):
               assert manifest['promotion_evidence_allowed'] is False
               assert manifest['automatic_strategy_change'] is False
               assert manifest['production_state_mutations'] == []
@@ -237,10 +256,15 @@ jobs:
           assert backfill['evaluation_end']=='2025-12-31'
           assert backfill['selected_universe_count'] >= 1000
           assert backfill['ranking_date_count'] >= 180
+          assert backfill['ranking_session_filter']=='POSITIVE_VOLUME_ON_EVALUATION_DATE'
+          assert ranking['history_freshness_status'].eq('OK').all()
+          assert pd.to_numeric(ranking['trading_value'],errors='coerce').gt(0).all()
           assert set(summary['year']) == {2022, 2023, 2024, 2025}
           assert set(summary['method']) == {'production','healthy_v1','balanced_v2'}
           assert set(summary['horizon_sessions']) == {1,3,5,10,20,40,60}
+          assert events['net_return'].abs().max() < 20
           assert len(scorecard) == 12
+          assert set(scorecard['benchmark_method']) == {'production','healthy_v1'}
           assert set(scorecard['promotion_status']) == {'RESEARCH_SUPPORT_ONLY_NON_PROMOTABLE'}
           PY
 
@@ -266,6 +290,7 @@ jobs:
           path: |
             output/detailed-oos/backfill_manifest.json
             output/detailed-oos/backfill_coverage.csv
+            output/detailed-oos/backfill_freshness_audit.csv
             output/detailed-oos/backfill_data_quality.csv
             output/detailed-oos/backfill_errors.csv
             output/detailed-oos/backfill.log
