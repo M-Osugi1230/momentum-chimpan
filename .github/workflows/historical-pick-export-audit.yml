@@ -31,7 +31,6 @@ jobs:
       - name: Export every historical positive pick
         run: |
           python tools/export_full_pick_history.py \
-            --legacy-ref 29d6a0791c208758cbbe7f1089e51d9c5f687277 \
             --output-dir output/full_pick_history
 
       - name: Assert Daido Metal and output integrity
@@ -43,6 +42,9 @@ jobs:
           data = json.loads(p.read_text(encoding='utf-8'))
           assert data['daido_metal_included'] is True
           assert data['unique_picked_stocks'] > 14
+          assert data['legacy_first_report_timestamp'].startswith('2026-06-23')
+          assert data['included_legacy_runs'] >= 9
+          assert data['included_dashboard_runs'] >= 10
           assert data['scope']['strategy_changed'] is False
           assert data['scope']['production_state_mutated'] is False
           print(json.dumps(data, ensure_ascii=False, indent=2))
