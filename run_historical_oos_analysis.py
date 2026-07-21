@@ -94,8 +94,13 @@ def select_method_events_fixed(
         universe_outcomes[outcome_columns],
         on=["signal_date", "code"],
         how="inner",
-        validate="one_to_many",
+        validate="many_to_many",
     )
+    expected_duplicates = merged.duplicated(
+        ["method", "signal_date", "code", "horizon_sessions"]
+    )
+    if expected_duplicates.any():
+        raise RuntimeError("duplicate method/date/code/horizon outcome rows")
     return merged.sort_values(
         ["method", "signal_date", "method_rank", "horizon_sessions"]
     ).reset_index(drop=True)
