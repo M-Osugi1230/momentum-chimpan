@@ -94,3 +94,64 @@ experiments:
   notes: Historical report-close replay is diagnostic only and cannot promote this
     experiment. The shadow workflow is read-only. A separate reviewed release is required
     before production rank, Daily Action List, or paper execution may consume this score.
+- experiment_id: healthy-momentum-v2-hard-confirmation
+  experiment_type: ranking-confirmation-shadow
+  status: rejected
+  hypothesis: Requiring every v1 candidate to pass continuing 60-day trend, pace,
+    relative-strength, rank-direction, current-day, and recent-high gates will improve
+    outcomes by removing stale momentum.
+  strategy_fingerprint: healthy-momentum-v2-hard-confirmation-rejected-2026-07-21
+  change_summary: Tested a hard confirmation gate and a 60% v1 plus 40% confirmation
+    score. The candidate reduced the latest eligible universe from 308 to 117 and was
+    rejected after underperforming v1 in all nine Top10/30/100 by 1/3/5-report comparisons.
+  evidence_scope:
+    group_type: overall
+    group_value: all
+    horizon_days: 5
+  manual_approval:
+    approved: false
+    approved_by: ''
+    approved_at: ''
+  automatic_promotion: false
+  notes: Diagnostic report-close history only. Top30 three-report mean changed from
+    positive 0.2843 percent for v1 to negative 0.0192 percent. The failed result is retained
+    to prevent silent threshold reuse or automatic retry.
+- experiment_id: healthy-momentum-v2-balanced-shadow
+  experiment_type: ranking-confirmation-shadow
+  status: running
+  hypothesis: A small bounded overlay that prefers balanced continuation and penalizes
+    crowded short-term and long-term extremes, while keeping all v1-eligible stocks
+    rankable, will improve 5-report outcomes without the selection damage caused by hard
+    confirmation gates.
+  strategy_fingerprint: healthy-momentum-v2-balanced-shadow-module-2026-07-21
+  change_summary: Keep Healthy Momentum v1 as the only eligibility gate. Score recent pace,
+    report-local 5-day market and sector relative percentiles, current-day return, distance
+    from the recent high, and long relative strength with middle-peaked bounded functions.
+    Blend 85% v1 selection score with 15% balanced confirmation. Rank change is diagnostic
+    only. Production, v1, Daily Action List, and paper execution remain unchanged.
+  evidence_scope:
+    group_type: overall
+    group_value: all
+    horizon_days: 5
+  success_criteria:
+    minimum_outcome_count: 100
+    minimum_live_report_dates: 20
+    minimum_mean_excess_improvement_vs_production: 0.005
+    minimum_mean_excess_improvement_vs_v1: 0.002
+    minimum_outperformance_rate_vs_production: 0.55
+    minimum_outperformance_rate_vs_v1: 0.52
+    required_robustness_status: ROBUST
+    maximum_fdr_q_value: 0.05
+    positive_early_period: true
+    positive_late_period: true
+    positive_leave_one_sector: true
+    evidence_origin: LIVE_FORWARD_RANKING_HISTORY
+    execution_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  manual_approval:
+    approved: false
+    approved_by: ''
+    approved_at: ''
+  automatic_promotion: false
+  notes: Historical report-close replay remains diagnostic only. A separate reviewed
+    release and explicit approval are required before any production or paper consumer may
+    use the balanced score.
