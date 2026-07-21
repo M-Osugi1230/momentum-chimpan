@@ -116,11 +116,11 @@ jobs:
           workflow = yaml.safe_load(workflow_text)
           assert workflow['permissions']['contents'] == 'read'
           forbidden = [
-              'contents: write',
-              'pull-requests: write',
-              'actions: write',
-              'EMAIL_APP_PASSWORD',
-              'smtp.',
+              'contents:' + ' write',
+              'pull-requests:' + ' write',
+              'actions:' + ' write',
+              'EMAIL_' + 'APP_PASSWORD',
+              'smtp' + '.',
           ]
           for token in forbidden:
               assert token not in workflow_text
@@ -129,9 +129,9 @@ jobs:
               Path('tools/backtest_healthy_momentum.py'),
           ]:
               source = source_path.read_text(encoding='utf-8')
-              assert 'git push' not in source
-              assert 'requests.post' not in source
-              assert 'smtplib' not in source
+              assert ('git' + ' push') not in source
+              assert ('requests' + '.post') not in source
+              assert ('smtp' + 'lib') not in source
           PY
 
       - name: Upload shadow evidence
