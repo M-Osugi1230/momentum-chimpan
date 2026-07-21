@@ -1,0 +1,225 @@
+name: Healthy Rank V3 Holdout 2018-2021
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - healthy_rank_v3.py
+      - backtest_healthy_rank_v3_holdout.py
+      - healthy_rank_v3_path.py
+      - research/healthy_rank_v3_protocol.yaml
+      - docs/HEALTHY_RANK_V3_HOLDOUT.md
+      - .github/test_healthy_rank_v3.py
+      - .github/workflows/healthy-rank-v3-holdout.yml
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: 'Deterministic sector-balanced sample size'
+        required: false
+        default: '1500'
+        type: string
+      sample_every:
+        description: 'Ranking snapshot every N trading sessions'
+        required: false
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: healthy-rank-v3-holdout-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONHASHSEED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile candidate and holdout tools
+        run: |
+          python -m py_compile \
+            healthy_rank_v3.py \
+            backtest_healthy_rank_v3_holdout.py \
+            healthy_rank_v3_path.py \
+            detailed_historical_oos_backfill.py \
+            run_detailed_historical_oos.py \
+            .github/test_healthy_rank_v3.py
+
+      - name: Run Healthy Rank v3 invariant tests
+        run: |
+          set -o pipefail
+          python .github/test_healthy_rank_v3.py 2>&1 | tee healthy-rank-v3-test.log
+
+      - name: Resolve holdout parameters
+        id: parameters
+        env:
+          INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+        run: |
+          echo "max_symbols=${INPUT_MAX_SYMBOLS:-1500}" >> "$GITHUB_OUTPUT"
+          echo "sample_every=${INPUT_SAMPLE_EVERY:-5}" >> "$GITHUB_OUTPUT"
+
+      - name: Build freshness-safe 2018-2021 holdout rankings
+        env:
+          MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+        run: |
+          mkdir -p output/healthy-rank-v3
+          set -o pipefail
+          python detailed_historical_oos_backfill.py \
+            --strict \
+            --download-start 2016-10-01 \
+            --download-end 2022-04-30 \
+            --evaluation-start 2018-01-01 \
+            --evaluation-end 2021-12-31 \
+            --max-symbols "$MAX_SYMBOLS" \
+            --sample-every "$SAMPLE_EVERY" \
+            --batch-size 50 \
+            --minimum-coverage-ratio 0.65 \
+            --top-limit 100 \
+            --lookback-rows 260 \
+            --output-dir output/healthy-rank-v3 \
+            2>&1 | tee output/healthy-rank-v3/backfill.log
+
+      - name: Build strict holdout outcomes and Healthy layers
+        run: |
+          mkdir -p output/healthy-rank-v3/base-analysis
+          set -o pipefail
+          python run_detailed_historical_oos.py \
+            --strict \
+            --ranking output/healthy-rank-v3/historical_ranking.csv \
+            --prices output/healthy-rank-v3/historical_price_panel.csv \
+            --backfill-manifest output/healthy-rank-v3/backfill_manifest.json \
+            --output-dir output/healthy-rank-v3/base-analysis \
+            2>&1 | tee output/healthy-rank-v3/base-analysis/run.log
+
+      - name: Run preregistered v3 holdout
+        run: |
+          mkdir -p output/healthy-rank-v3/holdout
+          set -o pipefail
+          python backtest_healthy_rank_v3_holdout.py \
+            --strict \
+            --enriched-ranking output/healthy-rank-v3/base-analysis/enriched_historical_ranking.csv \
+            --universe-outcomes output/healthy-rank-v3/base-analysis/universe_outcomes.csv \
+            --backfill-manifest output/healthy-rank-v3/backfill_manifest.json \
+            --protocol research/healthy_rank_v3_protocol.yaml \
+            --output-dir output/healthy-rank-v3/holdout \
+            2>&1 | tee output/healthy-rank-v3/holdout/run.log
+
+      - name: Compare price paths
+        run: |
+          mkdir -p output/healthy-rank-v3/path
+          set -o pipefail
+          python healthy_rank_v3_path.py \
+            --strict \
+            --enriched-ranking output/healthy-rank-v3/base-analysis/enriched_historical_ranking.csv \
+            --prices output/healthy-rank-v3/historical_price_panel.csv \
+            --output-dir output/healthy-rank-v3/path \
+            --max-horizon 60 \
+            2>&1 | tee output/healthy-rank-v3/path/run.log
+
+      - name: Validate holdout and safety boundaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          import yaml
+
+          root = Path('output/healthy-rank-v3')
+          backfill = json.loads((root/'backfill_manifest.json').read_text())
+          analysis = json.loads((root/'base-analysis/analysis_manifest.json').read_text())
+          holdout = json.loads((root/'holdout/manifest.json').read_text())
+          path = json.loads((root/'path/manifest.json').read_text())
+          protocol = yaml.safe_load(Path('research/healthy_rank_v3_protocol.yaml').read_text())
+          scorecard = pd.read_csv(root/'holdout/evidence_scorecard.csv')
+          rankings = pd.read_csv(root/'holdout/healthy_rank_v3_rankings.csv', low_memory=False)
+          events = pd.read_csv(root/'holdout/healthy_rank_v3_events.csv', low_memory=False)
+
+          for manifest in (backfill, analysis, holdout, path):
+              assert manifest['promotion_evidence_allowed'] is False
+              assert manifest['automatic_strategy_change'] is False
+              assert manifest['production_state_mutations'] == []
+          assert protocol['automatic_threshold_optimization'] is False
+          assert protocol['healthy_v1_eligibility_change'] is False
+          assert backfill['evaluation_start'] == '2018-01-01'
+          assert backfill['evaluation_end'] == '2021-12-31'
+          assert backfill['ranking_session_filter'] == 'POSITIVE_VOLUME_ON_EVALUATION_DATE'
+          assert set(holdout['years']) == {2018, 2019, 2020, 2021}
+          assert set(holdout['horizons']) == {1, 3, 5, 10, 20, 40, 60}
+          assert {'production', 'healthy_v1', 'healthy_v3'}.issubset(set(holdout['methods']))
+          assert holdout['candidate_policy_id'] == 'healthy-rank-v3-equal-weight-reorder'
+          assert holdout['healthy_v1_eligibility_mutations'] == []
+          assert len(scorecard) == 6
+          assert set(scorecard['promotion_status']) == {'RESEARCH_SUPPORT_ONLY_NON_PROMOTABLE'}
+          eligible = rankings['healthy_v3_eligible'].astype(str).str.lower().eq('true')
+          healthy = rankings['healthy_eligible'].astype(str).str.lower().eq('true')
+          assert healthy[eligible].all()
+          assert events['net_return'].abs().max() < 20
+          assert set(path['years']) == {2018, 2019, 2020, 2021}
+          PY
+
+      - name: Confirm read-only workflow
+        run: |
+          git status --short --untracked-files=no | tee output/healthy-rank-v3/holdout/tracked_worktree_status.txt
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          text = Path('.github/workflows/healthy-rank-v3-holdout.yml').read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['contents'] == 'read'
+          for token in ['contents:'+' write', 'pull-requests:'+' write', 'git'+' push', 'smtp'+'.', 'EMAIL_'+'APP_PASSWORD']:
+              assert token not in text
+          PY
+
+      - name: Upload Healthy Rank v3 holdout artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthy-rank-v3-holdout-${{ github.run_id }}
+          path: |
+            output/healthy-rank-v3/backfill_manifest.json
+            output/healthy-rank-v3/backfill_coverage.csv
+            output/healthy-rank-v3/backfill_freshness_audit.csv
+            output/healthy-rank-v3/backfill_data_quality.csv
+            output/healthy-rank-v3/backfill_errors.csv
+            output/healthy-rank-v3/backfill.log
+            output/healthy-rank-v3/base-analysis/**
+            output/healthy-rank-v3/holdout/**
+            output/healthy-rank-v3/path/**
+            healthy-rank-v3-test.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Upload holdout price panel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthy-rank-v3-price-panel-${{ github.run_id }}
+          path: output/healthy-rank-v3/historical_price_panel.csv
+          retention-days: 30
+          if-no-files-found: warn
