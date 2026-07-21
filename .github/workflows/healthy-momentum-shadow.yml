@@ -61,12 +61,13 @@ jobs:
         run: |
           mkdir -p output/healthy-momentum-shadow
           set -o pipefail
-          python .github/test_healthy_momentum.py \
+          PYTHONPATH=. python .github/test_healthy_momentum.py \
             2>&1 | tee output/healthy-momentum-shadow/test.log
 
       - name: Run historical shadow comparison
         run: |
-          python tools/backtest_healthy_momentum.py \
+          set -o pipefail
+          PYTHONPATH=. python tools/backtest_healthy_momentum.py \
             --history data/momentum_daily_ranking.csv \
             --policy research/healthy_momentum_policy.yaml \
             --output-dir output/healthy-momentum-shadow \
