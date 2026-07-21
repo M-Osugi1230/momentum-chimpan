@@ -1,0 +1,200 @@
+name: 2025 Historical Ranking OOS Study
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - historical_oos_backfill.py
+      - analyze_historical_oos.py
+      - run_historical_oos_analysis.py
+      - healthy_momentum.py
+      - healthy_momentum_v2.py
+      - main.py
+      - relative_strength_lifecycle.py
+      - data/jpx_list_cache.csv
+      - config.yaml
+      - .github/test_historical_oos.py
+      - .github/workflows/oos-2025-ranking-study.yml
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: '0 means all current JPX issues; otherwise deterministic sector-balanced sample'
+        required: false
+        default: '1500'
+        type: string
+      sample_every:
+        description: 'Ranking snapshot every N trading sessions'
+        required: false
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oos-2025-ranking-study-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONHASHSEED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile research tools
+        run: |
+          python -m py_compile \
+            historical_oos_backfill.py \
+            analyze_historical_oos.py \
+            run_historical_oos_analysis.py \
+            .github/test_historical_oos.py
+
+      - name: Run invariant tests
+        run: |
+          mkdir -p output/oos-2025/analysis
+          set -o pipefail
+          python .github/test_historical_oos.py \
+            2>&1 | tee output/oos-2025/analysis/test.log
+
+      - name: Resolve full study parameters
+        id: parameters
+        env:
+          INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+        run: |
+          max_symbols="${INPUT_MAX_SYMBOLS:-1500}"
+          sample_every="${INPUT_SAMPLE_EVERY:-5}"
+          echo "max_symbols=${max_symbols}" >> "${GITHUB_OUTPUT}"
+          echo "sample_every=${sample_every}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build 2025 historical ranking snapshots and prices
+        env:
+          MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+        run: |
+          set -o pipefail
+          python historical_oos_backfill.py \
+            --strict \
+            --download-start 2023-10-01 \
+            --download-end 2026-02-15 \
+            --evaluation-start 2025-01-01 \
+            --evaluation-end 2025-12-31 \
+            --max-symbols "${MAX_SYMBOLS}" \
+            --sample-every "${SAMPLE_EVERY}" \
+            --batch-size 50 \
+            --minimum-coverage-ratio 0.70 \
+            --top-limit 100 \
+            --lookback-rows 260 \
+            --output-dir output/oos-2025 \
+            2>&1 | tee output/oos-2025/backfill.log
+
+      - name: Run multidimensional OOS analysis
+        run: |
+          set -o pipefail
+          python run_historical_oos_analysis.py \
+            --strict \
+            --ranking output/oos-2025/historical_ranking.csv \
+            --prices output/oos-2025/historical_price_panel.csv \
+            --backfill-manifest output/oos-2025/backfill_manifest.json \
+            --output-dir output/oos-2025/analysis \
+            2>&1 | tee output/oos-2025/analysis/analysis.log
+
+      - name: Validate evidence and safety boundaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/oos-2025')
+          backfill = json.loads((root / 'backfill_manifest.json').read_text(encoding='utf-8'))
+          analysis = json.loads((root / 'analysis/analysis_manifest.json').read_text(encoding='utf-8'))
+          summary = pd.read_csv(root / 'analysis/method_summary.csv')
+          paired = pd.read_csv(root / 'analysis/paired_method_comparison.csv')
+          events = pd.read_csv(root / 'analysis/selection_events.csv')
+          coverage = pd.read_csv(root / 'backfill_coverage.csv')
+
+          assert backfill['research_only'] is True
+          assert backfill['promotion_evidence_allowed'] is False
+          assert backfill['automatic_strategy_change'] is False
+          assert backfill['production_state_mutations'] == []
+          assert backfill['evaluation_start'] == '2025-01-01'
+          assert backfill['evaluation_end'] == '2025-12-31'
+          assert backfill['ranking_date_count'] >= 45
+          assert backfill['selected_universe_count'] >= 1000
+          assert coverage['date'].nunique() == backfill['ranking_date_count']
+
+          assert analysis['research_only'] is True
+          assert analysis['promotion_evidence_allowed'] is False
+          assert analysis['automatic_threshold_change'] is False
+          assert analysis['automatic_strategy_change'] is False
+          assert analysis['production_state_mutations'] == []
+          assert analysis['entry_model'] == 'NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN'
+          assert analysis['round_trip_cost_bps'] == 20.0
+          assert set(analysis['methods']) == {'production', 'healthy_v1', 'balanced_v2'}
+          assert analysis['ranking_date_count'] >= 45
+          assert len(summary) == 135
+          assert set(summary['sample_type']) == {
+              'ALL_EVENTS',
+              'FIRST_PICK_PER_CODE',
+              'NON_OVERLAPPING_PER_CODE',
+          }
+          assert len(paired) == 45
+          assert pd.to_datetime(events['entry_date']).gt(pd.to_datetime(events['signal_date'])).all()
+          assert pd.to_datetime(events['exit_date']).ge(pd.to_datetime(events['entry_date'])).all()
+          assert events['horizon_sessions'].isin([1, 3, 5, 10, 20]).all()
+          assert events['method'].isin(['production', 'healthy_v1', 'balanced_v2']).all()
+          PY
+
+      - name: Confirm read-only workflow
+        run: |
+          git status --short --untracked-files=no | tee output/oos-2025/analysis/tracked_worktree_status.txt
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/oos-2025-ranking-study.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['contents'] == 'read'
+          for token in [
+              'contents:' + ' write',
+              'pull-requests:' + ' write',
+              'git' + ' push',
+              'smtp' + '.',
+              'EMAIL_' + 'APP_PASSWORD',
+          ]:
+              assert token not in text
+          PY
+
+      - name: Upload 2025 historical OOS artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oos-2025-ranking-study-${{ github.run_id }}
+          path: output/oos-2025/**
+          retention-days: 90
+          if-no-files-found: warn
