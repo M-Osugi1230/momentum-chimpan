@@ -1,0 +1,125 @@
+name: Healthy Momentum Shadow
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - healthy_momentum.py
+      - tools/backtest_healthy_momentum.py
+      - research/healthy_momentum_policy.yaml
+      - research/experiment_registry.yaml
+      - .github/test_healthy_momentum.py
+      - .github/workflows/healthy-momentum-shadow.yml
+      - docs/HEALTHY_MOMENTUM_V1.md
+  workflow_run:
+    workflows:
+      - Daily Momentum Report
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile shadow ranking
+        run: |
+          python -m py_compile \
+            healthy_momentum.py \
+            tools/backtest_healthy_momentum.py \
+            .github/test_healthy_momentum.py
+
+      - name: Test ranking invariants
+        run: python .github/test_healthy_momentum.py
+
+      - name: Run historical shadow comparison
+        run: |
+          rm -rf output/healthy-momentum-shadow
+          python tools/backtest_healthy_momentum.py \
+            --history data/momentum_daily_ranking.csv \
+            --policy research/healthy_momentum_policy.yaml \
+            --output-dir output/healthy-momentum-shadow
+
+      - name: Verify safety boundary and diagnostic output
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('output/healthy-momentum-shadow')
+          summary = json.loads((root / 'summary.json').read_text(encoding='utf-8'))
+          comparison = pd.read_csv(root / 'historical_comparison.csv')
+          latest = pd.read_csv(root / 'latest_healthy_top100.csv', dtype={'code': str})
+
+          assert summary['mode'] == 'SHADOW_ONLY'
+          assert summary['research_only'] is True
+          assert summary['automatic_promotion'] is False
+          assert summary['production_ranking_changed'] is False
+          assert summary['paper_strategy_changed'] is False
+          assert summary['historical_results_are_promotion_evidence'] is False
+          assert summary['canonical_report_dates'] >= 10
+          assert len(latest) == 100
+          assert latest['healthy_eligible'].astype(str).str.lower().isin({'true', '1'}).all()
+          assert latest['healthy_rank'].tolist() == list(range(1, 101))
+
+          key = comparison[
+              (comparison['top_size'] == 30)
+              & (comparison['horizon_reports'] == 3)
+          ].iloc[0]
+          assert key['improvement_mean_return'] > 0
+          assert key['healthy_mean_return'] > key['baseline_mean_return']
+          PY
+
+      - name: Confirm read-only workflow
+        run: |
+          git diff --exit-code
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path('.github/workflows/healthy-momentum-shadow.yml')
+          text = path.read_text(encoding='utf-8')
+          workflow = yaml.safe_load(text)
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('git' + ' push') not in text
+          assert ('contents:' + ' write') not in text
+          assert 'EMAIL_APP_PASSWORD' not in text
+          PY
+
+      - name: Upload shadow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthy-momentum-shadow-${{ github.run_id }}
+          path: output/healthy-momentum-shadow/**
+          retention-days: 90
+          if-no-files-found: warn
