@@ -58,15 +58,19 @@ jobs:
             .github/test_healthy_momentum.py
 
       - name: Test ranking invariants
-        run: python .github/test_healthy_momentum.py
+        run: |
+          mkdir -p output/healthy-momentum-shadow
+          set -o pipefail
+          python .github/test_healthy_momentum.py \
+            2>&1 | tee output/healthy-momentum-shadow/test.log
 
       - name: Run historical shadow comparison
         run: |
-          rm -rf output/healthy-momentum-shadow
           python tools/backtest_healthy_momentum.py \
             --history data/momentum_daily_ranking.csv \
             --policy research/healthy_momentum_policy.yaml \
-            --output-dir output/healthy-momentum-shadow
+            --output-dir output/healthy-momentum-shadow \
+            2>&1 | tee output/healthy-momentum-shadow/backtest.log
 
       - name: Verify safety boundary and diagnostic output
         run: |
