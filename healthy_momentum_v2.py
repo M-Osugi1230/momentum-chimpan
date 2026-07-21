@@ -1,12 +1,16 @@
-"""Healthy Momentum v2 confirmation shadow ranking.
+"""Healthy Momentum v2 balanced shadow ranking.
 
-Healthy Momentum v1 removes falling, broken, overheated, illiquid, and data-risk
-rows.  V2 adds a second confirmation layer intended to distinguish a continuing
-uptrend from a stale 20-day winner or a one-week spike.
+Healthy Momentum v1 remains the only eligibility gate. V2 adds a bounded, soft
+confirmation overlay that prefers balanced continuation and penalizes crowded extremes
+without excluding otherwise healthy v1 candidates.
 
-The production Momentum rank, Healthy Momentum v1 rank, Daily Action List, and
-paper execution remain unchanged.  This module is deterministic, explainable,
-research-only, and read-only.
+The initial v2 hard-confirmation candidate was rejected after it underperformed v1 in all
+nine historical comparisons. This revision intentionally removes the harmful hard gates,
+keeps every v1-eligible stock rankable, and limits the overlay to 15% of the final score.
+
+Production Momentum rank, Healthy Momentum v1 rank, Daily Action List, email, site, paper
+execution, and live execution remain unchanged. This module is deterministic,
+explainable, research-only, and read-only.
 """
 from __future__ import annotations
 
@@ -20,12 +24,13 @@ import yaml
 import healthy_momentum
 
 DEFAULT_POLICY_PATH = "research/healthy_momentum_v2_policy.yaml"
-HEALTHY_MOMENTUM_V2_VERSION = "2026-07-21-healthy-momentum-v2-confirmation-shadow"
+HEALTHY_MOMENTUM_V2_VERSION = "2026-07-21-healthy-momentum-v2-balanced-shadow"
 
 V2_COLUMNS = [
     "healthy_v2_version",
     "healthy_v2_eligible",
     "healthy_v2_exclusion_reasons",
+    "healthy_v2_caution_reasons",
     "healthy_v2_confirmation_state",
     "healthy_v2_recent_pace_ratio",
     "healthy_v2_market_relative_5d",
@@ -35,7 +40,6 @@ V2_COLUMNS = [
     "healthy_v2_component_recent_pace",
     "healthy_v2_component_market_relative_5d",
     "healthy_v2_component_sector_relative_5d",
-    "healthy_v2_component_rank_direction",
     "healthy_v2_component_current_day_return",
     "healthy_v2_component_drawdown",
     "healthy_v2_component_long_relative_strength",
@@ -65,6 +69,12 @@ def load_policy(path: str = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     )
     if abs(total - 1.0) > 1e-9:
         raise ValueError("Healthy Momentum v2 selection weights must sum to 1.0")
+    component_weight = sum(
+        float(config.get("weight", 0.0))
+        for config in parsed.get("confirmation_components", {}).values()
+    )
+    if abs(component_weight - 100.0) > 1e-9:
+        raise ValueError("Healthy Momentum v2 confirmation component weights must sum to 100")
     return parsed
 
 
@@ -84,19 +94,6 @@ def triangular_score(values: pd.Series, low: float, peak: float, high: float) ->
     return healthy_momentum.triangular_score(values, low, peak, high)
 
 
-def bounded_linear_score(
-    values: pd.Series,
-    low: float,
-    high: float,
-    missing_score: float = 0.5,
-) -> pd.Series:
-    if not low < high:
-        raise ValueError("bounded linear score requires low < high")
-    numbers = pd.to_numeric(values, errors="coerce")
-    result = ((numbers - low) / (high - low)).clip(lower=0.0, upper=1.0)
-    return result.fillna(float(missing_score))
-
-
 def recent_pace_ratio(frame: pd.DataFrame) -> pd.Series:
     return_5d = numeric(frame, "return_5d")
     return_20d = numeric(frame, "return_20d")
@@ -107,7 +104,9 @@ def recent_pace_ratio(frame: pd.DataFrame) -> pd.Series:
 def attach_short_relative_strength(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach report-local 5-day market and sector relative strength.
 
-    This uses only data known on the report date.  It does not use future returns.
+    Only information available at the report close is used. The percentile is calculated
+    independently for each report, and the sector percentile is calculated independently
+    within each report and JPX 33-sector group.
     """
     work = frame.copy()
     group_key = report_group_key(work)
@@ -133,79 +132,112 @@ def attach_short_relative_strength(frame: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
-def eligibility_reasons(frame: pd.DataFrame, policy: dict[str, Any]) -> pd.Series:
-    cfg = policy["confirmation_eligibility"]
-    v1_reasons = frame.get(
+def v1_exclusion_reasons(frame: pd.DataFrame) -> pd.Series:
+    source = frame.get(
         "healthy_exclusion_reasons", pd.Series("", index=frame.index, dtype="object")
     ).fillna("").astype(str)
-    return_60d = numeric(frame, "return_60d")
+    return source.map(
+        lambda value: "|".join(f"V1_{part}" for part in value.split("|") if part)
+    )
+
+
+def caution_reasons(frame: pd.DataFrame, policy: dict[str, Any]) -> pd.Series:
+    """Return diagnostic cautions without changing v1 eligibility.
+
+    A caution may lower the bounded confirmation score or explain why a stock is not near
+    the top of v2, but it never removes a v1-eligible stock from the v2 universe.
+    """
+    cfg = policy["confirmation_cautions"]
+    v1_eligible = frame.get(
+        "healthy_eligible", pd.Series(False, index=frame.index, dtype=bool)
+    ).fillna(False).astype(bool)
     pace = numeric(frame, "healthy_v2_recent_pace_ratio")
-    market_relative_20d = numeric(frame, "healthy_market_relative_20d")
-    sector_relative_20d = numeric(frame, "healthy_sector_relative_20d")
+    market_percentile = numeric(frame, "healthy_v2_market_relative_5d_percentile")
+    sector_percentile = numeric(frame, "healthy_v2_sector_relative_5d_percentile")
+    long_relative = numeric(frame, "healthy_relative_strength_score")
     rank_change = numeric(frame, "rank_change")
     day_return = numeric(frame, "healthy_current_day_return")
     drawdown = numeric(frame, "healthy_drawdown_from_recent_high")
 
-    reasons: list[list[str]] = []
-    for value in v1_reasons:
-        reasons.append([f"V1_{part}" for part in value.split("|") if part])
+    reasons: list[list[str]] = [[] for _ in range(len(frame))]
 
     def add(mask: pd.Series, reason: str) -> None:
-        for position in np.flatnonzero(mask.fillna(False).to_numpy()):
+        active = mask.fillna(False) & v1_eligible
+        for position in np.flatnonzero(active.to_numpy()):
             reasons[position].append(reason)
 
-    add(return_60d.le(float(cfg["min_return_60d"])) | return_60d.isna(), "SIXTY_DAY_NOT_RISING")
-    add(pace.lt(float(cfg["min_recent_pace_ratio"])) | pace.isna(), "RECENT_PACE_STALLING")
-    add(pace.gt(float(cfg["max_recent_pace_ratio"])), "RECENT_PACE_SPIKE")
+    add(pace.lt(float(cfg["min_recent_pace_ratio"])), "RECENT_PACE_STALLING")
+    add(pace.gt(float(cfg["max_recent_pace_ratio"])), "RECENT_PACE_CONCENTRATED")
     add(
-        market_relative_20d.lt(float(cfg["min_market_relative_20d"]))
-        | market_relative_20d.isna(),
-        "MARKET_RELATIVE_20D_WEAK",
+        market_percentile.gt(float(cfg["max_market_relative_5d_percentile"])),
+        "MARKET_RELATIVE_CROWDED",
     )
     add(
-        sector_relative_20d.lt(float(cfg["min_sector_relative_20d"]))
-        | sector_relative_20d.isna(),
-        "SECTOR_RELATIVE_20D_WEAK",
+        sector_percentile.gt(float(cfg["max_sector_relative_5d_percentile"])),
+        "SECTOR_RELATIVE_CROWDED",
     )
+    add(
+        long_relative.gt(float(cfg["max_long_relative_strength_score"])),
+        "LONG_RELATIVE_CROWDED",
+    )
+    add(day_return.lt(float(cfg["min_current_day_return"])), "CURRENT_DAY_WEAKNESS")
+    add(day_return.gt(float(cfg["max_current_day_return"])), "CURRENT_DAY_SPIKE")
+    add(drawdown.lt(float(cfg["min_drawdown_from_recent_high"])), "RECENT_HIGH_WEAKNESS")
     add(
         rank_change.notna() & rank_change.lt(float(cfg["min_rank_change"])),
-        "RANK_DETERIORATING",
-    )
-    add(
-        day_return.lt(float(cfg["min_current_day_return"])) | day_return.isna(),
-        "CURRENT_DAY_CONFIRMATION_FAILED",
-    )
-    add(
-        drawdown.lt(float(cfg["min_drawdown_from_recent_high"])) | drawdown.isna(),
-        "RECENT_HIGH_CONFIRMATION_FAILED",
+        "RANK_DETERIORATION_WATCH",
     )
     return pd.Series(["|".join(items) for items in reasons], index=frame.index, dtype="object")
 
 
-def confirmation_state(reasons: pd.Series) -> pd.Series:
-    def classify(value: Any) -> str:
-        found = {part for part in str(value or "").split("|") if part}
-        if not found:
-            return "CONFIRMED_RISING"
-        if any(part.startswith("V1_") for part in found):
+def confirmation_state(exclusions: pd.Series, cautions: pd.Series) -> pd.Series:
+    def classify(pair: tuple[Any, Any]) -> str:
+        exclusion_value, caution_value = pair
+        excluded = {part for part in str(exclusion_value or "").split("|") if part}
+        found = {part for part in str(caution_value or "").split("|") if part}
+        if excluded:
             return "REJECTED_BY_V1"
-        if "RANK_DETERIORATING" in found:
-            return "RANK_DETERIORATING"
+        if not found:
+            return "BALANCED_RISING"
+        if len(found) >= 3:
+            return "MIXED_CONFIRMATION"
         if "RECENT_PACE_STALLING" in found:
-            return "STALLING"
-        if "RECENT_PACE_SPIKE" in found:
-            return "SPIKE_RISK"
-        if {"MARKET_RELATIVE_20D_WEAK", "SECTOR_RELATIVE_20D_WEAK"} & found:
-            return "RELATIVE_WEAK"
-        if {"CURRENT_DAY_CONFIRMATION_FAILED", "RECENT_HIGH_CONFIRMATION_FAILED"} & found:
-            return "SHORT_TERM_BREAKDOWN"
-        return "UNCONFIRMED"
+            return "STALLING_RISK"
+        if {"RECENT_PACE_CONCENTRATED", "CURRENT_DAY_SPIKE"} & found:
+            return "SHORT_TERM_SPIKE"
+        if {
+            "MARKET_RELATIVE_CROWDED",
+            "SECTOR_RELATIVE_CROWDED",
+            "LONG_RELATIVE_CROWDED",
+        } & found:
+            return "CROWDING_RISK"
+        if {"CURRENT_DAY_WEAKNESS", "RECENT_HIGH_WEAKNESS"} & found:
+            return "SHORT_TERM_WEAKNESS"
+        if "RANK_DETERIORATION_WATCH" in found:
+            return "RANK_DETERIORATION_WATCH"
+        return "MIXED_CONFIRMATION"
 
-    return reasons.map(classify)
+    return pd.Series(
+        [classify(pair) for pair in zip(exclusions, cautions)],
+        index=exclusions.index,
+        dtype="object",
+    )
+
+
+def component_score(source: pd.Series, config: dict[str, Any]) -> pd.Series:
+    return (
+        triangular_score(
+            source,
+            float(config["low"]),
+            float(config["peak"]),
+            float(config["high"]),
+        )
+        * float(config["weight"])
+    ).round(4)
 
 
 def attach(frame: pd.DataFrame, policy: dict[str, Any] | None = None) -> pd.DataFrame:
-    """Attach Healthy Momentum v2 fields without mutating production or v1 ranks."""
+    """Attach balanced v2 fields without mutating production or v1 ranks."""
     policy = load_policy() if policy is None else policy
     work = healthy_momentum.attach(frame)
     work = attach_short_relative_strength(work)
@@ -213,74 +245,33 @@ def attach(frame: pd.DataFrame, policy: dict[str, Any] | None = None) -> pd.Data
     work["healthy_v2_recent_pace_ratio"] = recent_pace_ratio(work)
 
     components = policy["confirmation_components"]
-    pace_cfg = components["recent_pace_ratio"]
-    work["healthy_v2_component_recent_pace"] = (
-        triangular_score(
-            work["healthy_v2_recent_pace_ratio"],
-            float(pace_cfg["low"]),
-            float(pace_cfg["peak"]),
-            float(pace_cfg["high"]),
-        )
-        * float(pace_cfg["weight"])
-    ).round(4)
-
-    market_cfg = components["market_relative_5d"]
-    work["healthy_v2_component_market_relative_5d"] = (
-        numeric(work, "healthy_v2_market_relative_5d_percentile", 0.5).fillna(0.5)
-        * float(market_cfg["weight"])
-    ).round(4)
-
-    sector_cfg = components["sector_relative_5d"]
-    work["healthy_v2_component_sector_relative_5d"] = (
-        numeric(work, "healthy_v2_sector_relative_5d_percentile", 0.5).fillna(0.5)
-        * float(sector_cfg["weight"])
-    ).round(4)
-
-    rank_cfg = components["rank_direction"]
-    work["healthy_v2_component_rank_direction"] = (
-        bounded_linear_score(
-            numeric(work, "rank_change"),
-            float(rank_cfg["low"]),
-            float(rank_cfg["high"]),
-            float(rank_cfg.get("missing_score", 0.5)),
-        )
-        * float(rank_cfg["weight"])
-    ).round(4)
-
-    day_cfg = components["current_day_return"]
-    work["healthy_v2_component_current_day_return"] = (
-        triangular_score(
-            numeric(work, "healthy_current_day_return"),
-            float(day_cfg["low"]),
-            float(day_cfg["peak"]),
-            float(day_cfg["high"]),
-        )
-        * float(day_cfg["weight"])
-    ).round(4)
-
-    drawdown_cfg = components["drawdown_from_recent_high"]
-    work["healthy_v2_component_drawdown"] = (
-        triangular_score(
-            numeric(work, "healthy_drawdown_from_recent_high"),
-            float(drawdown_cfg["low"]),
-            float(drawdown_cfg["peak"]),
-            float(drawdown_cfg["high"]),
-        )
-        * float(drawdown_cfg["weight"])
-    ).round(4)
-
-    long_cfg = components["long_relative_strength"]
-    work["healthy_v2_component_long_relative_strength"] = (
-        numeric(work, "healthy_relative_strength_score", 50.0).fillna(50.0)
-        / 100.0
-        * float(long_cfg["weight"])
-    ).round(4)
+    work["healthy_v2_component_recent_pace"] = component_score(
+        work["healthy_v2_recent_pace_ratio"], components["recent_pace_ratio"]
+    )
+    work["healthy_v2_component_market_relative_5d"] = component_score(
+        numeric(work, "healthy_v2_market_relative_5d_percentile", 0.5).fillna(0.5),
+        components["market_relative_5d_percentile"],
+    )
+    work["healthy_v2_component_sector_relative_5d"] = component_score(
+        numeric(work, "healthy_v2_sector_relative_5d_percentile", 0.5).fillna(0.5),
+        components["sector_relative_5d_percentile"],
+    )
+    work["healthy_v2_component_current_day_return"] = component_score(
+        numeric(work, "healthy_current_day_return"), components["current_day_return"]
+    )
+    work["healthy_v2_component_drawdown"] = component_score(
+        numeric(work, "healthy_drawdown_from_recent_high"),
+        components["drawdown_from_recent_high"],
+    )
+    work["healthy_v2_component_long_relative_strength"] = component_score(
+        numeric(work, "healthy_relative_strength_score", 50.0).fillna(50.0),
+        components["long_relative_strength"],
+    )
 
     component_columns = [
         "healthy_v2_component_recent_pace",
         "healthy_v2_component_market_relative_5d",
         "healthy_v2_component_sector_relative_5d",
-        "healthy_v2_component_rank_direction",
         "healthy_v2_component_current_day_return",
         "healthy_v2_component_drawdown",
         "healthy_v2_component_long_relative_strength",
@@ -289,10 +280,14 @@ def attach(frame: pd.DataFrame, policy: dict[str, Any] | None = None) -> pd.Data
         work[component_columns].sum(axis=1).round(4).clip(lower=0.0, upper=100.0)
     )
 
-    reasons = eligibility_reasons(work, policy)
-    work["healthy_v2_exclusion_reasons"] = reasons
-    work["healthy_v2_eligible"] = reasons.eq("")
-    work["healthy_v2_confirmation_state"] = confirmation_state(reasons)
+    exclusions = v1_exclusion_reasons(work)
+    cautions = caution_reasons(work, policy)
+    work["healthy_v2_exclusion_reasons"] = exclusions
+    work["healthy_v2_caution_reasons"] = cautions
+    work["healthy_v2_eligible"] = work.get(
+        "healthy_eligible", pd.Series(False, index=work.index, dtype=bool)
+    ).fillna(False).astype(bool)
+    work["healthy_v2_confirmation_state"] = confirmation_state(exclusions, cautions)
 
     selection = policy["selection_score"]
     work["healthy_v2_selection_score"] = (
@@ -309,8 +304,8 @@ def attach(frame: pd.DataFrame, policy: dict[str, Any] | None = None) -> pd.Data
         subset = subset[subset["healthy_v2_eligible"]].sort_values(
             [
                 "healthy_v2_selection_score",
-                "healthy_v2_confirmation_score",
                 "healthy_selection_score",
+                "healthy_v2_confirmation_score",
                 "trading_value",
                 "code",
             ],
@@ -345,17 +340,35 @@ def latest_shadow_table(
     )
 
 
-def exclusion_summary(frame: pd.DataFrame) -> pd.DataFrame:
-    if "healthy_v2_exclusion_reasons" not in frame.columns:
-        frame = attach(frame)
+def _reason_summary(frame: pd.DataFrame, column: str, eligible_mask: pd.Series) -> pd.DataFrame:
     exploded = (
-        frame.loc[~frame["healthy_v2_eligible"], ["healthy_v2_exclusion_reasons"]]
-        .assign(reason=lambda value: value["healthy_v2_exclusion_reasons"].str.split("|"))
+        frame.loc[eligible_mask, [column]]
+        .assign(reason=lambda value: value[column].fillna("").str.split("|"))
         .explode("reason")
     )
     exploded = exploded[exploded["reason"].fillna("").ne("")]
     if exploded.empty:
         return pd.DataFrame(columns=["reason", "count", "ratio"])
     counts = exploded["reason"].value_counts().rename_axis("reason").reset_index(name="count")
-    counts["ratio"] = counts["count"] / len(frame)
+    counts["ratio"] = counts["count"] / max(int(eligible_mask.sum()), 1)
     return counts
+
+
+def exclusion_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    if "healthy_v2_exclusion_reasons" not in frame.columns:
+        frame = attach(frame)
+    return _reason_summary(
+        frame,
+        "healthy_v2_exclusion_reasons",
+        ~frame["healthy_v2_eligible"].fillna(False),
+    )
+
+
+def caution_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    if "healthy_v2_caution_reasons" not in frame.columns:
+        frame = attach(frame)
+    return _reason_summary(
+        frame,
+        "healthy_v2_caution_reasons",
+        frame["healthy_v2_eligible"].fillna(False),
+    )
