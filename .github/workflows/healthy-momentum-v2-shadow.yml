@@ -79,7 +79,7 @@ jobs:
             --output-dir output/healthy-momentum-v2-shadow \
             2>&1 | tee output/healthy-momentum-v2-shadow/backtest.log
 
-      - name: Diagnose confirmation features and gates
+      - name: Diagnose balanced confirmation features
         run: |
           python tools/analyze_healthy_momentum_v2_features.py \
             --history data/momentum_daily_ranking.csv \
@@ -99,11 +99,12 @@ jobs:
           diagnostic_summary = json.loads((root / 'feature_diagnostics_summary.json').read_text(encoding='utf-8'))
           methods = pd.read_csv(root / 'method_summary.csv')
           comparison = pd.read_csv(root / 'v1_vs_v2.csv')
-          latest = pd.read_csv(root / 'latest_healthy_v2_top100.csv', dtype={'code': str})
+          latest_v1 = pd.read_csv(root / 'latest_healthy_v1_top100.csv', dtype={'code': str})
+          latest_v2 = pd.read_csv(root / 'latest_healthy_v2_top100.csv', dtype={'code': str})
           exclusions = pd.read_csv(root / 'latest_v2_exclusion_summary.csv')
           buckets = pd.read_csv(root / 'feature_bucket_diagnostics.csv')
-          gates = pd.read_csv(root / 'gate_ablation.csv')
-          gate_counts = pd.read_csv(root / 'gate_count_diagnostics.csv')
+          zones = pd.read_csv(root / 'preference_zone_ablation.csv')
+          zone_counts = pd.read_csv(root / 'preference_zone_count_diagnostics.csv')
           feature_rows = pd.read_csv(root / 'historical_v1_feature_rows.csv', dtype={'code': str})
 
           assert summary['mode'] == 'SHADOW_ONLY'
@@ -116,11 +117,13 @@ jobs:
           assert summary['canonical_report_dates'] >= 6
           assert set(methods['method']) == {'production', 'healthy_v1', 'healthy_v2'}
           assert len(comparison) == 9
-          assert len(latest) > 0
-          assert latest['healthy_v2_eligible'].astype(str).str.lower().isin({'true', '1'}).all()
-          assert latest['healthy_v2_rank'].tolist() == list(range(1, len(latest) + 1))
-          assert 'healthy_v2_confirmation_score' in latest.columns
-          assert 'healthy_v2_exclusion_reasons' in latest.columns
+          assert len(latest_v1) == 100
+          assert len(latest_v2) == 100
+          assert latest_v2['healthy_v2_eligible'].astype(str).str.lower().isin({'true', '1'}).all()
+          assert latest_v2['healthy_v2_rank'].tolist() == list(range(1, 101))
+          assert 'healthy_v2_confirmation_score' in latest_v2.columns
+          assert 'healthy_v2_exclusion_reasons' in latest_v2.columns
+          assert 'healthy_v2_caution_reasons' in latest_v2.columns
           assert len(exclusions) > 0
           # Performance may improve or worsen. The lab must report either result without
           # automatically changing production or v1.
@@ -128,12 +131,14 @@ jobs:
 
           assert diagnostic_summary['mode'] == 'SHADOW_ONLY'
           assert diagnostic_summary['automatic_threshold_change'] is False
+          assert diagnostic_summary['initial_hard_confirmation_candidate_rejected'] is True
           assert diagnostic_summary['canonical_report_dates'] >= 6
           assert len(buckets) > 0
           assert set(buckets['quintile'].dropna().astype(int)).issubset({1, 2, 3, 4, 5})
-          assert len(gates) == diagnostic_summary['gate_count'] * 3
-          assert len(gate_counts) > 0
+          assert len(zones) == diagnostic_summary['preference_zone_count'] * 3
+          assert len(zone_counts) > 0
           assert len(feature_rows) > 0
+          assert feature_rows['healthy_v2_eligible'].astype(str).str.lower().isin({'true', '1'}).all()
           PY
 
       - name: Confirm remote read-only workflow
