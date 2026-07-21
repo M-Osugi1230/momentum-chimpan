@@ -1,11 +1,13 @@
 """Invariant tests for Detailed OOS Evidence v2."""
 from __future__ import annotations
 from pathlib import Path
+import sys
 import tempfile
 import numpy as np
 import pandas as pd
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import detailed_oos_analysis as core
 
 
