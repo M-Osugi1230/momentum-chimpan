@@ -1,5 +1,5 @@
-schema_version: 1
-policy_id: healthy-momentum-v2-confirmation-shadow
+schema_version: 2
+policy_id: healthy-momentum-v2-balanced-shadow
 mode: SHADOW_ONLY
 research_only: true
 automatic_promotion: false
@@ -7,51 +7,54 @@ automatic_production_ranking_change: false
 automatic_paper_change: false
 
 base_policy: research/healthy_momentum_policy.yaml
+v1_is_only_eligibility_gate: true
 
-confirmation_eligibility:
-  min_return_60d: 0.0
-  min_recent_pace_ratio: 0.10
-  max_recent_pace_ratio: 0.80
-  min_market_relative_20d: 0.0
-  min_sector_relative_20d: -0.02
+confirmation_cautions:
+  min_recent_pace_ratio: 0.05
+  max_recent_pace_ratio: 1.20
+  max_market_relative_5d_percentile: 0.90
+  max_sector_relative_5d_percentile: 0.90
+  max_long_relative_strength_score: 90
   min_rank_change: -20
   min_current_day_return: -0.015
+  max_current_day_return: 0.03
   min_drawdown_from_recent_high: -0.08
 
 confirmation_components:
   recent_pace_ratio:
-    weight: 25
-    low: 0.10
-    peak: 0.25
-    high: 0.80
-  market_relative_5d:
+    weight: 20
+    low: 0.05
+    peak: 0.35
+    high: 1.20
+  market_relative_5d_percentile:
     weight: 15
-    method: report_percentile
-  sector_relative_5d:
+    low: 0.0
+    peak: 0.35
+    high: 0.90
+  sector_relative_5d_percentile:
     weight: 15
-    method: report_sector_percentile
-  rank_direction:
-    weight: 15
-    low: -20
-    high: 20
-    missing_score: 0.50
+    low: 0.0
+    peak: 0.40
+    high: 0.90
   current_day_return:
-    weight: 10
-    low: -0.015
-    peak: 0.01
-    high: 0.05
+    weight: 15
+    low: -0.03
+    peak: 0.005
+    high: 0.03
   drawdown_from_recent_high:
     weight: 10
-    low: -0.08
-    peak: -0.02
-    high: 0.005
+    low: -0.10
+    peak: -0.03
+    high: 0.01
   long_relative_strength:
-    weight: 10
-    method: healthy_relative_strength_score
+    weight: 25
+    low: 30
+    peak: 55
+    high: 90
 
 selection_score:
-  healthy_v1_weight: 0.60
-  confirmation_weight: 0.40
+  healthy_v1_weight: 0.85
+  confirmation_weight: 0.15
 
 shadow_backtest:
   top_sizes: [10, 30, 100]
@@ -62,6 +65,7 @@ shadow_backtest:
     - production
     - healthy_v1
     - healthy_v2
+  preserve_failed_candidates: true
   reason: Historical report-close replay is diagnostic only. V2 may not replace v1 or production without live forward evidence and explicit manual approval.
 
 promotion_policy:
