@@ -53,6 +53,8 @@ def test_all() -> None:
  with tempfile.TemporaryDirectory() as tmp:
   root=Path(tmp); _,cfg=swing.load_protocol(protocol(root/'p.yaml'))
   c=swing.states(candidates(),cfg['rank_move'])
+  c['breadth_regime']='MIXED'; c['trend_regime']='UP'; c['vol_regime']='MID'
+  c['liquidity_band']='MID'; c['ma20_band']='MODERATE'
   assert {'FIRST_PICK','STABLE_REPEAT'}.issubset(set(c.signal_state))
   e=events(c)
   h=swing.summaries(e,cfg); assert not h.empty and set(h.horizon_sessions)=={5,10,20,40,60}
