@@ -5,9 +5,11 @@ on:
     branches: [main, research/healthy-rank-v3-holdout]
     paths:
       - swing_tendency_analysis.py
+      - swing_tendency_robustness.py
       - healthy_rank_v3.py
       - backtest_healthy_rank_v3_holdout.py
       - detailed_historical_oos_backfill.py
+      - detailed_oos_path.py
       - run_detailed_historical_oos.py
       - research/swing_tendency_protocol.yaml
       - research/healthy_rank_v3_protocol.yaml
@@ -66,9 +68,11 @@ jobs:
         run: |
           python -m py_compile \
             swing_tendency_analysis.py \
+            swing_tendency_robustness.py \
             healthy_rank_v3.py \
             backtest_healthy_rank_v3_holdout.py \
             detailed_historical_oos_backfill.py \
+            detailed_oos_path.py \
             run_detailed_historical_oos.py \
             .github/test_swing_tendency.py
 
@@ -146,6 +150,23 @@ jobs:
             --output-dir output/swing-study/tendency \
             2>&1 | tee output/swing-study/tendency/run.log
 
+      - name: Run robust swing comparisons
+        run: |
+          set -o pipefail
+          python swing_tendency_robustness.py \
+            --strict \
+            --events output/swing-study/holdout/healthy_rank_v3_events.csv \
+            --marginal-detail output/swing-study/tendency/marginal_holding_detail.csv \
+            --path-detail output/swing-study/tendency/swing_path_detail.csv \
+            --first-touch output/swing-study/tendency/threshold_first_touch.csv \
+            --adverse output/swing-study/tendency/pre_profit_adverse_excursion.csv \
+            --signal-state-summary output/swing-study/tendency/signal_state_swing_summary.csv \
+            --regime-summary output/swing-study/tendency/regime_swing_summary.csv \
+            --liquidity-summary output/swing-study/tendency/liquidity_swing_summary.csv \
+            --protocol research/swing_tendency_protocol.yaml \
+            --output-dir output/swing-study/tendency \
+            2>&1 | tee output/swing-study/tendency/robustness.log
+
       - name: Validate research and safety boundaries
         run: |
           python - <<'PY'
@@ -157,23 +178,36 @@ jobs:
           backfill=json.loads((root/'backfill_manifest.json').read_text())
           holdout=json.loads((root/'holdout/manifest.json').read_text())
           swing=json.loads((root/'tendency/manifest.json').read_text())
+          robust=json.loads((root/'tendency/robustness_manifest.json').read_text())
           protocol=yaml.safe_load(Path('research/swing_tendency_protocol.yaml').read_text())
           summary=pd.read_csv(root/'tendency/swing_horizon_summary.csv')
           marginal=pd.read_csv(root/'tendency/marginal_holding_return.csv')
           paths=pd.read_csv(root/'tendency/swing_path_detail.csv')
-          for manifest in (backfill,holdout,swing):
+          events=pd.read_csv(root/'holdout/healthy_rank_v3_events.csv', low_memory=False)
+          pairs=pd.read_csv(root/'tendency/paired_horizon_comparison.csv')
+          cases=pd.read_csv(root/'tendency/swing_casebook.csv')
+          for manifest in (backfill,holdout,swing,robust):
               assert manifest['promotion_evidence_allowed'] is False
               assert manifest['automatic_strategy_change'] is False
               assert manifest['production_state_mutations'] == []
           assert swing['automatic_exit_rule_change'] is False
+          assert robust['automatic_exit_rule_change'] is False
           assert swing['healthy_v1_eligibility_mutations'] == []
           assert protocol['automatic_exit_rule_change'] is False
+          assert protocol['price_path']['maximum_session_gap_days'] == 14
+          assert protocol['evaluation']['stock_session_definition'] == 'POSITIVE_VOLUME_OBSERVATIONS_ONLY'
           assert set(swing['years']) == {2018,2019,2020,2021}
           assert set(swing['methods']) == {'production','healthy_v1','healthy_v3'}
           assert {20,40,60}.issubset(set(swing['horizons']))
           assert not summary.empty and not marginal.empty and not paths.empty
           assert set(paths['year']) == {2018,2019,2020,2021}
           assert paths['path_data_quality'].eq('OK').all()
+          events['signal_date']=pd.to_datetime(events['signal_date'], errors='coerce')
+          long_dates=(events[events['horizon_sessions'].isin([20,40,60])]
+                      .groupby([events['signal_date'].dt.year,'horizon_sessions'])['signal_date'].nunique())
+          assert long_dates.min() >= 35, long_dates
+          assert set(pairs['benchmark_method']) == {'healthy_v1','production'}
+          assert not cases.empty
           PY
 
       - name: Confirm read-only workflow
