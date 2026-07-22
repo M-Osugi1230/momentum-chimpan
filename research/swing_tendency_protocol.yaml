@@ -1,0 +1,83 @@
+version: 2026-07-22-swing-tendency-protocol-v1
+mode: RESEARCH_ONLY_NON_PROMOTABLE
+promotion_evidence_allowed: false
+automatic_strategy_change: false
+automatic_exit_rule_change: false
+automatic_threshold_optimization: false
+production_ranking_change: false
+
+study:
+  objective: DESCRIBE_REPRODUCIBLE_SWING_TENDENCIES_NOT_PREDICT_PRICES
+  evaluation_start: '2018-01-01'
+  evaluation_end: '2021-12-31'
+  design_period_relationship: INDEPENDENT_HOLDOUT_FOR_HEALTHY_RANK_V3
+  maximum_holding_sessions: 60
+  approximate_maximum_holding_months: 3
+  universe: DETERMINISTIC_SECTOR_BALANCED_CURRENT_LIST_SAMPLE_1500
+  ranking_frequency: EVERY_5_TRADING_SESSIONS
+
+evaluation:
+  methods: [production, healthy_v1, healthy_v3]
+  top_sizes: [10, 30, 100]
+  horizons: [5, 10, 20, 40, 60]
+  focus_horizons: [20, 40, 60]
+  marginal_intervals:
+    - [0, 20]
+    - [20, 40]
+    - [40, 60]
+  round_trip_cost_bps: [20, 50, 100]
+  entry_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
+  fixed_horizon_exit: ADJUSTED_CLOSE
+  date_weighting: EQUAL_WEIGHT_BY_SIGNAL_DATE
+  robust_statistics:
+    trim_fraction: 0.05
+    winsor_fraction: 0.01
+    paired_bootstrap_iterations: 2000
+    random_placebo_repetitions: 500
+
+price_path:
+  upside_thresholds: [0.05, 0.10, 0.15]
+  downside_thresholds: [-0.05, -0.08, -0.10]
+  principal_first_touch_pairs:
+    - [0.05, -0.05]
+    - [0.10, -0.08]
+    - [0.15, -0.10]
+  maximum_entry_gap_days: 7
+  maximum_session_gap_days: 10
+  maximum_adjacent_price_multiplier: 4.0
+  require_positive_volume_sessions: true
+
+signal_states:
+  rank_improvement_minimum: 5
+  states: [FIRST_PICK, STABLE_REPEAT, IMPROVING, DETERIORATING, REENTRY]
+
+regimes:
+  breadth_weak_max: 0.33
+  breadth_strong_min: 0.67
+  trend_positive_threshold: 0.0
+  liquidity_percentile_bins: [0.0, 0.33, 0.67, 1.0]
+  ma20_deviation_bins: [-999.0, 0.03, 0.08, 999.0]
+
+interpretation:
+  minimum_years_same_direction: 3
+  minimum_observations_per_cell: 100
+  minimum_signal_dates_per_cell: 20
+  require_trimmed_mean_confirmation: true
+  require_median_direction_confirmation: false
+  no_single_optimal_holding_period_claim: true
+  directional_tendencies_only: true
+
+known_limitations:
+  - CURRENT_LIST_SURVIVORSHIP_AND_MEMBERSHIP_BIAS
+  - YFINANCE_ADJUSTED_PRICE_DEPENDENCY
+  - CURRENT_METADATA_MAY_DIFFER_FROM_HISTORICAL_METADATA
+  - FIVE_SESSION_SNAPSHOT_FREQUENCY
+  - SAMPLE_CROSS_SECTION_MEDIAN_IS_NOT_TOPIX
+  - OVERLAPPING_SIGNAL_WINDOWS
+  - HISTORICAL_RESULTS_DO_NOT_AUTHORIZE_LIVE_RULE_CHANGES
+
+safety:
+  healthy_v1_eligibility_change: false
+  production_state_mutations: []
+  live_forward_confirmation_required: true
+  separate_issue_pr_and_manual_approval_required: true
