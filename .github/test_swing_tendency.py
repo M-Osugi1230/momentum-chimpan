@@ -4,6 +4,7 @@ import sys, tempfile
 from pathlib import Path
 import numpy as np, pandas as pd, yaml
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+import run_detailed_historical_oos as strict_outcomes
 import swing_tendency_analysis as swing
 
 
@@ -17,7 +18,7 @@ def protocol(path: Path) -> Path:
    'robust_statistics':{'trim_fraction':.05,'paired_bootstrap_iterations':20}},
   'price_path':{'upside_thresholds':[.05,.10,.15],'downside_thresholds':[-.05,-.08,-.10],
    'principal_first_touch_pairs':[[.05,-.05],[.10,-.08],[.15,-.10]],
-   'maximum_entry_gap_days':7,'maximum_session_gap_days':10,'maximum_adjacent_price_multiplier':4.0},
+   'maximum_entry_gap_days':7,'maximum_session_gap_days':14,'maximum_adjacent_price_multiplier':4.0},
   'signal_states':{'rank_improvement_minimum':5},
   'regimes':{'breadth_weak_max':.33,'breadth_strong_min':.67},
   'interpretation':{'minimum_years_same_direction':1,'minimum_observations_per_cell':1,'minimum_signal_dates_per_cell':1},
@@ -49,9 +50,25 @@ def events(c: pd.DataFrame) -> pd.DataFrame:
  return pd.DataFrame(rows)
 
 
+def test_positive_volume_session_contract() -> None:
+ prices=pd.DataFrame({
+  'date':pd.to_datetime(['2019-04-26','2019-04-29','2019-05-07']),
+  'adjusted_open':[100.,999.,102.],
+  'adjusted_high':[101.,1000.,103.],
+  'adjusted_low':[99.,998.,101.],
+  'adjusted_close':[100.,999.,102.],
+  'volume':[1000,0,1000],
+ })
+ result=strict_outcomes.one_outcome_strict(prices,pd.Timestamp('2019-04-25'),2)
+ assert result is not None and result['exit_date']==pd.Timestamp('2019-05-07')
+ assert result['max_session_gap_days']==11
+ assert strict_outcomes.MAX_SESSION_GAP_DAYS==14
+
+
 def test_all() -> None:
  with tempfile.TemporaryDirectory() as tmp:
   root=Path(tmp); _,cfg=swing.load_protocol(protocol(root/'p.yaml'))
+  assert cfg['session_gap']==14
   c=swing.states(candidates(),cfg['rank_move'])
   c['breadth_regime']='MIXED'; c['trend_regime']='UP'; c['vol_regime']='MID'
   c['liquidity_band']='MID'; c['ma20_band']='MODERATE'
@@ -72,6 +89,7 @@ def test_all() -> None:
   assert set(t.first_touch).issubset({'UP_FIRST','DOWN_FIRST','NEITHER','BOTH'})
   sc=swing.stability(h,m,cfg); assert not sc.empty
   assert swing.tmean(pd.Series([1,2,3,100]),.25)==2.5
+ test_positive_volume_session_contract()
 
 
 if __name__=='__main__':
