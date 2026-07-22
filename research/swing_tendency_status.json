@@ -1,0 +1,9 @@
+{
+  "mode": "RESEARCH_ONLY_NON_PROMOTABLE",
+  "issue": 143,
+  "depends_on_pr": 142,
+  "automatic_strategy_change": false,
+  "automatic_exit_rule_change": false,
+  "production_state_mutations": [],
+  "healthy_v1_eligibility_mutations": []
+}
