@@ -6,7 +6,9 @@ import pandas as pd
 from detailed_oos_shared import *
 
 MAX_ENTRY_GAP_DAYS = 7
-MAX_SESSION_GAP_DAYS = 10
+# Accept legitimate market-wide closures such as the 11-day 2019 Golden Week gap,
+# while rejecting longer stock-specific suspensions.
+MAX_SESSION_GAP_DAYS = 14
 MAX_ADJACENT_PRICE_MULTIPLIER = 4.0
 
 
