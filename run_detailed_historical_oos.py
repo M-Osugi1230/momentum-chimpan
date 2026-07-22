@@ -9,8 +9,19 @@ import run_historical_oos_analysis as safe
 
 DETAILED_HORIZONS = (1, 3, 5, 10, 20, 40, 60)
 MAX_ENTRY_GAP_DAYS = 7
-MAX_SESSION_GAP_DAYS = 10
+# The 2019 Japanese Golden Week closure produced an 11-calendar-day market-wide gap.
+# Fourteen days accepts legitimate exchange closures while still rejecting multi-week
+# stock-specific suspensions and stale histories.
+MAX_SESSION_GAP_DAYS = 14
 MAX_ADJACENT_PRICE_MULTIPLIER = 4.0
+
+
+def positive_volume_sessions(prices: pd.DataFrame) -> pd.DataFrame:
+    """Return executable observations instead of rejecting any window with one zero-volume row."""
+    if "volume" not in prices:
+        return prices.copy()
+    volume = pd.to_numeric(prices["volume"], errors="coerce")
+    return prices.loc[volume.gt(0)].copy()
 
 
 def one_outcome_strict(
@@ -18,20 +29,20 @@ def one_outcome_strict(
     signal_date: pd.Timestamp,
     horizon: int,
 ) -> dict | None:
-    dates = prices["date"].to_numpy(dtype="datetime64[ns]")
+    traded = positive_volume_sessions(prices)
+    if traded.empty:
+        return None
+    dates = traded["date"].to_numpy(dtype="datetime64[ns]")
     entry_position = int(np.searchsorted(dates, np.datetime64(signal_date), side="right"))
     exit_position = entry_position + int(horizon) - 1
-    if entry_position >= len(prices) or exit_position >= len(prices):
+    if entry_position >= len(traded) or exit_position >= len(traded):
         return None
-    window = prices.iloc[entry_position : exit_position + 1].copy()
+    window = traded.iloc[entry_position : exit_position + 1].copy()
     entry = window.iloc[0]
     exit_row = window.iloc[-1]
     entry_date = pd.Timestamp(entry["date"])
     entry_gap_days = int((entry_date.normalize() - pd.Timestamp(signal_date).normalize()).days)
     if entry_gap_days < 1 or entry_gap_days > MAX_ENTRY_GAP_DAYS:
-        return None
-    volume = pd.to_numeric(window.get("volume"), errors="coerce")
-    if volume is not None and (volume.isna().any() or volume.le(0).any()):
         return None
     session_gaps = pd.to_datetime(window["date"], errors="coerce").diff().dt.days.dropna()
     max_session_gap_days = int(session_gaps.max()) if len(session_gaps) else 0
@@ -64,6 +75,7 @@ def one_outcome_strict(
         "entry_gap_days": entry_gap_days,
         "max_session_gap_days": max_session_gap_days,
         "outcome_data_quality": "OK",
+        "session_definition": "POSITIVE_VOLUME_OBSERVATIONS_ONLY",
     }
 
 
