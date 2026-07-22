@@ -11,7 +11,7 @@ import pandas as pd
 import detailed_oos_analysis as core
 import healthy_rank_v3
 
-VERSION = "2026-07-22-healthy-rank-v3-path-v1"
+VERSION = "2026-07-22-healthy-rank-v3-path-v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +73,11 @@ def main() -> int:
         .gt(0)
         .all(axis=1)
     ]
+    zero_volume_rows_removed = 0
+    if "volume" in panel.columns:
+        positive_volume = panel["volume"].gt(0)
+        zero_volume_rows_removed = int((~positive_volume).sum())
+        panel = panel[positive_volume].copy()
 
     detail, summary = core.path_quality(
         methods,
@@ -89,6 +94,8 @@ def main() -> int:
         "candidate_rows": len(methods),
         "path_detail_rows": len(detail),
         "path_summary_rows": len(summary),
+        "zero_volume_non_sessions_removed_before_path_analysis": zero_volume_rows_removed,
+        "path_session_definition": "POSITIVE_VOLUME_OBSERVATIONS_ONLY",
         "methods": sorted(detail["method"].unique().tolist()) if len(detail) else [],
         "years": sorted(int(value) for value in detail["year"].unique()) if len(detail) else [],
         "research_only": True,
