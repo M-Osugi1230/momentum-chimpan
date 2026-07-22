@@ -1,0 +1,9 @@
+Issue #143
+Period: 2018-01-01 to 2021-12-31
+Methods: production, healthy_v1, healthy_v3
+Horizons: 5, 10, 20, 40, 60 sessions
+Focus: 20, 40, 60 sessions
+Marginal intervals: 0-20, 20-40, 40-60 sessions
+Mode: RESEARCH_ONLY_NON_PROMOTABLE
+Automatic strategy change: false
+Automatic exit rule change: false
