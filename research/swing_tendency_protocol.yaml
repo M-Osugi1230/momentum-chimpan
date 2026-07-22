@@ -1,4 +1,4 @@
-version: 2026-07-22-swing-tendency-protocol-v1
+version: 2026-07-22-swing-tendency-protocol-v2
 mode: RESEARCH_ONLY_NON_PROMOTABLE
 promotion_evidence_allowed: false
 automatic_strategy_change: false
@@ -26,8 +26,9 @@ evaluation:
     - [20, 40]
     - [40, 60]
   round_trip_cost_bps: [20, 50, 100]
-  entry_model: NEXT_AVAILABLE_SESSION_ADJUSTED_OPEN
-  fixed_horizon_exit: ADJUSTED_CLOSE
+  entry_model: NEXT_AVAILABLE_POSITIVE_VOLUME_SESSION_ADJUSTED_OPEN
+  fixed_horizon_exit: POSITIVE_VOLUME_SESSION_ADJUSTED_CLOSE
+  stock_session_definition: POSITIVE_VOLUME_OBSERVATIONS_ONLY
   date_weighting: EQUAL_WEIGHT_BY_SIGNAL_DATE
   robust_statistics:
     trim_fraction: 0.05
@@ -43,7 +44,8 @@ price_path:
     - [0.10, -0.08]
     - [0.15, -0.10]
   maximum_entry_gap_days: 7
-  maximum_session_gap_days: 10
+  # The 2019 Japanese Golden Week market closure created an 11-day legitimate gap.
+  maximum_session_gap_days: 14
   maximum_adjacent_price_multiplier: 4.0
   require_positive_volume_sessions: true
 
