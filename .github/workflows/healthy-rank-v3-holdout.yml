@@ -177,8 +177,8 @@ jobs:
           assert len(scorecard) == 6
           assert set(scorecard['promotion_status']) == {'RESEARCH_SUPPORT_ONLY_NON_PROMOTABLE'}
           eligible = rankings['healthy_v3_eligible'].astype(str).str.lower().eq('true')
-          healthy = rankings['healthy_eligible'].astype(str).str.lower().eq('true')
-          assert healthy[eligible].all()
+          assert rankings.loc[eligible, 'healthy_v3_exclusion_reasons'].fillna('').eq('').all()
+          assert rankings.loc[eligible, 'healthy_v3_rank'].notna().all()
           assert events['net_return'].abs().max() < 20
           assert set(path['years']) == {2018, 2019, 2020, 2021}
           PY
