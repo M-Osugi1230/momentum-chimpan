@@ -1,4 +1,4 @@
-"""Invariant tests for preregistered Healthy Rank v3."""
+"""Invariant tests for preregistered Healthy Rank v3 and its holdout data contract."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +8,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import detailed_oos_path
 import healthy_rank_v3
+import run_detailed_historical_oos as strict_outcomes
 
 
 def fixture() -> pd.DataFrame:
@@ -71,8 +73,58 @@ def test_v1_ineligible_never_admitted() -> None:
     assert row["healthy_v3_exclusion_reasons"].eq("REJECTED_BY_HEALTHY_V1").all()
 
 
+def price_rows(dates: list[str], volumes: list[int], closes: list[float]) -> pd.DataFrame:
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(dates),
+            "adjusted_open": closes,
+            "adjusted_high": np.asarray(closes) * 1.01,
+            "adjusted_low": np.asarray(closes) * 0.99,
+            "adjusted_close": closes,
+            "volume": volumes,
+        }
+    )
+    return frame
+
+
+def test_positive_volume_session_definition() -> None:
+    # A zero-volume row is not an executable stock session and must be skipped, not used
+    # to invalidate an otherwise executable multi-session outcome.
+    prices = price_rows(
+        ["2019-04-26", "2019-04-29", "2019-05-07", "2019-05-08"],
+        [1000, 0, 1200, 1300],
+        [100.0, 999.0, 102.0, 103.0],
+    )
+    result = strict_outcomes.one_outcome_strict(prices, pd.Timestamp("2019-04-25"), 2)
+    assert result is not None
+    assert result["entry_date"] == pd.Timestamp("2019-04-26")
+    assert result["exit_date"] == pd.Timestamp("2019-05-07")
+    assert result["max_session_gap_days"] == 11
+    assert result["session_definition"] == "POSITIVE_VOLUME_OBSERVATIONS_ONLY"
+    assert np.isclose(result["gross_return"], 0.02)
+
+
+def test_market_closure_and_suspension_boundary() -> None:
+    assert strict_outcomes.MAX_SESSION_GAP_DAYS == 14
+    assert detailed_oos_path.MAX_SESSION_GAP_DAYS == 14
+    accepted = price_rows(
+        ["2019-04-26", "2019-05-07"],
+        [1000, 1000],
+        [100.0, 101.0],
+    )
+    rejected = price_rows(
+        ["2019-04-26", "2019-05-13"],
+        [1000, 1000],
+        [100.0, 101.0],
+    )
+    assert strict_outcomes.one_outcome_strict(accepted, pd.Timestamp("2019-04-25"), 2) is not None
+    assert strict_outcomes.one_outcome_strict(rejected, pd.Timestamp("2019-04-25"), 2) is None
+
+
 if __name__ == "__main__":
     test_attach()
     test_missing_component()
     test_v1_ineligible_never_admitted()
+    test_positive_volume_session_definition()
+    test_market_closure_and_suspension_boundary()
     print("Healthy Rank v3 invariant tests passed")
