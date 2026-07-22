@@ -1,0 +1,252 @@
+name: Swing Tendency Study 2018-2021
+
+on:
+  pull_request:
+    branches: [main, research/healthy-rank-v3-holdout]
+    paths:
+      - swing_tendency_analysis.py
+      - swing_tendency_robustness.py
+      - healthy_rank_v3.py
+      - backtest_healthy_rank_v3_holdout.py
+      - detailed_historical_oos_backfill.py
+      - detailed_oos_path.py
+      - run_detailed_historical_oos.py
+      - research/swing_tendency_protocol.yaml
+      - research/healthy_rank_v3_protocol.yaml
+      - docs/SWING_TENDENCY_STUDY.md
+      - .github/test_swing_tendency.py
+      - .github/workflows/swing-tendency-study.yml
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: 'Deterministic sector-balanced sample size'
+        required: false
+        default: '1500'
+        type: string
+      sample_every:
+        description: 'Ranking snapshot every N trading sessions'
+        required: false
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swing-tendency-study-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONHASHSEED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Compile research tools
+        run: |
+          python -m py_compile \
+            swing_tendency_analysis.py \
+            swing_tendency_robustness.py \
+            healthy_rank_v3.py \
+            backtest_healthy_rank_v3_holdout.py \
+            detailed_historical_oos_backfill.py \
+            detailed_oos_path.py \
+            run_detailed_historical_oos.py \
+            .github/test_swing_tendency.py
+
+      - name: Run swing invariant tests
+        run: |
+          set -o pipefail
+          python .github/test_swing_tendency.py 2>&1 | tee swing-tendency-test.log
+
+      - name: Resolve parameters
+        id: parameters
+        env:
+          INPUT_MAX_SYMBOLS: ${{ inputs.max_symbols }}
+          INPUT_SAMPLE_EVERY: ${{ inputs.sample_every }}
+        run: |
+          echo "max_symbols=${INPUT_MAX_SYMBOLS:-1500}" >> "$GITHUB_OUTPUT"
+          echo "sample_every=${INPUT_SAMPLE_EVERY:-5}" >> "$GITHUB_OUTPUT"
+
+      - name: Build freshness-safe 2018-2021 rankings
+        env:
+          MAX_SYMBOLS: ${{ steps.parameters.outputs.max_symbols }}
+          SAMPLE_EVERY: ${{ steps.parameters.outputs.sample_every }}
+        run: |
+          mkdir -p output/swing-study
+          set -o pipefail
+          python detailed_historical_oos_backfill.py \
+            --strict \
+            --download-start 2016-10-01 \
+            --download-end 2022-04-30 \
+            --evaluation-start 2018-01-01 \
+            --evaluation-end 2021-12-31 \
+            --max-symbols "$MAX_SYMBOLS" \
+            --sample-every "$SAMPLE_EVERY" \
+            --batch-size 50 \
+            --minimum-coverage-ratio 0.65 \
+            --top-limit 100 \
+            --lookback-rows 260 \
+            --output-dir output/swing-study \
+            2>&1 | tee output/swing-study/backfill.log
+
+      - name: Build strict 60-session outcomes
+        run: |
+          mkdir -p output/swing-study/base-analysis
+          set -o pipefail
+          python run_detailed_historical_oos.py \
+            --strict \
+            --ranking output/swing-study/historical_ranking.csv \
+            --prices output/swing-study/historical_price_panel.csv \
+            --backfill-manifest output/swing-study/backfill_manifest.json \
+            --output-dir output/swing-study/base-analysis \
+            2>&1 | tee output/swing-study/base-analysis/run.log
+
+      - name: Build preregistered Healthy Rank v3 events
+        run: |
+          mkdir -p output/swing-study/holdout
+          set -o pipefail
+          python backtest_healthy_rank_v3_holdout.py \
+            --strict \
+            --enriched-ranking output/swing-study/base-analysis/enriched_historical_ranking.csv \
+            --universe-outcomes output/swing-study/base-analysis/universe_outcomes.csv \
+            --backfill-manifest output/swing-study/backfill_manifest.json \
+            --protocol research/healthy_rank_v3_protocol.yaml \
+            --output-dir output/swing-study/holdout \
+            2>&1 | tee output/swing-study/holdout/run.log
+
+      - name: Run three-month swing tendency study
+        run: |
+          mkdir -p output/swing-study/tendency
+          set -o pipefail
+          python swing_tendency_analysis.py \
+            --strict \
+            --events output/swing-study/holdout/healthy_rank_v3_events.csv \
+            --enriched-ranking output/swing-study/base-analysis/enriched_historical_ranking.csv \
+            --prices output/swing-study/historical_price_panel.csv \
+            --protocol research/swing_tendency_protocol.yaml \
+            --output-dir output/swing-study/tendency \
+            2>&1 | tee output/swing-study/tendency/run.log
+
+      - name: Run robust swing comparisons
+        run: |
+          set -o pipefail
+          python swing_tendency_robustness.py \
+            --strict \
+            --events output/swing-study/holdout/healthy_rank_v3_events.csv \
+            --marginal-detail output/swing-study/tendency/marginal_holding_detail.csv \
+            --path-detail output/swing-study/tendency/swing_path_detail.csv \
+            --first-touch output/swing-study/tendency/threshold_first_touch.csv \
+            --adverse output/swing-study/tendency/pre_profit_adverse_excursion.csv \
+            --signal-state-summary output/swing-study/tendency/signal_state_swing_summary.csv \
+            --regime-summary output/swing-study/tendency/regime_swing_summary.csv \
+            --liquidity-summary output/swing-study/tendency/liquidity_swing_summary.csv \
+            --protocol research/swing_tendency_protocol.yaml \
+            --output-dir output/swing-study/tendency \
+            2>&1 | tee output/swing-study/tendency/robustness.log
+
+      - name: Validate research and safety boundaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          import yaml
+          root=Path('output/swing-study')
+          backfill=json.loads((root/'backfill_manifest.json').read_text())
+          holdout=json.loads((root/'holdout/manifest.json').read_text())
+          swing=json.loads((root/'tendency/manifest.json').read_text())
+          robust=json.loads((root/'tendency/robustness_manifest.json').read_text())
+          protocol=yaml.safe_load(Path('research/swing_tendency_protocol.yaml').read_text())
+          summary=pd.read_csv(root/'tendency/swing_horizon_summary.csv')
+          marginal=pd.read_csv(root/'tendency/marginal_holding_return.csv')
+          paths=pd.read_csv(root/'tendency/swing_path_detail.csv')
+          events=pd.read_csv(root/'holdout/healthy_rank_v3_events.csv', low_memory=False)
+          pairs=pd.read_csv(root/'tendency/paired_horizon_comparison.csv')
+          cases=pd.read_csv(root/'tendency/swing_casebook.csv')
+          for manifest in (backfill,holdout,swing,robust):
+              assert manifest['promotion_evidence_allowed'] is False
+              assert manifest['automatic_strategy_change'] is False
+              assert manifest['production_state_mutations'] == []
+          assert swing['automatic_exit_rule_change'] is False
+          assert robust['automatic_exit_rule_change'] is False
+          assert swing['healthy_v1_eligibility_mutations'] == []
+          assert protocol['automatic_exit_rule_change'] is False
+          assert protocol['price_path']['maximum_session_gap_days'] == 14
+          assert protocol['evaluation']['stock_session_definition'] == 'POSITIVE_VOLUME_OBSERVATIONS_ONLY'
+          assert set(swing['years']) == {2018,2019,2020,2021}
+          assert set(swing['methods']) == {'production','healthy_v1','healthy_v3'}
+          assert {20,40,60}.issubset(set(swing['horizons']))
+          assert not summary.empty and not marginal.empty and not paths.empty
+          assert set(paths['year']) == {2018,2019,2020,2021}
+          assert paths['path_data_quality'].eq('OK').all()
+          events['signal_date']=pd.to_datetime(events['signal_date'], errors='coerce')
+          long_dates=(events[events['horizon_sessions'].isin([20,40,60])]
+                      .groupby([events['signal_date'].dt.year,'horizon_sessions'])['signal_date'].nunique())
+          assert long_dates.min() >= 35, long_dates
+          assert set(pairs['benchmark_method']) == {'healthy_v1','production'}
+          assert not cases.empty
+          PY
+
+      - name: Confirm read-only workflow
+        run: |
+          git status --short --untracked-files=no | tee output/swing-study/tendency/tracked_worktree_status.txt
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          text=Path('.github/workflows/swing-tendency-study.yml').read_text(encoding='utf-8')
+          workflow=yaml.safe_load(text)
+          assert workflow['permissions']['contents']=='read'
+          for token in ['contents:'+' write','pull-requests:'+' write','git'+' push','smtp'+'.','EMAIL_'+'APP_PASSWORD']:
+              assert token not in text
+          PY
+
+      - name: Upload swing tendency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swing-tendency-study-${{ github.run_id }}
+          path: |
+            output/swing-study/backfill_manifest.json
+            output/swing-study/backfill_coverage.csv
+            output/swing-study/backfill_freshness_audit.csv
+            output/swing-study/backfill_data_quality.csv
+            output/swing-study/backfill_errors.csv
+            output/swing-study/backfill.log
+            output/swing-study/base-analysis/**
+            output/swing-study/holdout/**
+            output/swing-study/tendency/**
+            swing-tendency-test.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Upload reproducibility price panel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swing-tendency-price-panel-${{ github.run_id }}
+          path: output/swing-study/historical_price_panel.csv
+          retention-days: 30
+          if-no-files-found: warn
