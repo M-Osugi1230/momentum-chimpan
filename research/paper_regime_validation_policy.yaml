@@ -1,0 +1,59 @@
+study:
+  id: paper-portfolio-regime-validation-v1
+  registered_at: '2026-07-23'
+  research_only: true
+  objective: Validate paper portfolio behavior separately across every market and operational regime.
+
+market_regimes:
+  - label: 強気
+    target_exposure: 0.80
+  - label: やや強気
+    target_exposure: 0.65
+  - label: 中立
+    target_exposure: 0.45
+  - label: 弱気
+    target_exposure: 0.20
+  - label: 過熱警戒
+    target_exposure: 0.30
+
+operational_health:
+  PASS:
+    exposure_multiplier: 1.00
+    new_entries_allowed: true
+  WARN:
+    exposure_multiplier: 0.50
+    new_entries_allowed: true
+  FAIL:
+    exposure_multiplier: 0.00
+    new_entries_allowed: false
+
+minimums:
+  observations_per_market_regime: 20
+  completed_trades_per_market_regime: 20
+  distinct_dates_per_market_regime: 10
+
+metrics:
+  - observation_count
+  - distinct_dates
+  - average_target_exposure
+  - average_actual_exposure
+  - exposure_gap
+  - mean_daily_return
+  - median_daily_return
+  - cumulative_equity_return
+  - maximum_drawdown
+  - completed_trades
+  - win_rate
+  - mean_realized_return
+  - median_realized_return
+  - exit_reason_distribution
+  - sector_concentration
+
+governance:
+  production_state_mutations: []
+  automatic_score_change: false
+  automatic_weight_change: false
+  automatic_strategy_change: false
+  automatic_paper_rule_change: false
+  live_orders: false
+  manual_review_required: true
