@@ -3,7 +3,7 @@ name: Reconcile Research Ledgers
 on:
   workflow_dispatch:
   schedule:
-    # 20:30 JST on weekdays, after the daily production and downstream workflows.
+    # 20:30 JST on weekdays, after daily production and downstream publishers.
     - cron: '30 11 * * 1-5'
     # Reconcile once more before the Sunday Forward Evidence run.
     - cron: '0 2 * * 0'
@@ -13,16 +13,12 @@ on:
     paths:
       - .github/workflows/reconcile-research-ledgers.yml
       - operations_audit.py
+      - daily_recovery_drill.py
       - live_session_readiness.py
       - live_session_readiness_with_recovery.py
       - live_session_eligibility.py
       - live_session_eligibility_with_recovery.py
       - priority_outcomes.py
-      - research/operations/daily_production_audit.csv
-      - research/operations/daily_production_audit_status.json
-      - research/evidence/live_session_eligibility.csv
-      - research/evidence/live_session_eligibility_status.json
-      - research/priority_outcomes/**
 
 permissions:
   actions: read
@@ -63,8 +59,9 @@ jobs:
             python -m pip install -r requirements.txt
           fi
 
-      - name: Validate reconciliation tools
+      - name: Validate reconciliation tools and committed ledgers
         run: |
+          set -euo pipefail
           python -m py_compile \
             operations_audit.py \
             daily_recovery_drill.py \
@@ -87,27 +84,28 @@ jobs:
             --calibration-md research/priority_outcomes/latest_calibration.md
 
       - name: Resolve completed daily source runs
-        id: sources
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p output/reconciliation
-          gh api --paginate \
+          gh api --paginate --slurp \
             -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/daily.yml/runs?status=completed&per_page=100" \
-            > output/reconciliation/run-pages.jsonl
+            > output/reconciliation/run-pages.json
           python - <<'PY'
           import json
           import os
           from pathlib import Path
 
           threshold = os.environ['ELIGIBLE_FROM']
+          pages = json.loads(
+              Path('output/reconciliation/run-pages.json').read_text(encoding='utf-8')
+          )
+          if isinstance(pages, dict):
+              pages = [pages]
           runs = {}
-          for line in Path('output/reconciliation/run-pages.jsonl').read_text(encoding='utf-8').splitlines():
-              if not line.strip():
-                  continue
-              page = json.loads(line)
+          for page in pages:
               for run in page.get('workflow_runs', []):
                   if run.get('name') != 'Daily Momentum Report':
                       continue
@@ -118,10 +116,17 @@ jobs:
                   if (run.get('created_at') or '') < threshold:
                       continue
                   runs[str(run['id'])] = run
-          ordered = sorted(runs.values(), key=lambda row: (row.get('created_at') or '', row['id']))
-          path = Path('output/reconciliation/source-runs.json')
-          path.write_text(json.dumps(ordered, ensure_ascii=False, indent=2), encoding='utf-8')
-          with Path('output/reconciliation/source-runs.tsv').open('w', encoding='utf-8') as handle:
+          ordered = sorted(
+              runs.values(),
+              key=lambda row: (row.get('created_at') or '', int(row['id'])),
+          )
+          Path('output/reconciliation/source-runs.json').write_text(
+              json.dumps(ordered, ensure_ascii=False, indent=2),
+              encoding='utf-8',
+          )
+          with Path('output/reconciliation/source-runs.tsv').open(
+              'w', encoding='utf-8'
+          ) as handle:
               for run in ordered:
                   fields = [
                       str(run['id']),
@@ -133,11 +138,11 @@ jobs:
                       run.get('created_at') or '',
                       run.get('updated_at') or '',
                   ]
-                  handle.write('\t'.join(value.replace('\t', ' ') for value in fields) + '\n')
+                  handle.write(
+                      '\t'.join(value.replace('\t', ' ') for value in fields) + '\n'
+                  )
           print(f'resolved {len(ordered)} completed Daily Momentum Report runs')
           PY
-          count=$(wc -l < output/reconciliation/source-runs.tsv | tr -d ' ')
-          echo "source_count=${count}" >> "${GITHUB_OUTPUT}"
 
       - name: Rebuild audit, eligibility, and decision ledgers
         env:
@@ -158,7 +163,7 @@ jobs:
               --name "momentum-operations-${run_id}" \
               --dir "${artifact_root}"; then
               artifact_available=false
-              echo "artifact unavailable for run ${run_id}; audit will retain the failed/incomplete source"
+              echo "artifact unavailable for run ${run_id}; audit retains the incomplete source"
             fi
 
             python operations_audit.py update \
@@ -206,8 +211,13 @@ jobs:
             eligible=$(python - "${readiness_root}/live_session_readiness.json" <<'PY'
           import json
           import sys
-          payload = json.load(open(sys.argv[1], encoding='utf-8'))
-          print('true' if payload.get('eligible_for_priority_outcome_ingestion') is True else 'false')
+          with open(sys.argv[1], encoding='utf-8') as handle:
+              payload = json.load(handle)
+          print(
+              'true'
+              if payload.get('eligible_for_priority_outcome_ingestion') is True
+              else 'false'
+          )
           PY
             )
             if [ "${eligible}" = true ]; then
@@ -257,22 +267,32 @@ jobs:
           from pathlib import Path
           import pandas as pd
 
-          sources = json.loads(Path('output/reconciliation/source-runs.json').read_text(encoding='utf-8'))
+          sources = json.loads(
+              Path('output/reconciliation/source-runs.json').read_text(encoding='utf-8')
+          )
           source_ids = {str(row['id']) for row in sources}
-          audit = pd.read_csv('research/operations/daily_production_audit.csv', dtype=str)
-          eligibility = pd.read_csv('research/evidence/live_session_eligibility.csv', dtype=str)
-          audited = set(audit.get('workflow_run_id', pd.Series(dtype=str)).dropna().astype(str))
-          eligible_recorded = set(eligibility.get('source_run_id', pd.Series(dtype=str)).dropna().astype(str))
-          missing_audit = sorted(source_ids - audited)
           successful_ids = {
-              str(row['id']) for row in sources
-              if row.get('conclusion') == 'success'
+              str(row['id']) for row in sources if row.get('conclusion') == 'success'
           }
-          missing_eligibility = sorted(successful_ids - eligible_recorded)
+          audit = pd.read_csv(
+              'research/operations/daily_production_audit.csv', dtype=str
+          )
+          eligibility = pd.read_csv(
+              'research/evidence/live_session_eligibility.csv', dtype=str
+          )
+          audited = set(
+              audit.get('workflow_run_id', pd.Series(dtype=str)).dropna().astype(str)
+          )
+          recorded = set(
+              eligibility.get('source_run_id', pd.Series(dtype=str)).dropna().astype(str)
+          )
+          missing_audit = sorted(source_ids - audited)
+          missing_eligibility = sorted(successful_ids - recorded)
           summary = {
               'source_run_count': len(source_ids),
+              'successful_source_run_count': len(successful_ids),
               'audited_run_count': len(audited & source_ids),
-              'eligibility_record_count': len(eligible_recorded & successful_ids),
+              'eligibility_record_count': len(recorded & successful_ids),
               'missing_audit_run_ids': missing_audit,
               'missing_successful_eligibility_run_ids': missing_eligibility,
               'production_state_mutations': [],
@@ -281,7 +301,8 @@ jobs:
               'research_only': True,
           }
           Path('output/reconciliation/reconciliation-summary.json').write_text(
-              json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8'
+              json.dumps(summary, ensure_ascii=False, indent=2),
+              encoding='utf-8',
           )
           if missing_audit or missing_eligibility:
               raise SystemExit(json.dumps(summary, ensure_ascii=False))
