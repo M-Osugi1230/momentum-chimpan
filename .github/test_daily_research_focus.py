@@ -17,7 +17,7 @@ import daily_research_focus as focus
 policy = focus.load_policy(ROOT / focus.POLICY_PATH)
 focus.validate_policy(policy)
 assert policy["limits"]["maximum_A_candidates"] == 5
-assert policy["limits"]["minimum_daily_action_list"] == 5
+assert focus.MINIMUM_DAILY_ACTION_LIST == 5
 assert policy["limits"]["maximum_daily_action_list"] == 10
 assert policy["governance"]["preserve_paper_execution"] is True
 assert policy["governance"]["automatic_strategy_change"] is False
@@ -102,11 +102,7 @@ action = pd.DataFrame(priority_rows)
 top100 = pd.DataFrame(top_rows)
 original_ranks = action.set_index("code")["momentum_rank"].copy()
 original_scores = action.set_index("code")["momentum_score"].copy()
-result = focus.attach_daily_focus(
-    action,
-    top100,
-    policy_path=ROOT / focus.POLICY_PATH,
-)
+result = focus.attach_daily_focus(action, top100, policy_path=ROOT / focus.POLICY_PATH)
 
 assert int((result["research_bucket"] == "A").sum()) == 5
 assert int(result["daily_action_list"].sum()) == 10
@@ -133,16 +129,8 @@ assert "最新決算" in result.set_index("code").loc["1001", "next_research_que
 assert "出来高急増" in result.set_index("code").loc["1001", "next_research_questions"]
 
 reindexed = result.set_index("code")
-pd.testing.assert_series_equal(
-    reindexed.loc[original_ranks.index, "momentum_rank"],
-    original_ranks,
-    check_names=False,
-)
-pd.testing.assert_series_equal(
-    reindexed.loc[original_scores.index, "momentum_score"],
-    original_scores,
-    check_names=False,
-)
+pd.testing.assert_series_equal(reindexed.loc[original_ranks.index, "momentum_rank"], original_ranks, check_names=False)
+pd.testing.assert_series_equal(reindexed.loc[original_scores.index, "momentum_score"], original_scores, check_names=False)
 
 fields = focus.summary_fields(result)
 assert fields["Daily Focus A"] == 5
@@ -160,8 +148,6 @@ selected = focus.action_list(result)
 assert len(selected) == 10
 assert set(selected["research_bucket"]).issubset({"A", "B"})
 
-# When A/B candidates are fewer than five, quality-screened C/Watch rows supplement
-# the research list without changing their bucket, Momentum score/rank, or paper state.
 small_action = action.iloc[[0, 7, 11, 12, 13]].copy()
 small_action.loc[:, "action_priority"] = ["A", "B", "C", "C", "見送り"]
 small_action.loc[:, "action_score"] = [90, 80, 62, 58, 50]
