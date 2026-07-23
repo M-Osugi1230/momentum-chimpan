@@ -1,0 +1,126 @@
+name: Backfill Live Research Ledgers Once
+
+on:
+  push:
+    branches:
+      - repair/backfill-live-research-ledgers
+    paths:
+      - tools/backfill_live_research_ledgers_payload.py
+      - tools/ledger_payload_chunk_*.txt
+      - .github/workflows/backfill-live-research-ledgers-once.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backfill-live-research-ledgers-once
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/backfill-live-research-ledgers
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Wait until all payload chunks exist
+        id: payload
+        run: |
+          set -euo pipefail
+          expected=6
+          actual=$(find tools -maxdepth 1 -name 'ledger_payload_chunk_*.txt' -type f | wc -l | tr -d ' ')
+          echo "actual=${actual}" >> "${GITHUB_OUTPUT}"
+          if [ "${actual}" -ne "${expected}" ]; then
+            echo "Payload incomplete: ${actual}/${expected}; skipping until final chunk arrives"
+            echo "complete=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "complete=true" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Install dependencies
+        if: steps.payload.outputs.complete == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Expand exact-artifact ledger payload
+        if: steps.payload.outputs.complete == 'true'
+        run: |
+          set -euo pipefail
+          python tools/backfill_live_research_ledgers_payload.py
+      - name: Validate rebuilt ledgers
+        if: steps.payload.outputs.complete == 'true'
+        run: |
+          set -euo pipefail
+          python operations_audit.py validate \
+            --history research/operations/daily_production_audit.csv \
+            --status research/operations/daily_production_audit_status.json
+          python live_session_eligibility.py validate \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json
+          python priority_outcomes.py validate \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md
+      - name: Verify backfill scope and counts
+        if: steps.payload.outputs.complete == 'true'
+        run: |
+          python - <<'PY'
+          import json
+          import pandas as pd
+          audit = json.load(open('research/operations/daily_production_audit_status.json', encoding='utf-8'))
+          eligibility = json.load(open('research/evidence/live_session_eligibility_status.json', encoding='utf-8'))
+          calibration = json.load(open('research/priority_outcomes/latest_calibration.json', encoding='utf-8'))
+          assert audit['market_session_count'] == 8
+          assert audit['remaining_market_sessions'] == 2
+          assert audit['market_session_failure_count'] == 0
+          assert audit['duplicate_row_count'] == 0
+          assert eligibility['run_count'] == 9
+          assert eligibility['eligible_forward_date_count'] == 8
+          assert eligibility['latest_eligible_report_date'] == '2026-07-23'
+          assert calibration['decision_count'] == 145
+          assert calibration['outcome_row_count'] == 435
+          assert calibration['complete_outcome_count'] == 0
+          assert calibration['pending_outcome_count'] == 435
+          assert calibration['production_rule_change_allowed'] is False
+          assert calibration['production_state_mutations'] == []
+          decisions = pd.read_csv('research/priority_outcomes/daily_research_decisions.csv')
+          assert decisions['decision_date'].nunique() == 8
+          print(json.dumps({
+              'audit_market_sessions': audit['market_session_count'],
+              'eligible_dates': eligibility['eligible_forward_date_count'],
+              'decision_count': calibration['decision_count'],
+              'pending_outcomes': calibration['pending_outcome_count'],
+              'production_state_mutations': [],
+              'research_only': True,
+          }, ensure_ascii=False, indent=2))
+          PY
+      - name: Persist exact research ledgers to repair branch
+        if: steps.payload.outputs.complete == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            research/operations/daily_production_audit.csv \
+            research/operations/daily_production_audit_status.json \
+            research/evidence/live_session_eligibility.csv \
+            research/evidence/live_session_eligibility_status.json \
+            research/priority_outcomes/daily_research_decisions.csv \
+            research/priority_outcomes/daily_research_outcomes.csv \
+            research/priority_outcomes/latest_calibration.json \
+            research/priority_outcomes/latest_calibration.md
+          if git diff --cached --quiet; then
+            echo 'Exact research ledgers already match the payload'
+            exit 0
+          fi
+          git commit -m 'Backfill exact live research ledgers through 2026-07-23'
+          git push origin HEAD:repair/backfill-live-research-ledgers
