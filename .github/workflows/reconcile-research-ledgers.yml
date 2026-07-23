@@ -1,0 +1,338 @@
+name: Reconcile Research Ledgers
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 20:30 JST on weekdays, after the daily production and downstream workflows.
+    - cron: '30 11 * * 1-5'
+    # Reconcile once more before the Sunday Forward Evidence run.
+    - cron: '0 2 * * 0'
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/reconcile-research-ledgers.yml
+      - operations_audit.py
+      - live_session_readiness.py
+      - live_session_readiness_with_recovery.py
+      - live_session_eligibility.py
+      - live_session_eligibility_with_recovery.py
+      - priority_outcomes.py
+      - research/operations/daily_production_audit.csv
+      - research/operations/daily_production_audit_status.json
+      - research/evidence/live_session_eligibility.csv
+      - research/evidence/live_session_eligibility_status.json
+      - research/priority_outcomes/**
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: research-ledger-reconciliation-main
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  ELIGIBLE_FROM: '2026-07-13T00:00:00Z'
+
+jobs:
+  reconcile:
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Validate reconciliation tools
+        run: |
+          python -m py_compile \
+            operations_audit.py \
+            daily_recovery_drill.py \
+            live_session_readiness.py \
+            live_session_readiness_with_recovery.py \
+            live_session_eligibility.py \
+            live_session_eligibility_with_recovery.py \
+            priority_outcomes.py
+          python operations_audit.py validate \
+            --history research/operations/daily_production_audit.csv \
+            --status research/operations/daily_production_audit_status.json
+          python live_session_eligibility.py validate \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json
+          python priority_outcomes.py validate \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md
+
+      - name: Resolve completed daily source runs
+        id: sources
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p output/reconciliation
+          gh api --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/daily.yml/runs?status=completed&per_page=100" \
+            > output/reconciliation/run-pages.jsonl
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          threshold = os.environ['ELIGIBLE_FROM']
+          runs = {}
+          for line in Path('output/reconciliation/run-pages.jsonl').read_text(encoding='utf-8').splitlines():
+              if not line.strip():
+                  continue
+              page = json.loads(line)
+              for run in page.get('workflow_runs', []):
+                  if run.get('name') != 'Daily Momentum Report':
+                      continue
+                  if run.get('head_branch') != 'main':
+                      continue
+                  if run.get('event') == 'pull_request':
+                      continue
+                  if (run.get('created_at') or '') < threshold:
+                      continue
+                  runs[str(run['id'])] = run
+          ordered = sorted(runs.values(), key=lambda row: (row.get('created_at') or '', row['id']))
+          path = Path('output/reconciliation/source-runs.json')
+          path.write_text(json.dumps(ordered, ensure_ascii=False, indent=2), encoding='utf-8')
+          with Path('output/reconciliation/source-runs.tsv').open('w', encoding='utf-8') as handle:
+              for run in ordered:
+                  fields = [
+                      str(run['id']),
+                      run.get('html_url') or '',
+                      run.get('conclusion') or '',
+                      run.get('event') or '',
+                      run.get('head_sha') or '',
+                      run.get('head_branch') or '',
+                      run.get('created_at') or '',
+                      run.get('updated_at') or '',
+                  ]
+                  handle.write('\t'.join(value.replace('\t', ' ') for value in fields) + '\n')
+          print(f'resolved {len(ordered)} completed Daily Momentum Report runs')
+          PY
+          count=$(wc -l < output/reconciliation/source-runs.tsv | tr -d ' ')
+          echo "source_count=${count}" >> "${GITHUB_OUTPUT}"
+
+      - name: Rebuild audit, eligibility, and decision ledgers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p output/reconciliation/artifacts output/reconciliation/readiness
+          while IFS=$'\t' read -r run_id run_url conclusion source_event head_sha head_branch created_at updated_at; do
+            [ -n "${run_id}" ] || continue
+            artifact_root="output/reconciliation/artifacts/${run_id}"
+            readiness_root="output/reconciliation/readiness/${run_id}"
+            rm -rf "${artifact_root}" "${readiness_root}"
+            mkdir -p "${artifact_root}" "${readiness_root}"
+
+            artifact_available=true
+            if ! gh run download "${run_id}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --name "momentum-operations-${run_id}" \
+              --dir "${artifact_root}"; then
+              artifact_available=false
+              echo "artifact unavailable for run ${run_id}; audit will retain the failed/incomplete source"
+            fi
+
+            python operations_audit.py update \
+              --artifact-root "${artifact_root}" \
+              --workflow-run-id "${run_id}" \
+              --workflow-run-url "${run_url}" \
+              --upstream-conclusion "${conclusion}" \
+              --upstream-event "${source_event}" \
+              --head-sha "${head_sha}" \
+              --head-branch "${head_branch}" \
+              --created-at-utc "${created_at}" \
+              --updated-at-utc "${updated_at}" \
+              --history research/operations/daily_production_audit.csv \
+              --status research/operations/daily_production_audit_status.json
+
+            if [ "${artifact_available}" != true ]; then
+              continue
+            fi
+
+            python live_session_eligibility_with_recovery.py update \
+              --artifact-root "${artifact_root}" \
+              --source-run-id "${run_id}" \
+              --source-run-url "${run_url}" \
+              --upstream-conclusion "${conclusion}" \
+              --upstream-event "${source_event}" \
+              --head-sha "${head_sha}" \
+              --created-at-utc "${created_at}" \
+              --updated-at-utc "${updated_at}" \
+              --recorded-at-utc "${updated_at}" \
+              --ledger research/evidence/live_session_eligibility.csv \
+              --status research/evidence/live_session_eligibility_status.json \
+              --readiness-output-dir "${readiness_root}"
+
+            python live_session_readiness_with_recovery.py build \
+              --artifact-root "${artifact_root}" \
+              --source-run-id "${run_id}" \
+              --source-run-url "${run_url}" \
+              --upstream-conclusion "${conclusion}" \
+              --upstream-event "${source_event}" \
+              --head-sha "${head_sha}" \
+              --created-at-utc "${created_at}" \
+              --updated-at-utc "${updated_at}" \
+              --output-dir "${readiness_root}"
+
+            eligible=$(python - "${readiness_root}/live_session_readiness.json" <<'PY'
+          import json
+          import sys
+          payload = json.load(open(sys.argv[1], encoding='utf-8'))
+          print('true' if payload.get('eligible_for_priority_outcome_ingestion') is True else 'false')
+          PY
+            )
+            if [ "${eligible}" = true ]; then
+              python priority_outcomes.py update \
+                --artifact-root "${artifact_root}" \
+                --source-run-id "${run_id}" \
+                --source-run-url "${run_url}" \
+                --recorded-at-utc "${updated_at}" \
+                --policy research/priority_outcomes/policy.yaml \
+                --decisions research/priority_outcomes/daily_research_decisions.csv \
+                --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+                --calibration-json research/priority_outcomes/latest_calibration.json \
+                --calibration-md research/priority_outcomes/latest_calibration.md
+            fi
+          done < output/reconciliation/source-runs.tsv
+
+      - name: Mature all available 5, 10, and 20-session outcomes
+        run: |
+          set -euo pipefail
+          python priority_outcomes.py update \
+            --source-run-id '' \
+            --source-run-url '' \
+            --recorded-at-utc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md
+
+      - name: Validate rebuilt ledgers and cross-ledger coverage
+        run: |
+          set -euo pipefail
+          python operations_audit.py validate \
+            --history research/operations/daily_production_audit.csv \
+            --status research/operations/daily_production_audit_status.json
+          python live_session_eligibility.py validate \
+            --ledger research/evidence/live_session_eligibility.csv \
+            --status research/evidence/live_session_eligibility_status.json
+          python priority_outcomes.py validate \
+            --policy research/priority_outcomes/policy.yaml \
+            --decisions research/priority_outcomes/daily_research_decisions.csv \
+            --outcomes research/priority_outcomes/daily_research_outcomes.csv \
+            --calibration-json research/priority_outcomes/latest_calibration.json \
+            --calibration-md research/priority_outcomes/latest_calibration.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          sources = json.loads(Path('output/reconciliation/source-runs.json').read_text(encoding='utf-8'))
+          source_ids = {str(row['id']) for row in sources}
+          audit = pd.read_csv('research/operations/daily_production_audit.csv', dtype=str)
+          eligibility = pd.read_csv('research/evidence/live_session_eligibility.csv', dtype=str)
+          audited = set(audit.get('workflow_run_id', pd.Series(dtype=str)).dropna().astype(str))
+          eligible_recorded = set(eligibility.get('source_run_id', pd.Series(dtype=str)).dropna().astype(str))
+          missing_audit = sorted(source_ids - audited)
+          successful_ids = {
+              str(row['id']) for row in sources
+              if row.get('conclusion') == 'success'
+          }
+          missing_eligibility = sorted(successful_ids - eligible_recorded)
+          summary = {
+              'source_run_count': len(source_ids),
+              'audited_run_count': len(audited & source_ids),
+              'eligibility_record_count': len(eligible_recorded & successful_ids),
+              'missing_audit_run_ids': missing_audit,
+              'missing_successful_eligibility_run_ids': missing_eligibility,
+              'production_state_mutations': [],
+              'automatic_strategy_change': False,
+              'automatic_weight_change': False,
+              'research_only': True,
+          }
+          Path('output/reconciliation/reconciliation-summary.json').write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8'
+          )
+          if missing_audit or missing_eligibility:
+              raise SystemExit(json.dumps(summary, ensure_ascii=False))
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Persist reconciled research ledgers only
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- \
+            research/operations/daily_production_audit.csv \
+            research/operations/daily_production_audit_status.json \
+            research/evidence/live_session_eligibility.csv \
+            research/evidence/live_session_eligibility_status.json \
+            research/priority_outcomes/daily_research_decisions.csv \
+            research/priority_outcomes/daily_research_outcomes.csv \
+            research/priority_outcomes/latest_calibration.json \
+            research/priority_outcomes/latest_calibration.md
+          if git diff --cached --quiet; then
+            echo 'Research ledgers are already reconciled'
+            exit 0
+          fi
+          git commit -m 'Reconcile daily research ledgers'
+          git fetch origin main
+          git rebase origin/main
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $((attempt * 10))
+              git fetch origin main
+              git rebase origin/main
+            fi
+          done
+          echo 'Failed to persist reconciled research ledgers' >&2
+          exit 1
+
+      - name: Upload reconciliation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-ledger-reconciliation-${{ github.run_id }}
+          path: |
+            output/reconciliation/source-runs.json
+            output/reconciliation/reconciliation-summary.json
+            research/operations/daily_production_audit_status.json
+            research/evidence/live_session_eligibility_status.json
+            research/priority_outcomes/latest_calibration.json
+            research/priority_outcomes/latest_calibration.md
+          if-no-files-found: warn
+          retention-days: 90
