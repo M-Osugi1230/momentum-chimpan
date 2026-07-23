@@ -1,10 +1,9 @@
 """Build a concise five-to-ten stock daily research plan.
 
-This layer is presentation and research planning only. It preserves Momentum
-scores/ranks, existing paper execution, and production strategy. The existing
-A/B/C/見送り classification remains the input; this module caps A at five,
-builds a five-to-ten-name Daily Action List when sufficient quality candidates
-exist, and explains each decision.
+The governed A/B/C/Watch/Skip classification and stored ``daily_action_list``
+remain unchanged.  When fewer than five A/B names exist, this presentation layer
+adds quality-screened C/Watch rows only to the rendered detailed-research list.
+It does not change Momentum score/rank, production priority, or paper execution.
 """
 from __future__ import annotations
 
@@ -86,12 +85,28 @@ def unique_parts(parts: list[str]) -> list[str]:
 
 def context_by_code(top100: pd.DataFrame) -> pd.DataFrame:
     columns = [
-        "code", "rank", "score", "sector33", "is_new_entry", "rank_change",
-        "is_rising_fast", "is_best_rank", "top30_streak", "top30_streak_days",
-        "relative_strength_grade", "relative_strength_rank", "market_relative_20d",
-        "sector_relative_20d", "return_5d", "return_20d", "volume_ratio",
-        "trading_value", "ma20_deviation", "data_quality_grade",
-        "data_quality_warnings", "data_quality_reason_codes",
+        "code",
+        "rank",
+        "score",
+        "sector33",
+        "is_new_entry",
+        "rank_change",
+        "is_rising_fast",
+        "is_best_rank",
+        "top30_streak",
+        "top30_streak_days",
+        "relative_strength_grade",
+        "relative_strength_rank",
+        "market_relative_20d",
+        "sector_relative_20d",
+        "return_5d",
+        "return_20d",
+        "volume_ratio",
+        "trading_value",
+        "ma20_deviation",
+        "data_quality_grade",
+        "data_quality_warnings",
+        "data_quality_reason_codes",
         "data_quality_eligible_for_a",
     ]
     if top100 is None or top100.empty or "code" not in top100.columns:
@@ -99,9 +114,11 @@ def context_by_code(top100: pd.DataFrame) -> pd.DataFrame:
     available = [column for column in columns if column in top100.columns]
     work = top100[available].copy()
     work["code"] = work["code"].map(normalize_code)
-    return work.rename(
-        columns={"rank": "ranking_rank_context", "score": "ranking_score_context"}
-    ).drop_duplicates("code", keep="last")
+    rename = {
+        "rank": "ranking_rank_context",
+        "score": "ranking_score_context",
+    }
+    return work.rename(columns=rename).drop_duplicates("code", keep="last")
 
 
 def base_bucket(row: pd.Series, policy: dict[str, Any]) -> tuple[str, str]:
@@ -114,11 +131,16 @@ def base_bucket(row: pd.Series, policy: dict[str, Any]) -> tuple[str, str]:
         return priority, "既存調査優先度を維持"
     if priority == "C":
         if action_score >= float(watch["C_minimum_action_score"]) and lifecycle in {
-            "継続", "定着", "長期定着",
+            "継続",
+            "定着",
+            "長期定着",
         }:
             return "C", "継続監視条件を充足"
         return "Watch", "C評価だが継続性またはスコアの改善待ち"
-    if action_score >= float(watch["rejected_minimum_action_score"]) and quality in set(watch["eligible_quality_grades"]):
+    if (
+        action_score >= float(watch["rejected_minimum_action_score"])
+        and quality in set(watch["eligible_quality_grades"])
+    ):
         return "Watch", "見送りだが閾値に近いため改善待ち"
     return "Skip", "現時点の詳細調査優先度は低い"
 
@@ -209,48 +231,19 @@ def build_research_questions(row: pd.Series, policy: dict[str, Any]) -> str:
     return " / ".join(unique_parts(questions)[:6])
 
 
-def _sort_focus(frame: pd.DataFrame) -> pd.DataFrame:
-    work = frame.copy()
-    work["_bucket_order"] = work["research_bucket"].map(BUCKET_ORDER).fillna(9)
-    sort_columns = ["_bucket_order"]
-    ascending = [True]
-    for column, direction in (("action_score", False), ("expectancy_score", False), ("momentum_rank", True)):
-        if column in work.columns:
-            sort_columns.append(column)
-            ascending.append(direction)
-    return work.sort_values(sort_columns, ascending=ascending)
-
-
-def _select_daily_actions(work: pd.DataFrame, policy: dict[str, Any]) -> tuple[list[Any], set[Any]]:
-    maximum = int(policy["limits"]["maximum_daily_action_list"])
-    primary = work[work["research_bucket"].isin(["A", "B"])].head(maximum)
-    selected = list(primary.index)
-    supplemental: set[Any] = set()
-    if len(selected) >= MINIMUM_DAILY_ACTION_LIST:
-        return selected, supplemental
-    quality = work.get("data_quality_grade", pd.Series("D", index=work.index)).fillna("D").astype(str)
-    explanation = work.get("explanation_complete", pd.Series(False, index=work.index)).fillna(False).astype(bool)
-    candidates = work[
-        work["research_bucket"].isin(["C", "Watch"])
-        & quality.ne("D")
-        & explanation
-        & ~work.index.isin(selected)
-    ]
-    needed = min(MINIMUM_DAILY_ACTION_LIST - len(selected), maximum - len(selected))
-    for index in candidates.head(max(needed, 0)).index:
-        selected.append(index)
-        supplemental.add(index)
-    return selected, supplemental
-
-
-def attach_daily_focus(action_priority: pd.DataFrame, top100: pd.DataFrame, policy_path: str | Path = POLICY_PATH) -> pd.DataFrame:
+def attach_daily_focus(
+    action_priority: pd.DataFrame,
+    top100: pd.DataFrame,
+    policy_path: str | Path = POLICY_PATH,
+) -> pd.DataFrame:
     if action_priority is None:
         return pd.DataFrame()
     work = action_priority.copy()
     if work.empty:
         return work
     policy = load_policy(policy_path)
-    original = work[[column for column in ("code", "momentum_rank", "momentum_score") if column in work.columns]].copy()
+    original_momentum_rank = work["momentum_rank"].copy() if "momentum_rank" in work.columns else None
+    original_momentum_score = work["momentum_score"].copy() if "momentum_score" in work.columns else None
     work["code"] = work["code"].map(normalize_code)
     context = context_by_code(top100)
     duplicate_context = [column for column in context.columns if column != "code" and column in work.columns]
@@ -258,23 +251,52 @@ def attach_daily_focus(action_priority: pd.DataFrame, top100: pd.DataFrame, poli
         context = context.drop(columns=duplicate_context)
     work = work.merge(context, on="code", how="left")
     work["daily_focus_version"] = FOCUS_VERSION
-    work["action_priority_before_daily_focus"] = work.get("action_priority", pd.Series("見送り", index=work.index)).fillna("見送り").astype(str)
+    work["action_priority_before_daily_focus"] = work.get(
+        "action_priority",
+        pd.Series("見送り", index=work.index),
+    ).fillna("見送り").astype(str)
     bucket_results = work.apply(lambda row: base_bucket(row, policy), axis=1)
     work["research_bucket"] = [result[0] for result in bucket_results]
     work["focus_adjustment_reason"] = [result[1] for result in bucket_results]
+
     maximum_a = int(policy["limits"]["maximum_A_candidates"])
-    a_rows = _sort_focus(work[work["research_bucket"] == "A"])
-    excess_indices = a_rows.index[maximum_a:]
-    if len(excess_indices):
-        work.loc[excess_indices, "research_bucket"] = "B"
-        work.loc[excess_indices, "action_priority"] = "B"
-        work.loc[excess_indices, "focus_adjustment_reason"] = f"A候補上限{maximum_a}件のためBへ調整"
+    a_rows = work[work["research_bucket"] == "A"].copy()
+    if not a_rows.empty:
+        sort_columns = []
+        ascending = []
+        for column, direction in (
+            ("action_score", False),
+            ("expectancy_score", False),
+            ("momentum_rank", True),
+        ):
+            if column in a_rows.columns:
+                sort_columns.append(column)
+                ascending.append(direction)
+        if sort_columns:
+            a_rows = a_rows.sort_values(sort_columns, ascending=ascending)
+        excess_indices = a_rows.index[maximum_a:]
+        if len(excess_indices):
+            work.loc[excess_indices, "research_bucket"] = "B"
+            work.loc[excess_indices, "action_priority"] = "B"
+            work.loc[excess_indices, "focus_adjustment_reason"] = (
+                f"A候補上限{maximum_a}件のためBへ調整"
+            )
+
     work["what_changed"] = work.apply(build_change_summary, axis=1)
     work["why_today"] = work.apply(build_why_today, axis=1)
     work["risk_summary"] = work.apply(build_risk_summary, axis=1)
-    work["next_research_questions"] = work.apply(lambda row: build_research_questions(row, policy), axis=1)
-    work["positive_reasons_before_daily_focus"] = work.get("positive_reasons", pd.Series("", index=work.index))
-    work["caution_reasons_before_daily_focus"] = work.get("caution_reasons", pd.Series("", index=work.index))
+    work["next_research_questions"] = work.apply(
+        lambda row: build_research_questions(row, policy),
+        axis=1,
+    )
+    work["positive_reasons_before_daily_focus"] = work.get(
+        "positive_reasons",
+        pd.Series("", index=work.index),
+    )
+    work["caution_reasons_before_daily_focus"] = work.get(
+        "caution_reasons",
+        pd.Series("", index=work.index),
+    )
     work["positive_reasons"] = work["why_today"]
     work["caution_reasons"] = work["risk_summary"]
     work["explanation_complete"] = (
@@ -283,64 +305,112 @@ def attach_daily_focus(action_priority: pd.DataFrame, top100: pd.DataFrame, poli
         & work["risk_summary"].astype(str).str.strip().ne("")
         & work["next_research_questions"].astype(str).str.strip().ne("")
     )
-    work = _sort_focus(work)
-    selected, supplemental = _select_daily_actions(work, policy)
-    work["daily_action_list"] = work.index.isin(selected)
-    work["daily_action_supplement"] = work.index.isin(supplemental)
-    if supplemental:
-        supplement_reason = "詳細調査5件下限を満たす補助候補（本番順位・スコア変更なし）"
-        for index in supplemental:
-            current = optional_text(work.at[index, "focus_adjustment_reason"])
-            work.at[index, "focus_adjustment_reason"] = " / ".join(unique_parts([current, supplement_reason]))
-    action_rank = {index: position for position, index in enumerate(selected, start=1)}
+
+    work["_bucket_order"] = work["research_bucket"].map(BUCKET_ORDER).fillna(9)
+    sort_columns = ["_bucket_order"]
+    ascending = [True]
+    for column, direction in (
+        ("action_score", False),
+        ("expectancy_score", False),
+        ("momentum_rank", True),
+    ):
+        if column in work.columns:
+            sort_columns.append(column)
+            ascending.append(direction)
+    work = work.sort_values(sort_columns, ascending=ascending)
+    maximum_actions = int(policy["limits"]["maximum_daily_action_list"])
+    actionable = work[work["research_bucket"].isin(["A", "B"])].head(maximum_actions)
+    work["daily_action_list"] = work.index.isin(actionable.index)
+    action_rank = {index: position for position, index in enumerate(actionable.index, start=1)}
     work["daily_action_rank"] = [action_rank.get(index) for index in work.index]
     work = work.sort_values(
         ["daily_action_list", "daily_action_rank", "_bucket_order", "momentum_rank"],
-        ascending=[False, True, True, True], na_position="last",
+        ascending=[False, True, True, True],
+        na_position="last",
     ).drop(columns="_bucket_order")
-    if not original.empty:
-        original["code"] = original["code"].map(normalize_code)
-        indexed = work.drop_duplicates("code", keep="last").set_index("code")
-        for column in ("momentum_rank", "momentum_score"):
-            if column in original.columns and column in indexed.columns:
-                before = original.set_index("code")[column]
-                after = indexed.loc[before.index, column]
-                pd.testing.assert_series_equal(after, before, check_names=False)
+
+    if original_momentum_rank is not None:
+        before = original_momentum_rank.reset_index(drop=True)
+        after = work.set_index("code").loc[
+            action_priority["code"].map(normalize_code), "momentum_rank"
+        ].reset_index(drop=True)
+        pd.testing.assert_series_equal(after, before, check_names=False)
+    if original_momentum_score is not None:
+        before = original_momentum_score.reset_index(drop=True)
+        after = work.set_index("code").loc[
+            action_priority["code"].map(normalize_code), "momentum_score"
+        ].reset_index(drop=True)
+        pd.testing.assert_series_equal(after, before, check_names=False)
     return work
+
+
+def _presentation_action_list(focus: pd.DataFrame) -> pd.DataFrame:
+    if focus is None or focus.empty:
+        return pd.DataFrame(columns=focus.columns if focus is not None else [])
+    maximum = 10
+    selected = focus[focus.get("daily_action_list", False) == True].sort_values("daily_action_rank").head(maximum).copy()
+    selected["daily_action_supplement"] = False
+    if len(selected) < MINIMUM_DAILY_ACTION_LIST:
+        quality = focus.get("data_quality_grade", pd.Series("D", index=focus.index)).fillna("D").astype(str)
+        complete = focus.get("explanation_complete", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
+        candidates = focus[
+            focus.get("research_bucket", pd.Series("Skip", index=focus.index)).isin(["C", "Watch"])
+            & quality.ne("D")
+            & complete
+            & ~focus.index.isin(selected.index)
+        ].copy()
+        candidates["_bucket_order"] = candidates["research_bucket"].map(BUCKET_ORDER).fillna(9)
+        sort_columns = ["_bucket_order"]
+        ascending = [True]
+        for column, direction in (("action_score", False), ("expectancy_score", False), ("momentum_rank", True)):
+            if column in candidates.columns:
+                sort_columns.append(column)
+                ascending.append(direction)
+        candidates = candidates.sort_values(sort_columns, ascending=ascending).drop(columns="_bucket_order")
+        needed = min(MINIMUM_DAILY_ACTION_LIST - len(selected), maximum - len(selected))
+        supplements = candidates.head(max(needed, 0)).copy()
+        supplements["daily_action_supplement"] = True
+        if not supplements.empty:
+            selected = pd.concat([selected, supplements], ignore_index=False)
+    selected = selected.head(maximum).copy()
+    selected["daily_action_rank"] = range(1, len(selected) + 1)
+    return selected
 
 
 def summary_fields(focus: pd.DataFrame) -> dict[str, Any]:
     if focus is None or focus.empty:
         return {
-            "Daily Focus A": 0, "Daily Focus B": 0, "Daily Focus C": 0,
-            "Daily Focus Watch": 0, "Daily Focus Skip": 0, "Daily Action List": 0,
+            "Daily Focus A": 0,
+            "Daily Focus B": 0,
+            "Daily Focus C": 0,
+            "Daily Focus Watch": 0,
+            "Daily Focus Skip": 0,
+            "Daily Action List": 0,
             "Daily Action List補助": 0,
             "Daily Action List下限不足": MINIMUM_DAILY_ACTION_LIST,
-            "Daily Focus説明不足": 0, "Daily Focus A上限超過": 0,
+            "Daily Focus説明不足": 0,
+            "Daily Focus A上限超過": 0,
         }
     buckets = focus.get("research_bucket", pd.Series(index=focus.index, dtype=str))
-    action_values = focus.get("daily_action_list", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
-    supplements = focus.get("daily_action_supplement", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
+    selected = _presentation_action_list(focus)
+    supplements = selected.get("daily_action_supplement", pd.Series(False, index=selected.index)).fillna(False).astype(bool)
     incomplete = ~focus.get("explanation_complete", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
-    action_count = int(action_values.sum())
     return {
         "Daily Focus A": int((buckets == "A").sum()),
         "Daily Focus B": int((buckets == "B").sum()),
         "Daily Focus C": int((buckets == "C").sum()),
         "Daily Focus Watch": int((buckets == "Watch").sum()),
         "Daily Focus Skip": int((buckets == "Skip").sum()),
-        "Daily Action List": action_count,
+        "Daily Action List": int(len(selected)),
         "Daily Action List補助": int(supplements.sum()),
-        "Daily Action List下限不足": max(MINIMUM_DAILY_ACTION_LIST - action_count, 0),
+        "Daily Action List下限不足": max(MINIMUM_DAILY_ACTION_LIST - len(selected), 0),
         "Daily Focus説明不足": int(incomplete.sum()),
         "Daily Focus A上限超過": max(int((buckets == "A").sum()) - 5, 0),
     }
 
 
 def action_list(focus: pd.DataFrame) -> pd.DataFrame:
-    if focus is None or focus.empty:
-        return pd.DataFrame(columns=focus.columns if focus is not None else [])
-    return focus[focus.get("daily_action_list", False) == True].sort_values("daily_action_rank")
+    return _presentation_action_list(focus)
 
 
 def plain_section(focus: pd.DataFrame) -> list[str]:
@@ -365,7 +435,8 @@ def plain_section(focus: pd.DataFrame) -> list[str]:
             f"今日の理由：{optional_text(row.get('why_today'))}",
             f"変化：{optional_text(row.get('what_changed'))}",
             f"注意：{optional_text(row.get('risk_summary'))}",
-            f"次の確認：{optional_text(row.get('next_research_questions'))}", "",
+            f"次の確認：{optional_text(row.get('next_research_questions'))}",
+            "",
         ])
     return lines
 
@@ -408,16 +479,20 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
     sheet = workbook.create_sheet("Daily Action List", position)
     fields = summary_fields(focus)
     summary_rows = [
-        ("Policy", "daily-research-focus-v1 / 5-to-10 detailed research"),
-        ("A", fields["Daily Focus A"]), ("B", fields["Daily Focus B"]),
-        ("C", fields["Daily Focus C"]), ("Watch", fields["Daily Focus Watch"]),
+        ("Policy", "daily-research-focus-v1 / presentation target 5-to-10"),
+        ("A", fields["Daily Focus A"]),
+        ("B", fields["Daily Focus B"]),
+        ("C", fields["Daily Focus C"]),
+        ("Watch", fields["Daily Focus Watch"]),
         ("Skip", fields["Daily Focus Skip"]),
         ("Detailed research list", fields["Daily Action List"]),
         ("Supplemental research candidates", fields["Daily Action List補助"]),
         ("Minimum shortfall", fields["Daily Action List下限不足"]),
         ("Incomplete explanations", fields["Daily Focus説明不足"]),
         ("A cap violations", fields["Daily Focus A上限超過"]),
-        ("Score/rank mutation", "NONE"), ("Paper execution mutation", "NONE"),
+        ("Governed priority-rule mutation", "NONE"),
+        ("Score/rank mutation", "NONE"),
+        ("Paper execution mutation", "NONE"),
     ]
     sheet.append(["Metric", "Value"])
     for row in summary_rows:
@@ -425,9 +500,19 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
     selected = action_list(focus)
     start_row = len(summary_rows) + 4
     columns = [
-        "daily_action_rank", "research_bucket", "daily_action_supplement", "code", "name",
-        "momentum_rank", "momentum_score", "action_score", "data_quality_grade",
-        "what_changed", "why_today", "risk_summary", "next_research_questions",
+        "daily_action_rank",
+        "research_bucket",
+        "daily_action_supplement",
+        "code",
+        "name",
+        "momentum_rank",
+        "momentum_score",
+        "action_score",
+        "data_quality_grade",
+        "what_changed",
+        "why_today",
+        "risk_summary",
+        "next_research_questions",
         "focus_adjustment_reason",
     ]
     available = [column for column in columns if column in selected.columns]
@@ -436,7 +521,9 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
     else:
         for column_index, column in enumerate(available, start=1):
             sheet.cell(start_row, column_index, column)
-        for row_index, values in enumerate(selected[available].itertuples(index=False, name=None), start=start_row + 1):
+        for row_index, values in enumerate(
+            selected[available].itertuples(index=False, name=None), start=start_row + 1
+        ):
             for column_index, value in enumerate(values, start=1):
                 sheet.cell(row_index, column_index, value)
     header_fill = PatternFill("solid", fgColor="DBEAFE")
@@ -449,7 +536,9 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
             cell.fill = header_fill
     sheet.freeze_panes = f"A{start_row + 1}"
     for column in sheet.columns:
-        sheet.column_dimensions[column[0].column_letter].width = min(max(len(str(cell.value or "")) for cell in column) + 2, 55)
+        sheet.column_dimensions[column[0].column_letter].width = min(
+            max(len(str(cell.value or "")) for cell in column) + 2, 55
+        )
         for cell in column:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
     workbook.save(target)
