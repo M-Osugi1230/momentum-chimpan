@@ -131,6 +131,74 @@ def main() -> int:
         "main.py \\",
     ])
 
+    reconciliation = load_workflow("reconcile-research-ledgers.yml")
+    require("reconcile-research-ledgers.yml", reconciliation, [
+        "Reconcile Research Ledgers",
+        "workflow_dispatch:",
+        "gh api --paginate --slurp",
+        "actions/workflows/daily.yml/runs?status=completed&per_page=100",
+        "momentum-operations-${run_id}",
+        "operations_audit.py update",
+        "live_session_eligibility_with_recovery.py update",
+        "live_session_readiness_with_recovery.py build",
+        "eligible_for_priority_outcome_ingestion",
+        "priority_outcomes.py update",
+        "Mature all available 5, 10, and 20-session outcomes",
+        "missing_successful_eligibility_run_ids",
+        "research/operations/daily_production_audit.csv",
+        "research/evidence/live_session_eligibility.csv",
+        "research/priority_outcomes/daily_research_decisions.csv",
+        "research/priority_outcomes/daily_research_outcomes.csv",
+        "git add --",
+        "contents: write",
+        "retention-days: 90",
+    ])
+    forbid("reconcile-research-ledgers.yml", reconciliation, [
+        "EMAIL_APP_PASSWORD",
+        "data/momentum_daily_ranking.csv \\",
+        "data/paper_portfolio.csv \\",
+        "config.yaml \\",
+        "main.py \\",
+    ])
+    assert reconciliation.count("git push origin HEAD:main") == 1
+    assert "research/priority_outcomes/**" not in reconciliation.split("push:", 1)[1].split("permissions:", 1)[0]
+
+    priority = load_workflow("daily-priority-outcomes.yml")
+    require("daily-priority-outcomes.yml", priority, [
+        "live_session_readiness_with_recovery.py build",
+        "exact recovery PASS is required",
+        "production_state_unchanged",
+        "eligible_for_priority_outcome_ingestion",
+        "research/priority_outcomes/daily_research_decisions.csv",
+        "research/priority_outcomes/daily_research_outcomes.csv",
+        "contents: read",
+    ])
+    forbid("daily-priority-outcomes.yml", priority, [
+        "python live_session_readiness.py build",
+        "EMAIL_APP_PASSWORD",
+        "data/paper_portfolio.csv \\",
+    ])
+
+    paper_regime = load_workflow("paper-regime-validation.yml")
+    require("paper-regime-validation.yml", paper_regime, [
+        "Paper Portfolio Regime Validation",
+        "paper_regime_validation.py build",
+        "research/paper_regime_validation_policy.yaml",
+        "data/paper_equity_history.csv",
+        "data/paper_trade_history.csv",
+        "data/execution_audit.csv",
+        "data/market_temperature.csv",
+        "production_state_mutations",
+        "automatic_paper_rule_change",
+        "contents: read",
+        "retention-days: 180",
+    ])
+    forbid("paper-regime-validation.yml", paper_regime, [
+        "git push",
+        "contents: write",
+        "EMAIL_APP_PASSWORD",
+    ])
+
     smoke = load_workflow("smoke.yml")
     require("smoke.yml", smoke, [
         "MOMENTUM_MAX_SYMBOLS",
