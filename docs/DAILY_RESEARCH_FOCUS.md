@@ -1,12 +1,12 @@
 # Daily Research Focus
 
-Last updated: 2026-07-12
+Last updated: 2026-07-23
 
 ## Purpose
 
-Daily Research Focus turns the existing Action Priority analysis into a concise research plan that can be understood in about three minutes.
+Daily Research Focus turns the existing Action Priority analysis into a concise plan of **five to ten stocks to research in detail today**.
 
-It is not a buy list. It does not change Momentum scores, ranks, thresholds, paper execution, or live orders.
+It is not a buy list. It does not change Momentum scores, ranks, thresholds, Production strategy, paper execution, or live orders.
 
 The machine-readable source is `research/daily_research_focus_policy.yaml`.
 
@@ -24,7 +24,7 @@ The system already calculates A/B/C/見送り using:
 - overheating conditions;
 - data-quality restrictions.
 
-Daily Research Focus uses these existing results rather than introducing another scoring strategy.
+Daily Research Focus uses these existing results rather than introducing another Production scoring strategy.
 
 ## Daily buckets
 
@@ -34,19 +34,23 @@ Daily Research Focus uses these existing results rather than introducing another
 | B | Research if time permits |
 | C | Continue monitoring an established candidate |
 | Watch | Wait for score, continuity, or data conditions to improve |
-| Skip | Low current research priority |
+| Skip | Low current research priority or unreliable data |
 
 The existing `action_priority` field remains compatible with A/B/C/見送り. The more expressive daily state is stored in `research_bucket`.
 
-## Limits
+## Five-to-ten selection contract
 
 - A candidates: maximum 5;
-- Daily Action List: maximum 10;
-- the action list contains only A and B;
-- excess A candidates are downgraded to B for the daily research plan;
-- Data Quality C/D restrictions are applied before the A cap.
+- Daily Action List: target minimum 5 and maximum 10;
+- A and B are selected first;
+- excess A candidates are adjusted to B only in the research-plan layer;
+- when A/B contains fewer than five names, C/Watch may supplement the list;
+- supplemental rows must have complete explanations and cannot be Data Quality D;
+- supplemental rows retain their C/Watch bucket and are marked by `daily_action_supplement=true`;
+- if fewer than five quality candidates exist, `Daily Action List下限不足` shows the shortfall;
+- the system never fills the list with unreliable names merely to reach five.
 
-These are attention-management limits, not changes to the underlying Momentum rank.
+These are attention-management rules. They do not change Momentum rank, score, Production eligibility, or paper execution.
 
 ## Required explanation fields
 
@@ -98,9 +102,11 @@ The output retains:
 - `action_priority_before_daily_focus`;
 - `focus_adjustment_reason`;
 - `positive_reasons_before_daily_focus`;
-- `caution_reasons_before_daily_focus`.
+- `caution_reasons_before_daily_focus`;
+- `daily_action_supplement`;
+- `daily_action_rank`.
 
-The final human-facing reasons are placed in `positive_reasons` and `caution_reasons` so the existing email Action Priority section also becomes more explanatory.
+A supplemental reason explicitly states that the row was added to approach the five-name research minimum without changing Production rank/score.
 
 ## Daily output
 
@@ -108,15 +114,17 @@ The final human-facing reasons are placed in `positive_reasons` and `caution_rea
 
 - A/B/C/Watch/Skip counts;
 - Daily Action List count;
+- supplemental-candidate count;
+- minimum shortfall;
 - incomplete-explanation count;
 - A-cap violation count, required to be zero.
 
 ### Workbook
 
-A `Daily Action List` sheet is inserted near Summary and contains the maximum ten A/B candidates with:
+A `Daily Action List` sheet is inserted near Summary and contains up to ten detailed-research candidates with:
 
 - daily action rank;
-- bucket;
+- bucket and supplemental flag;
 - Momentum rank and score;
 - action score;
 - Data Quality grade;
@@ -126,31 +134,31 @@ A `Daily Action List` sheet is inserted near Summary and contains the maximum te
 - next research questions;
 - adjustment reason.
 
-The existing `Action Priority` sheet retains the complete candidate set and the additional focus fields.
+The existing `Action Priority` sheet retains the complete candidate set and additional focus fields.
 
-### Email
+### Email and dashboard
 
-A new `今日の結論・Daily Action List` card appears before Market Temperature. It displays up to ten candidates and all four explanation fields.
+The concise email shows the highest-priority names and links to the full dashboard. The dashboard and Workbook are the complete source for the five-to-ten Daily Action List, all explanation fields, quality warnings, and supplemental markers.
 
 ## Outcome tracking
 
 The focus policy may not be treated as validated because it looks useful in one report.
 
-Before changing classification rules based on performance, Issue #72 requires prospective 5/10/20-session outcome tracking with:
+Before changing classification or supplementation rules based on performance, prospective 5/10/20-session outcome tracking requires:
 
-- exact decision date;
+- exact decision date and source run;
 - exact strategy and focus-policy versions;
-- A/B/C/Watch/Skip state;
+- A/B/C/Watch/Skip state and supplemental flag where available;
 - market and sector benchmark;
 - sample size and confidence interval;
 - no same-day close entry;
-- manual review before any rule change.
+- manual review before any Production or paper-rule change.
 
 ## Governance
 
 - display and research planning only;
 - score and rank preserved;
 - paper execution preserved;
-- no new persisted production state in this version;
-- no automatic score, weight, or strategy changes;
-- no live orders.
+- no automatic score, weight, priority, strategy, or paper-rule changes;
+- no live orders;
+- shortfalls and small samples remain visible.
