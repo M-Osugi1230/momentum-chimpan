@@ -1,0 +1,118 @@
+name: Paper Portfolio Regime Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - paper_regime_validation.py
+      - research/paper_regime_validation_policy.yaml
+      - .github/test_paper_regime_validation.py
+      - .github/workflows/paper-regime-validation.yml
+      - main.py
+      - data/paper_equity_history.csv
+      - data/paper_trade_history.csv
+      - data/execution_audit.csv
+      - data/market_temperature.csv
+      - docs/ROADMAP.md
+      - README.md
+  push:
+    branches:
+      - main
+    paths:
+      - paper_regime_validation.py
+      - research/paper_regime_validation_policy.yaml
+      - .github/test_paper_regime_validation.py
+      - .github/workflows/paper-regime-validation.yml
+      - main.py
+      - data/paper_equity_history.csv
+      - data/paper_trade_history.csv
+      - data/execution_audit.csv
+      - data/market_temperature.csv
+  workflow_dispatch:
+  schedule:
+    # Saturday 10:00 JST, after the trading week is complete.
+    - cron: '0 1 * * 6'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-regime-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.lock ]; then
+            python -m pip install -r requirements.txt -c requirements.lock
+          else
+            python -m pip install -r requirements.txt
+          fi
+      - name: Compile paper regime tools
+        run: |
+          python -m py_compile \
+            paper_regime_validation.py \
+            .github/test_paper_regime_validation.py
+      - name: Run synthetic all-regime validation
+        run: |
+          set -o pipefail
+          python .github/test_paper_regime_validation.py \
+            2>&1 | tee /tmp/paper-regime-test.log
+      - name: Build current paper regime evidence
+        run: |
+          set -o pipefail
+          python paper_regime_validation.py build \
+            --equity data/paper_equity_history.csv \
+            --trades data/paper_trade_history.csv \
+            --execution data/execution_audit.csv \
+            --market data/market_temperature.csv \
+            --policy research/paper_regime_validation_policy.yaml \
+            --output-dir output/paper-regime-validation \
+            2>&1 | tee /tmp/paper-regime-build.log
+          python paper_regime_validation.py validate \
+            --output-dir output/paper-regime-validation
+      - name: Validate research-only boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+
+          workflow_text = Path('.github/workflows/paper-regime-validation.yml').read_text(encoding='utf-8')
+          workflow = yaml.safe_load(workflow_text)
+          assert workflow['permissions']['contents'] == 'read'
+          assert ('contents:' + ' write') not in workflow_text
+          assert ('git' + ' push') not in workflow_text
+          assert ('EMAIL_' + 'APP_PASSWORD') not in workflow_text
+          policy = yaml.safe_load(Path('research/paper_regime_validation_policy.yaml').read_text(encoding='utf-8'))
+          assert policy['study']['research_only'] is True
+          assert policy['governance']['production_state_mutations'] == []
+          assert policy['governance']['automatic_paper_rule_change'] is False
+          assert policy['governance']['live_orders'] is False
+          status = json.loads(Path('output/paper-regime-validation/paper_regime_validation.json').read_text(encoding='utf-8'))
+          assert status['research_only'] is True
+          assert status['production_state_mutations'] == []
+          assert status['automatic_paper_rule_change'] is False
+          PY
+      - name: Upload paper regime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-regime-validation-${{ github.run_id }}
+          path: |
+            output/paper-regime-validation/
+            /tmp/paper-regime-test.log
+            /tmp/paper-regime-build.log
+          if-no-files-found: warn
+          retention-days: 180
