@@ -44,10 +44,11 @@ for relative_path in sorted(REQUIRED_DOCS):
     assert relative_path in readme, f"README does not link {relative_path}"
 
 assert "daily_runner.py" in readme, "README must name the production entrypoint"
-assert "メール上位30件" in readme or "上位30件" in readme
-assert re.search(r"Momentum Top10(?!0)", readme) is None, (
-    "obsolete standalone Top10 wording returned"
-)
+assert "今日詳しく調査する5〜10社" in readme
+assert "Daily Action List" in readme
+assert "Webダッシュボード" in readme
+assert ".github/workflows/reconcile-research-ledgers.yml" in readme
+assert re.search(r"Momentum Top10(?!0)", readme) is None, "obsolete standalone Top10 wording returned"
 assert "自動売買" in readme
 assert "automatic weight change: disabled" in readme
 assert "HOLD_UNCHANGED_PENDING_FORWARD_EVIDENCE" in readme
@@ -104,8 +105,13 @@ assert forward_status["production_state_mutations"] == []
 roadmap = text("docs/ROADMAP.md")
 charter = text("docs/PROJECT_CHARTER.md")
 kpis = text("docs/KPI_DICTIONARY.md")
-assert "New score components and weight optimization | 0%" in roadmap
-assert "Current development policy" in charter
+assert "Five-to-ten daily research list" in roadmap
+assert "Self-healing operations and research ledgers" in roadmap
+assert "Web dashboard | Implemented" in roadmap
+assert "production score/weight optimization frozen" in roadmap
+assert "Daily research contract" in charter
+assert "Research insight application" in charter
+assert "Paper validation contract" in charter
 assert "Daily workflow success rate" in kpis
 assert "Stale-price false acceptance" in kpis
 assert "Automatic strategy or weight changes" in kpis

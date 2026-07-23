@@ -1,9 +1,9 @@
-"""Build a concise daily research plan from existing action priorities.
+"""Build a concise five-to-ten stock daily research plan.
 
-This layer is presentation and research planning only. It preserves Momentum
-scores/ranks, existing paper execution, and production strategy. The existing
-A/B/C/見送り classification remains the input; this module caps the displayed
-A list, derives A/B/C/Watch/Skip research buckets, and explains each decision.
+The governed A/B/C/Watch/Skip classification and stored ``daily_action_list``
+remain unchanged.  When fewer than five A/B names exist, this presentation layer
+adds quality-screened C/Watch rows only to the rendered detailed-research list.
+It does not change Momentum score/rank, production priority, or paper execution.
 """
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 POLICY_PATH = "research/daily_research_focus_policy.yaml"
-FOCUS_VERSION = "2026-07-12-daily-research-focus-v1"
+FOCUS_VERSION = "2026-07-23-daily-research-focus-v2"
+MINIMUM_DAILY_ACTION_LIST = 5
 BUCKET_ORDER = {"A": 0, "B": 1, "C": 2, "Watch": 3, "Skip": 4}
 
 
@@ -343,6 +344,39 @@ def attach_daily_focus(
     return work
 
 
+def _presentation_action_list(focus: pd.DataFrame) -> pd.DataFrame:
+    if focus is None or focus.empty:
+        return pd.DataFrame(columns=focus.columns if focus is not None else [])
+    maximum = 10
+    selected = focus[focus.get("daily_action_list", False) == True].sort_values("daily_action_rank").head(maximum).copy()
+    selected["daily_action_supplement"] = False
+    if len(selected) < MINIMUM_DAILY_ACTION_LIST:
+        quality = focus.get("data_quality_grade", pd.Series("D", index=focus.index)).fillna("D").astype(str)
+        complete = focus.get("explanation_complete", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
+        candidates = focus[
+            focus.get("research_bucket", pd.Series("Skip", index=focus.index)).isin(["C", "Watch"])
+            & quality.ne("D")
+            & complete
+            & ~focus.index.isin(selected.index)
+        ].copy()
+        candidates["_bucket_order"] = candidates["research_bucket"].map(BUCKET_ORDER).fillna(9)
+        sort_columns = ["_bucket_order"]
+        ascending = [True]
+        for column, direction in (("action_score", False), ("expectancy_score", False), ("momentum_rank", True)):
+            if column in candidates.columns:
+                sort_columns.append(column)
+                ascending.append(direction)
+        candidates = candidates.sort_values(sort_columns, ascending=ascending).drop(columns="_bucket_order")
+        needed = min(MINIMUM_DAILY_ACTION_LIST - len(selected), maximum - len(selected))
+        supplements = candidates.head(max(needed, 0)).copy()
+        supplements["daily_action_supplement"] = True
+        if not supplements.empty:
+            selected = pd.concat([selected, supplements], ignore_index=False)
+    selected = selected.head(maximum).copy()
+    selected["daily_action_rank"] = range(1, len(selected) + 1)
+    return selected
+
+
 def summary_fields(focus: pd.DataFrame) -> dict[str, Any]:
     if focus is None or focus.empty:
         return {
@@ -352,11 +386,14 @@ def summary_fields(focus: pd.DataFrame) -> dict[str, Any]:
             "Daily Focus Watch": 0,
             "Daily Focus Skip": 0,
             "Daily Action List": 0,
+            "Daily Action List補助": 0,
+            "Daily Action List下限不足": MINIMUM_DAILY_ACTION_LIST,
             "Daily Focus説明不足": 0,
             "Daily Focus A上限超過": 0,
         }
     buckets = focus.get("research_bucket", pd.Series(index=focus.index, dtype=str))
-    action_list = focus.get("daily_action_list", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
+    selected = _presentation_action_list(focus)
+    supplements = selected.get("daily_action_supplement", pd.Series(False, index=selected.index)).fillna(False).astype(bool)
     incomplete = ~focus.get("explanation_complete", pd.Series(False, index=focus.index)).fillna(False).astype(bool)
     return {
         "Daily Focus A": int((buckets == "A").sum()),
@@ -364,38 +401,37 @@ def summary_fields(focus: pd.DataFrame) -> dict[str, Any]:
         "Daily Focus C": int((buckets == "C").sum()),
         "Daily Focus Watch": int((buckets == "Watch").sum()),
         "Daily Focus Skip": int((buckets == "Skip").sum()),
-        "Daily Action List": int(action_list.sum()),
+        "Daily Action List": int(len(selected)),
+        "Daily Action List補助": int(supplements.sum()),
+        "Daily Action List下限不足": max(MINIMUM_DAILY_ACTION_LIST - len(selected), 0),
         "Daily Focus説明不足": int(incomplete.sum()),
         "Daily Focus A上限超過": max(int((buckets == "A").sum()) - 5, 0),
     }
 
 
 def action_list(focus: pd.DataFrame) -> pd.DataFrame:
-    if focus is None or focus.empty:
-        return pd.DataFrame(columns=focus.columns if focus is not None else [])
-    return focus[focus.get("daily_action_list", False) == True].sort_values("daily_action_rank")
+    return _presentation_action_list(focus)
 
 
 def plain_section(focus: pd.DataFrame) -> list[str]:
     fields = summary_fields(focus)
     lines = [
         "【今日の結論・Daily Action List】",
-        "売買推奨ではなく、本日詳しく調査する順番です。",
-        (
-            f"A {fields['Daily Focus A']}件 / B {fields['Daily Focus B']}件 / "
-            f"C {fields['Daily Focus C']}件 / Watch {fields['Daily Focus Watch']}件 / "
-            f"Skip {fields['Daily Focus Skip']}件"
-        ),
-        f"詳細調査対象 {fields['Daily Action List']}件（A最大5件、A/B合計最大10件）",
+        "売買推奨ではなく、本日詳しく調査する5〜10社の順番です。",
+        f"A {fields['Daily Focus A']}件 / B {fields['Daily Focus B']}件 / C {fields['Daily Focus C']}件 / Watch {fields['Daily Focus Watch']}件 / Skip {fields['Daily Focus Skip']}件",
+        f"詳細調査対象 {fields['Daily Action List']}件（目標5〜10件、A最大5件、補助候補{fields['Daily Action List補助']}件）",
     ]
+    if fields["Daily Action List下限不足"]:
+        lines.append(f"品質条件を満たす候補が少なく、目標下限まであと{fields['Daily Action List下限不足']}件です。無理に追加しません。")
     selected = action_list(focus)
     if selected.empty:
         lines.extend(["本日の詳細調査対象はありません。", ""])
         return lines
     for _, row in selected.iterrows():
         bucket = optional_text(row.get("research_bucket"))
+        supplement = "・補助" if bool(row.get("daily_action_supplement", False)) else ""
         lines.extend([
-            f"#{int(number(row.get('daily_action_rank'), 0) or 0)} [{bucket}] {row.get('code')} {row.get('name')}",
+            f"#{int(number(row.get('daily_action_rank'), 0) or 0)} [{bucket}{supplement}] {row.get('code')} {row.get('name')}",
             f"今日の理由：{optional_text(row.get('why_today'))}",
             f"変化：{optional_text(row.get('what_changed'))}",
             f"注意：{optional_text(row.get('risk_summary'))}",
@@ -411,20 +447,25 @@ def html_section(focus: pd.DataFrame) -> str:
     items = []
     for _, row in selected.iterrows():
         bucket = optional_text(row.get("research_bucket"))
+        supplement = bool(row.get("daily_action_supplement", False))
         color = "#166534" if bucket == "A" else "#1d4ed8"
+        label = f"{bucket}・補助" if supplement else bucket
         items.append(f'''<div style="border-top:1px solid #e5e7eb;padding:11px 0">
-<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(number(row.get("daily_action_rank"), 0) or 0)} [{html.escape(bucket)}] {html.escape(str(row.get("code", "")))} {html.escape(str(row.get("name", "")))} <span style="float:right;color:{color}">{number(row.get("action_score"), 0):.1f}点</span></div>
+<div style="font-size:14px;font-weight:900;color:#0f172a">#{int(number(row.get("daily_action_rank"), 0) or 0)} [{html.escape(label)}] {html.escape(str(row.get("code", "")))} {html.escape(str(row.get("name", "")))} <span style="float:right;color:{color}">{number(row.get("action_score"), 0):.1f}点</span></div>
 <div style="clear:both;font-size:11px;color:{color};font-weight:800;margin-top:4px">今日の理由：{html.escape(optional_text(row.get("why_today")))}</div>
 <div style="font-size:11px;color:#475569;margin-top:3px">変化：{html.escape(optional_text(row.get("what_changed")))}</div>
 <div style="font-size:11px;color:#b45309;margin-top:3px">注意：{html.escape(optional_text(row.get("risk_summary")))}</div>
 <div style="font-size:11px;color:#334155;margin-top:3px">次の確認：{html.escape(optional_text(row.get("next_research_questions")))}</div>
 </div>''')
     empty = '<div style="font-size:12px;color:#64748b;margin-top:8px">本日の詳細調査対象はありません。</div>' if not items else ""
+    shortfall = ""
+    if fields["Daily Action List下限不足"]:
+        shortfall = f'<div style="font-size:11px;color:#b45309;margin-top:5px">品質条件を優先し、5件下限まであと{fields["Daily Action List下限不足"]}件は無理に追加していません。</div>'
     return f'''<div style="background:#fff;border:3px solid #0f172a;border-radius:18px;padding:16px;margin-top:14px">
 <div style="font-size:20px;font-weight:900;color:#0f172a">今日の結論・Daily Action List</div>
-<div style="font-size:12px;color:#64748b;margin-top:4px">売買推奨ではなく、本日詳しく調査する順番です。</div>
+<div style="font-size:12px;color:#64748b;margin-top:4px">売買推奨ではなく、本日詳しく調査する5〜10社の順番です。</div>
 <div style="font-size:13px;font-weight:800;color:#334155;margin-top:8px">A {fields["Daily Focus A"]} ・ B {fields["Daily Focus B"]} ・ C {fields["Daily Focus C"]} ・ Watch {fields["Daily Focus Watch"]} ・ Skip {fields["Daily Focus Skip"]}</div>
-<div style="font-size:12px;color:#475569;margin-top:4px">詳細調査 {fields["Daily Action List"]}件（A最大5件、A/B合計最大10件）</div>{empty}{"".join(items)}</div>'''
+<div style="font-size:12px;color:#475569;margin-top:4px">詳細調査 {fields["Daily Action List"]}件（目標5〜10件、A最大5件、補助{fields["Daily Action List補助"]}件）</div>{shortfall}{empty}{"".join(items)}</div>'''
 
 
 def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
@@ -438,15 +479,18 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
     sheet = workbook.create_sheet("Daily Action List", position)
     fields = summary_fields(focus)
     summary_rows = [
-        ("Policy", "daily-research-focus-v1"),
+        ("Policy", "daily-research-focus-v1 / presentation target 5-to-10"),
         ("A", fields["Daily Focus A"]),
         ("B", fields["Daily Focus B"]),
         ("C", fields["Daily Focus C"]),
         ("Watch", fields["Daily Focus Watch"]),
         ("Skip", fields["Daily Focus Skip"]),
         ("Detailed research list", fields["Daily Action List"]),
+        ("Supplemental research candidates", fields["Daily Action List補助"]),
+        ("Minimum shortfall", fields["Daily Action List下限不足"]),
         ("Incomplete explanations", fields["Daily Focus説明不足"]),
         ("A cap violations", fields["Daily Focus A上限超過"]),
+        ("Governed priority-rule mutation", "NONE"),
         ("Score/rank mutation", "NONE"),
         ("Paper execution mutation", "NONE"),
     ]
@@ -458,6 +502,7 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
     columns = [
         "daily_action_rank",
         "research_bucket",
+        "daily_action_supplement",
         "code",
         "name",
         "momentum_rank",
@@ -477,8 +522,7 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
         for column_index, column in enumerate(available, start=1):
             sheet.cell(start_row, column_index, column)
         for row_index, values in enumerate(
-            selected[available].itertuples(index=False, name=None),
-            start=start_row + 1,
+            selected[available].itertuples(index=False, name=None), start=start_row + 1
         ):
             for column_index, value in enumerate(values, start=1):
                 sheet.cell(row_index, column_index, value)
@@ -493,8 +537,7 @@ def patch_workbook(path: str | Path, focus: pd.DataFrame) -> None:
     sheet.freeze_panes = f"A{start_row + 1}"
     for column in sheet.columns:
         sheet.column_dimensions[column[0].column_letter].width = min(
-            max(len(str(cell.value or "")) for cell in column) + 2,
-            55,
+            max(len(str(cell.value or "")) for cell in column) + 2, 55
         )
         for cell in column:
             cell.alignment = Alignment(vertical="top", wrap_text=True)

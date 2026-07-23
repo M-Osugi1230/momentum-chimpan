@@ -27,7 +27,8 @@ assert readiness_step["if"] == "github.event_name == 'workflow_run'"
 readiness_script = readiness_step["run"]
 
 required_fragments = (
-    "live_session_readiness.py build",
+    "live_session_readiness_with_recovery.py build",
+    "daily_recovery_drill.py",
     "--artifact-root downloaded-daily-report",
     "--source-run-id",
     "--source-run-url",
@@ -37,9 +38,13 @@ required_fragments = (
     "--created-at-utc",
     "--updated-at-utc",
     "live_session_readiness.json",
+    "live_session_readiness_with_recovery as readiness",
     "validate_readiness(payload)",
     "readiness_state",
     "eligible_for_priority_outcome_ingestion",
+    "exact_recovery_drill",
+    "exact recovery PASS is required",
+    "production_state_unchanged",
     "readiness_fingerprint",
     "status_sha256",
 )
@@ -48,6 +53,7 @@ for fragment in required_fragments:
 
 assert "readiness_state') == 'FAIL'" in readiness_script
 assert "eligible_for_priority_outcome_ingestion') is not True" in readiness_script
+assert "live_session_readiness.py build" not in readiness_script
 
 publish_condition = workflow["jobs"]["publish"]["if"]
 assert "github.event_name == 'schedule'" in publish_condition
@@ -71,4 +77,4 @@ assert "config.yaml" not in persist_script
 assert ("EMAIL_" + "APP_PASSWORD") not in text
 assert ("contents:" + " write") not in text.split("publish:", 1)[0]
 
-print("priority outcome readiness gate validation passed")
+print("recovery-aware priority outcome readiness gate validation passed")

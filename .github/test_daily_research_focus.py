@@ -17,6 +17,7 @@ import daily_research_focus as focus
 policy = focus.load_policy(ROOT / focus.POLICY_PATH)
 focus.validate_policy(policy)
 assert policy["limits"]["maximum_A_candidates"] == 5
+assert focus.MINIMUM_DAILY_ACTION_LIST == 5
 assert policy["limits"]["maximum_daily_action_list"] == 10
 assert policy["governance"]["preserve_paper_execution"] is True
 assert policy["governance"]["automatic_strategy_change"] is False
@@ -101,11 +102,7 @@ action = pd.DataFrame(priority_rows)
 top100 = pd.DataFrame(top_rows)
 original_ranks = action.set_index("code")["momentum_rank"].copy()
 original_scores = action.set_index("code")["momentum_score"].copy()
-result = focus.attach_daily_focus(
-    action,
-    top100,
-    policy_path=ROOT / focus.POLICY_PATH,
-)
+result = focus.attach_daily_focus(action, top100, policy_path=ROOT / focus.POLICY_PATH)
 
 assert int((result["research_bucket"] == "A").sum()) == 5
 assert int(result["daily_action_list"].sum()) == 10
@@ -131,16 +128,8 @@ assert "最新決算" in result.set_index("code").loc["1001", "next_research_que
 assert "出来高急増" in result.set_index("code").loc["1001", "next_research_questions"]
 
 reindexed = result.set_index("code")
-pd.testing.assert_series_equal(
-    reindexed.loc[original_ranks.index, "momentum_rank"],
-    original_ranks,
-    check_names=False,
-)
-pd.testing.assert_series_equal(
-    reindexed.loc[original_scores.index, "momentum_score"],
-    original_scores,
-    check_names=False,
-)
+pd.testing.assert_series_equal(reindexed.loc[original_ranks.index, "momentum_rank"], original_ranks, check_names=False)
+pd.testing.assert_series_equal(reindexed.loc[original_scores.index, "momentum_score"], original_scores, check_names=False)
 
 fields = focus.summary_fields(result)
 assert fields["Daily Focus A"] == 5
@@ -149,23 +138,50 @@ assert fields["Daily Focus C"] == 1
 assert fields["Daily Focus Watch"] == 2
 assert fields["Daily Focus Skip"] == 0
 assert fields["Daily Action List"] == 10
+assert fields["Daily Action List補助"] == 0
+assert fields["Daily Action List下限不足"] == 0
 assert fields["Daily Focus説明不足"] == 0
 assert fields["Daily Focus A上限超過"] == 0
 
 selected = focus.action_list(result)
 assert len(selected) == 10
 assert set(selected["research_bucket"]).issubset({"A", "B"})
+assert selected["daily_action_supplement"].eq(False).all()
+
+# Presentation supplementation must not mutate the governed bucket or stored
+# daily_action_list fields produced by attach_daily_focus.
+small_action = action.iloc[[0, 7, 11, 12, 13]].copy()
+small_action.loc[:, "action_priority"] = ["A", "B", "C", "C", "見送り"]
+small_action.loc[:, "action_score"] = [90, 80, 62, 58, 50]
+small_action.loc[:, "lifecycle_status"] = ["継続", "定着", "継続", "初登場", "初登場"]
+small_action.loc[:, "data_quality_grade"] = ["A", "A", "B", "C", "D"]
+small_top = top100[top100["code"].isin(small_action["code"])].copy()
+small_top.loc[small_top["code"] == small_action.iloc[-1]["code"], "data_quality_grade"] = "D"
+small = focus.attach_daily_focus(small_action, small_top, ROOT / focus.POLICY_PATH)
+assert int(small["daily_action_list"].sum()) == 2
+small_selected = focus.action_list(small)
+assert len(small_selected) == 4
+assert int(small_selected["daily_action_supplement"].sum()) == 2
+assert set(small_selected[small_selected["daily_action_supplement"]]["research_bucket"]).issubset({"C", "Watch"})
+assert "D" not in set(small_selected["data_quality_grade"])
+assert int(small["daily_action_list"].sum()) == 2, "presentation list must not rewrite governed flags"
+small_fields = focus.summary_fields(small)
+assert small_fields["Daily Action List"] == 4
+assert small_fields["Daily Action List補助"] == 2
+assert small_fields["Daily Action List下限不足"] == 1
 
 plain = "\n".join(focus.plain_section(result))
 assert "【今日の結論・Daily Action List】" in plain
 assert "A 5件" in plain
 assert "詳細調査対象 10件" in plain
+assert "5〜10社" in plain
 assert "今日の理由：" in plain
 assert "次の確認：" in plain
 html = focus.html_section(result)
 assert "今日の結論・Daily Action List" in html
 assert "A 5" in html
 assert "詳細調査 10件" in html
+assert "5〜10社" in html
 assert "次の確認：" in html
 
 with TemporaryDirectory() as temporary:
@@ -173,18 +189,21 @@ with TemporaryDirectory() as temporary:
     workbook = Workbook()
     workbook.active.title = "Summary"
     workbook.save(workbook_path)
-    focus.patch_workbook(workbook_path, result)
+    focus.patch_workbook(workbook_path, small)
     checked = load_workbook(workbook_path, data_only=True)
     assert "Daily Action List" in checked.sheetnames
     sheet = checked["Daily Action List"]
     values = [cell.value for row in sheet.iter_rows() for cell in row]
     assert "Detailed research list" in values
+    assert "Supplemental research candidates" in values
+    assert "Minimum shortfall" in values
     assert "A cap violations" in values
+    assert "Governed priority-rule mutation" in values
     assert "Paper execution mutation" in values
     assert "NONE" in values
+    assert "daily_action_supplement" in values
     assert "why_today" in values
     assert "next_research_questions" in values
-    assert "Candidate 1" in values
 
 source = (ROOT / "daily_runner.py").read_text(encoding="utf-8")
 assert "daily_research_focus.attach_daily_focus" in source
@@ -193,4 +212,4 @@ assert "daily_research_focus.plain_section" in source
 assert "daily_research_focus.html_section" in source
 assert "paper_execution_mutation=disabled" in source
 
-print("daily research focus validation passed")
+print("presentation-only five-to-ten daily research focus validation passed")
