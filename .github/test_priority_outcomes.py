@@ -40,31 +40,14 @@ def build_artifact(root: Path) -> Path:
     summary.append([DECISION_DATE, "YES", "test-app"])
     action = workbook.create_sheet("Action Priority")
     columns = [
-        "code",
-        "name",
-        "sector33",
-        "research_bucket",
-        "daily_action_list",
-        "daily_action_rank",
-        "action_priority",
-        "action_priority_before_quality",
-        "action_priority_before_daily_focus",
-        "momentum_rank",
-        "momentum_score",
-        "action_score",
-        "expectancy_score",
-        "expectancy_confidence",
-        "lifecycle_status",
-        "market_regime",
-        "relative_strength_grade",
-        "data_quality_grade",
-        "data_quality_reason_codes",
-        "why_today",
-        "what_changed",
-        "risk_summary",
-        "next_research_questions",
-        "focus_adjustment_reason",
-        "daily_focus_version",
+        "code", "name", "sector33", "research_bucket", "daily_action_list",
+        "daily_action_rank", "action_priority", "action_priority_before_quality",
+        "action_priority_before_daily_focus", "momentum_rank", "momentum_score",
+        "action_score", "expectancy_score", "expectancy_confidence",
+        "lifecycle_status", "market_regime", "relative_strength_grade",
+        "data_quality_grade", "data_quality_reason_codes", "why_today",
+        "what_changed", "risk_summary", "next_research_questions",
+        "focus_adjustment_reason", "daily_focus_version",
     ]
     action.append(columns)
     buckets = ["A", "B", "C", "Watch", "Skip"]
@@ -95,7 +78,7 @@ def build_artifact(root: Path) -> Path:
             "risk_summary": f"{bucket}の注意",
             "next_research_questions": f"{bucket}の次の調査",
             "focus_adjustment_reason": "品質ゲートによる変更なし",
-            "daily_focus_version": "2026-07-12-daily-research-focus-v1",
+            "daily_focus_version": "2026-07-23-daily-research-focus-v2",
         }
         action.append([row[column] for column in columns])
     workbook.save(output / "daily_report.xlsx")
@@ -136,15 +119,27 @@ assert policy["execution_model"]["horizons_sessions"] == [5, 10, 20]
 assert policy["governance"]["automatic_priority_rule_change"] is False
 assert policy["governance"]["production_state_mutations"] == []
 
+# The committed ledger is allowed to accumulate. Validate its signatures, natural
+# keys, counts, and non-promotion state instead of assuming it remains empty.
 committed_decisions = tracker.load_decisions(ROOT / tracker.DEFAULT_DECISIONS)
 committed_outcomes = tracker.load_outcomes(ROOT / tracker.DEFAULT_OUTCOMES)
 committed_calibration = json.loads((ROOT / tracker.DEFAULT_CALIBRATION_JSON).read_text(encoding="utf-8"))
-assert committed_decisions.empty
-assert committed_outcomes.empty
+assert tracker.validate_histories(committed_decisions, committed_outcomes, policy) == []
 assert tracker.validate_calibration(committed_calibration) == []
+assert committed_calibration["decision_count"] == len(committed_decisions)
+assert committed_calibration["outcome_row_count"] == len(committed_outcomes)
 assert committed_calibration["ready_for_human_priority_rule_review"] is False
+assert committed_calibration["production_rule_change_allowed"] is False
 assert len(committed_calibration["review_gates"]) == 6
 assert all(not gate["passed"] for gate in committed_calibration["review_gates"])
+if not committed_decisions.empty:
+    assert committed_decisions["decision_id"].nunique() == len(committed_decisions)
+    assert committed_decisions["strategy_fingerprint"].astype(str).str.strip().ne("").all()
+if not committed_outcomes.empty:
+    assert set(committed_outcomes["outcome_status"]).issubset({
+        "PENDING", "COMPLETE", "COMPLETE_WITHOUT_MARKET", "PRICE_ERROR", "INVALID_DECISION"
+    })
+    assert committed_outcomes["same_day_close_entry"].fillna(False).eq(False).all()
 
 with TemporaryDirectory() as temporary:
     root = Path(temporary)
@@ -160,7 +155,7 @@ with TemporaryDirectory() as temporary:
     assert decisions["decision_id"].nunique() == 5
     assert decisions["strategy_fingerprint"].eq(FINGERPRINT).all()
     assert decisions["decision_date"].eq(DECISION_DATE).all()
-    assert decisions["focus_policy_version"].eq("2026-07-12-daily-research-focus-v1").all()
+    assert decisions["focus_policy_version"].eq("2026-07-23-daily-research-focus-v2").all()
     assert decisions["research_bucket"].tolist() == ["A", "B", "C", "Watch", "Skip"]
     assert decisions["daily_action_list"].tolist() == [True, True, False, False, False]
     assert decisions["why_today"].astype(str).str.strip().ne("").all()
@@ -171,11 +166,8 @@ with TemporaryDirectory() as temporary:
     assert len(history) == 5, "same artifact decisions must be idempotent"
 
     outcomes = tracker.update_outcomes(
-        history,
-        tracker.empty_outcomes(),
-        policy,
-        price_loader=synthetic_prices,
-        as_of_date="2026-08-31",
+        history, tracker.empty_outcomes(), policy,
+        price_loader=synthetic_prices, as_of_date="2026-08-31",
     )
     assert len(outcomes) == 15
     assert outcomes["outcome_status"].eq("COMPLETE").all()
@@ -183,8 +175,7 @@ with TemporaryDirectory() as temporary:
     assert outcomes["no_lookahead_verified"].all()
     assert outcomes["entry_date"].eq("2026-07-14").all()
     first = outcomes[
-        outcomes["code"].eq("1001")
-        & outcomes["horizon_sessions"].eq(5)
+        outcomes["code"].eq("1001") & outcomes["horizon_sessions"].eq(5)
     ].iloc[0]
     assert first["exit_date"] == "2026-07-20"
     expected_gross = 126.0 / 113.0 - 1.0
@@ -197,9 +188,7 @@ with TemporaryDirectory() as temporary:
     assert first["sector_excess_return"] is not None
 
     preserved = tracker.update_outcomes(
-        history,
-        outcomes,
-        policy,
+        history, outcomes, policy,
         price_loader=lambda *args: (_ for _ in ()).throw(RuntimeError("must not refetch complete rows")),
         as_of_date="2026-09-30",
     )
@@ -242,11 +231,8 @@ with TemporaryDirectory() as temporary:
             "adjusted_close": [100.5, 101.5, 102.5, 103.5],
         })
     pending = tracker.update_outcomes(
-        history.iloc[[0]],
-        tracker.empty_outcomes(),
-        policy,
-        price_loader=short_prices,
-        as_of_date="2026-07-16",
+        history.iloc[[0]], tracker.empty_outcomes(), policy,
+        price_loader=short_prices, as_of_date="2026-07-16",
     )
     assert pending["outcome_status"].eq("PENDING").all()
     assert pending["entry_date"].eq("2026-07-14").all()
@@ -254,8 +240,7 @@ with TemporaryDirectory() as temporary:
 
     raw = pd.DataFrame({
         "Date": pd.bdate_range("2026-07-13", periods=2),
-        "Open": [100.0, 102.0],
-        "Close": [101.0, 103.0],
+        "Open": [100.0, 102.0], "Close": [101.0, 103.0],
         "Adj Close": [50.5, 51.5],
     })
     adjusted = tracker.adjusted_price_frame(raw)
@@ -268,6 +253,8 @@ assert "workflow_run" in workflow_text
 assert "schedule" in workflow_text
 assert "actions: read" in workflow_text
 assert "contents: write" in workflow_text
+assert "live_session_readiness_with_recovery.py build" in workflow_text
+assert "exact recovery PASS is required" in workflow_text
 assert "research/priority_outcomes/daily_research_decisions.csv" in workflow_text
 assert "research/priority_outcomes/daily_research_outcomes.csv" in workflow_text
 assert "research/priority_outcomes/latest_calibration.json" in workflow_text
