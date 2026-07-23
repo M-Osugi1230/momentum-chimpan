@@ -1,13 +1,15 @@
 policy:
   id: daily-research-focus-v1
   registered_at: '2026-07-12'
-  purpose: Convert existing action priorities into a concise daily research plan without changing Momentum score, rank, or paper execution.
+  updated_at: '2026-07-23'
+  purpose: Convert existing action priorities into a concise plan of five to ten stocks to research in detail without changing Momentum score, rank, or paper execution.
 
 limits:
   maximum_A_candidates: 5
+  minimum_daily_action_list: 5
   maximum_daily_action_list: 10
   email_A_limit: 5
-  email_B_limit: 5
+  email_total_limit: 10
 
 bucket_mapping:
   A: A
@@ -21,6 +23,8 @@ watch_rules:
   C_minimum_action_score: 55
   rejected_minimum_action_score: 45
   eligible_quality_grades: [A, B, C]
+  supplemental_action_buckets: [C, Watch]
+  supplemental_excluded_quality_grades: [D]
 
 required_explanations:
   - why_today
