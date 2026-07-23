@@ -1,4 +1,9 @@
-"""Run the live-session eligibility ledger with recovery-aware readiness."""
+"""Run the live-session eligibility ledger with recovery-aware readiness.
+
+The scheduled reconciliation workflow reuses this exact wrapper when rebuilding
+missing source-run rows, so event-driven and self-healing paths share one signed
+recovery contract.
+"""
 from __future__ import annotations
 
 import live_session_eligibility as eligibility
