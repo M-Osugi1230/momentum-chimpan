@@ -106,7 +106,6 @@ result = focus.attach_daily_focus(action, top100, policy_path=ROOT / focus.POLIC
 
 assert int((result["research_bucket"] == "A").sum()) == 5
 assert int(result["daily_action_list"].sum()) == 10
-assert int(result["daily_action_supplement"].sum()) == 0
 assert result[result["daily_action_list"]]["daily_action_rank"].tolist() == list(range(1, 11))
 assert result["explanation_complete"].all()
 assert not result["why_today"].astype(str).str.strip().eq("").any()
@@ -147,7 +146,10 @@ assert fields["Daily Focus A上限超過"] == 0
 selected = focus.action_list(result)
 assert len(selected) == 10
 assert set(selected["research_bucket"]).issubset({"A", "B"})
+assert selected["daily_action_supplement"].eq(False).all()
 
+# Presentation supplementation must not mutate the governed bucket or stored
+# daily_action_list fields produced by attach_daily_focus.
 small_action = action.iloc[[0, 7, 11, 12, 13]].copy()
 small_action.loc[:, "action_priority"] = ["A", "B", "C", "C", "見送り"]
 small_action.loc[:, "action_score"] = [90, 80, 62, 58, 50]
@@ -156,11 +158,13 @@ small_action.loc[:, "data_quality_grade"] = ["A", "A", "B", "C", "D"]
 small_top = top100[top100["code"].isin(small_action["code"])].copy()
 small_top.loc[small_top["code"] == small_action.iloc[-1]["code"], "data_quality_grade"] = "D"
 small = focus.attach_daily_focus(small_action, small_top, ROOT / focus.POLICY_PATH)
+assert int(small["daily_action_list"].sum()) == 2
 small_selected = focus.action_list(small)
 assert len(small_selected) == 4
 assert int(small_selected["daily_action_supplement"].sum()) == 2
 assert set(small_selected[small_selected["daily_action_supplement"]]["research_bucket"]).issubset({"C", "Watch"})
 assert "D" not in set(small_selected["data_quality_grade"])
+assert int(small["daily_action_list"].sum()) == 2, "presentation list must not rewrite governed flags"
 small_fields = focus.summary_fields(small)
 assert small_fields["Daily Action List"] == 4
 assert small_fields["Daily Action List補助"] == 2
@@ -185,7 +189,7 @@ with TemporaryDirectory() as temporary:
     workbook = Workbook()
     workbook.active.title = "Summary"
     workbook.save(workbook_path)
-    focus.patch_workbook(workbook_path, result)
+    focus.patch_workbook(workbook_path, small)
     checked = load_workbook(workbook_path, data_only=True)
     assert "Daily Action List" in checked.sheetnames
     sheet = checked["Daily Action List"]
@@ -194,11 +198,12 @@ with TemporaryDirectory() as temporary:
     assert "Supplemental research candidates" in values
     assert "Minimum shortfall" in values
     assert "A cap violations" in values
+    assert "Governed priority-rule mutation" in values
     assert "Paper execution mutation" in values
     assert "NONE" in values
+    assert "daily_action_supplement" in values
     assert "why_today" in values
     assert "next_research_questions" in values
-    assert "Candidate 1" in values
 
 source = (ROOT / "daily_runner.py").read_text(encoding="utf-8")
 assert "daily_research_focus.attach_daily_focus" in source
@@ -207,4 +212,4 @@ assert "daily_research_focus.plain_section" in source
 assert "daily_research_focus.html_section" in source
 assert "paper_execution_mutation=disabled" in source
 
-print("five-to-ten daily research focus validation passed")
+print("presentation-only five-to-ten daily research focus validation passed")
