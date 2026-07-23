@@ -13,7 +13,9 @@ on:
       - main
     paths:
       - priority_outcomes.py
+      - daily_recovery_drill.py
       - live_session_readiness.py
+      - live_session_readiness_with_recovery.py
       - research/priority_outcomes/**
       - .github/test_priority_outcomes.py
       - .github/test_priority_outcome_readiness_gate.py
@@ -52,7 +54,9 @@ jobs:
         run: |
           python -m py_compile \
             priority_outcomes.py \
+            daily_recovery_drill.py \
             live_session_readiness.py \
+            live_session_readiness_with_recovery.py \
             .github/test_priority_outcomes.py \
             .github/test_priority_outcome_readiness_gate.py
       - name: Validate prospective outcome contract
@@ -158,8 +162,12 @@ jobs:
           SOURCE_UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
         run: |
           set -euo pipefail
-          python -m py_compile live_session_readiness.py priority_outcomes.py
-          python live_session_readiness.py build \
+          python -m py_compile \
+            daily_recovery_drill.py \
+            live_session_readiness.py \
+            live_session_readiness_with_recovery.py \
+            priority_outcomes.py
+          python live_session_readiness_with_recovery.py build \
             --artifact-root downloaded-daily-report \
             --source-run-id "${SOURCE_RUN_ID}" \
             --source-run-url "${SOURCE_RUN_URL}" \
@@ -173,24 +181,30 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          import live_session_readiness as readiness
+          import live_session_readiness_with_recovery as readiness
 
           path = Path('output/priority-outcomes-readiness/live_session_readiness.json')
           if not path.is_file():
-              raise SystemExit('signed live-session readiness output is missing')
+              raise SystemExit('signed recovery-aware live-session readiness output is missing')
           payload = json.loads(path.read_text(encoding='utf-8'))
           issues = readiness.validate_readiness(payload)
           if issues:
-              raise SystemExit('invalid live-session readiness: ' + '; '.join(issues))
+              raise SystemExit('invalid recovery-aware live-session readiness: ' + '; '.join(issues))
           if payload.get('readiness_state') == 'FAIL':
               raise SystemExit('live session readiness failed; prospective decisions will not be ingested')
           if payload.get('eligible_for_priority_outcome_ingestion') is not True:
               raise SystemExit('live session is not eligible for priority outcome ingestion')
+          exact = payload.get('exact_recovery_drill', {})
+          if exact.get('status') != 'PASS':
+              raise SystemExit('exact recovery PASS is required before priority outcome ingestion')
+          if exact.get('production_state_unchanged') is not True:
+              raise SystemExit('exact recovery did not prove production state remained unchanged')
           print(json.dumps({
               'readiness_state': payload.get('readiness_state'),
               'source_run_id': payload.get('source_run_id'),
               'report_date': payload.get('report_date'),
               'eligible_for_priority_outcome_ingestion': True,
+              'exact_recovery_status': exact.get('status'),
               'readiness_fingerprint': payload.get('readiness_fingerprint'),
               'status_sha256': payload.get('status_sha256'),
           }, ensure_ascii=False, indent=2))
