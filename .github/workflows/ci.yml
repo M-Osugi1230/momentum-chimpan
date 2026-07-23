@@ -40,6 +40,7 @@ jobs:
           main.py replay.py research_scorecard.py robustness_analysis.py
           strategy_governance.py evidence_provenance.py operations.py state_recovery.py
           live_session_readiness.py live_session_eligibility.py forward_eligible_history.py
+          priority_outcomes.py priority_outcome_ingest_only.py
           smoke_validate.py historical_backfill.py historical_price_panel.py
           live_execution_panel.py execution_realism.py relative_strength_lifecycle.py
           capacity_analysis.py portfolio_research.py portfolio_filter_lab.py portfolio_exit_lab.py
@@ -59,6 +60,7 @@ jobs:
           .github/test_volume_component_aggregate_guard.py
           .github/test_volume_component_forward_evidence.py
           .github/test_research_evidence_catalog.py
+          .github/test_priority_outcome_ingest_only.py
 
       - name: Import and safety smoke test
         run: |
@@ -100,6 +102,12 @@ jobs:
             --current-main main.py \
             --current-config config.yaml \
             --registry research/experiment_registry.yaml
+
+      - name: Validate reconciliation ingest-only path
+        run: |
+          set -o pipefail
+          python .github/test_priority_outcome_ingest_only.py \
+            2>&1 | tee /tmp/priority-outcome-ingest-only-test.log
 
       - name: Run walk-forward replay validation
         run: |
@@ -210,6 +218,7 @@ jobs:
           name: momentum-pipeline-validation-logs
           path: |
             /tmp/workflow-policy-test.log
+            /tmp/priority-outcome-ingest-only-test.log
             /tmp/walk-forward-replay-test.log
             /tmp/research-scorecard-test.log
             /tmp/robustness-analysis-test.log

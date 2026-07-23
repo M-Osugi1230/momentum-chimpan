@@ -19,6 +19,7 @@ on:
       - live_session_eligibility.py
       - live_session_eligibility_with_recovery.py
       - priority_outcomes.py
+      - priority_outcome_ingest_only.py
 
 permissions:
   actions: read
@@ -69,7 +70,8 @@ jobs:
             live_session_readiness_with_recovery.py \
             live_session_eligibility.py \
             live_session_eligibility_with_recovery.py \
-            priority_outcomes.py
+            priority_outcomes.py \
+            priority_outcome_ingest_only.py
           python operations_audit.py validate \
             --history research/operations/daily_production_audit.csv \
             --status research/operations/daily_production_audit_status.json
@@ -83,7 +85,7 @@ jobs:
             --calibration-json research/priority_outcomes/latest_calibration.json \
             --calibration-md research/priority_outcomes/latest_calibration.md
 
-      - name: Resolve completed daily source runs
+      - name: Resolve completed scheduled daily source runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -111,7 +113,7 @@ jobs:
                       continue
                   if run.get('head_branch') != 'main':
                       continue
-                  if run.get('event') == 'pull_request':
+                  if run.get('event') != 'schedule':
                       continue
                   if (run.get('created_at') or '') < threshold:
                       continue
@@ -141,7 +143,7 @@ jobs:
                   handle.write(
                       '\t'.join(value.replace('\t', ' ') for value in fields) + '\n'
                   )
-          print(f'resolved {len(ordered)} completed Daily Momentum Report runs')
+          print(f'resolved {len(ordered)} scheduled Daily Momentum Report runs')
           PY
 
       - name: Rebuild audit, eligibility, and decision ledgers
@@ -197,17 +199,6 @@ jobs:
               --status research/evidence/live_session_eligibility_status.json \
               --readiness-output-dir "${readiness_root}"
 
-            python live_session_readiness_with_recovery.py build \
-              --artifact-root "${artifact_root}" \
-              --source-run-id "${run_id}" \
-              --source-run-url "${run_url}" \
-              --upstream-conclusion "${conclusion}" \
-              --upstream-event "${source_event}" \
-              --head-sha "${head_sha}" \
-              --created-at-utc "${created_at}" \
-              --updated-at-utc "${updated_at}" \
-              --output-dir "${readiness_root}"
-
             eligible=$(python - "${readiness_root}/live_session_readiness.json" <<'PY'
           import json
           import sys
@@ -221,7 +212,7 @@ jobs:
           PY
             )
             if [ "${eligible}" = true ]; then
-              python priority_outcomes.py update \
+              python priority_outcome_ingest_only.py \
                 --artifact-root "${artifact_root}" \
                 --source-run-id "${run_id}" \
                 --source-run-url "${run_url}" \
@@ -234,7 +225,7 @@ jobs:
             fi
           done < output/reconciliation/source-runs.tsv
 
-      - name: Mature all available 5, 10, and 20-session outcomes
+      - name: Mature all available 5, 10, and 20-session outcomes once
         run: |
           set -euo pipefail
           python priority_outcomes.py update \
