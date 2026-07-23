@@ -1,300 +1,279 @@
 # Momentum Chimpan Roadmap
 
-Last updated: 2026-07-13
+Last updated: 2026-07-23
 
 ## Roadmap rule
 
-The roadmap prioritizes daily research value, data quality, and operational reliability before new indicators or strategy optimization.
+Momentum Chimpan is a research-priority system, not an automatic trading system.
+The daily goal is to narrow the Japanese equity universe to **five to ten stocks
+that deserve detailed research today**, while preserving the evidence, cautions,
+and data quality needed to understand why each stock was selected.
 
-Until the prospective evidence gate completes, engineering capacity should be allocated approximately as follows:
+Work is prioritized in this order:
 
-| Workstream | Target allocation |
-|---|---:|
-| Daily user experience | 40% |
-| Data quality and operational reliability | 40% |
-| Evidence and calibration | 20% |
-| New score components and weight optimization | 0% |
+1. correct and recoverable daily operation;
+2. complete research ledgers and measurable outcomes;
+3. five-to-ten-name daily research usefulness;
+4. research-only shadow and paper validation across market regimes;
+5. governed production review only after prospective evidence matures;
+6. external-user and monetization readiness last.
+
+No favorable historical result may automatically change a production score,
+weight, filter, priority rule, paper rule, or exit rule.
 
 ## Current execution status
 
-| Workstream | State | Evidence / next gate |
+| Workstream | State | Current gate |
 |---|---|---|
-| Documentation and contracts | Implemented | PR #100; documentation contract active |
-| Ten-session production audit | `ACCUMULATING` | PR #101; Issue #68; first eligible session 2026-07-13; ten distinct full state-update sessions and exact recovery evidence required |
-| Exact same-day recovery gate | Implemented; awaiting first live PASS | PR #119 and PR #120; each eligible daily source run must restore its own sealed snapshot in an isolated sandbox before maintenance, persistence, Priority Outcome ingestion, or Forward Evidence eligibility |
-| Forward Evidence publisher | `ACCUMULATING` | Issue #69; first eligible non-initial live source run, signed hashes, and daily-display parity still required |
-| Data Quality A/B/C/D | Implemented; observing | PR #102; full-universe production quality and coverage observation continues |
-| Daily Research Focus | Implemented; observing | PR #103; A/B/C/Watch/Skip and capped Action List require live observation |
-| 5/10/20-session priority outcomes | `ACCUMULATING` | PR #104; no-lookahead prospective samples mature only after future sessions |
-| Monthly operations and evidence review | Implemented | PR #105; read-only scheduled governance report |
-| Strategy-release governance | Implemented | PR #106 and PR #109; registered evidence, shadow operation, manual approval, append-only records, and trusted base-branch enforcement |
-| Score optimization | Frozen | Issue #73 remains open; current volume-ratio weight remains 15 points |
+| Documentation and contracts | Implemented; synchronized | README, roadmap, architecture, runbook, dictionaries, and tests must match `main` |
+| Daily ranking and report | Operating | Full-universe coverage, freshness, duplicate, and recovery checks continue |
+| Five-to-ten daily research list | Implemented; observing | A remains capped at five; quality-screened C/Watch may supplement A/B only when fewer than five detailed candidates exist |
+| Email digest | Implemented | Email remains concise; workbook and dashboard contain the full Daily Action List and evidence |
+| Web dashboard | Implemented | Exact successful daily workbook is the source; mobile, search, watchlist, comparison, and stock deep links are presentation-only |
+| Data Quality A/B/C/D | Implemented; observing | Quality C cannot remain A; quality D cannot enter the detailed research supplement |
+| Exact same-day recovery | Implemented | Every evidence-eligible state-update run requires exact recovery `PASS` and unchanged production state |
+| Ten-session production audit | `ACCUMULATING` | Reconcile every exact Daily Momentum Report run and complete ten eligible market sessions |
+| Live Session Eligibility | `ACCUMULATING` after reconciliation | Exact artifact, recovery, strategy fingerprint, and ranking-row hash must agree |
+| Priority outcomes | `ACCUMULATING` | Mature no-lookahead 5/10/20-session outcomes and retain pending/error rows visibly |
+| Volume Forward Evidence | `ACCUMULATING` | 100 outcomes per variant and 20 paired dates at both 10 and 20 sessions |
+| Healthy v1/v3 research | Research-only shadow | Use confirmed tendencies to improve candidate filtering and comparison; no automatic production promotion |
+| Paper portfolio | Research-only | Validate policy and outcomes across strong, mildly strong, neutral, weak, overheated, and operational WARN/FAIL conditions |
+| Strategy release governance | Implemented | Separate pre-registration, shadow period, manual approval, production PR, rollback, and post-release audit |
+| External use and monetization | Gated future | Recurring value, evidence maturity, operations SLOs, and data-license review required |
 
-Implemented means the contract and validation are present on `main`; it does not mean that time-dependent production or evidence exit gates have matured.
+`Implemented` means the code and validation contract are present. It does not mean
+that time-dependent evidence gates have accumulated enough real market sessions.
 
-## Phase 0 — Re-baseline and production audit
+## Phase 0 — Foundation and production safety
 
-Target: July 2026
+**State: substantially complete**
 
-### Objectives
+Delivered:
 
-- make the current system understandable without chat history;
-- align README and implementation;
-- document persistent state, artifacts, and governance sources;
-- verify the live Forward Evidence publisher chain;
-- begin a ten-session full-production audit;
-- freeze new score optimization.
+- project charter, README, roadmap, architecture, runbook, data dictionary, and KPI dictionary;
+- governed strategy fingerprint and release integrity;
+- exact daily artifact, signed email preview, and SMTP acceptance receipt;
+- state snapshot, isolated same-day recovery drill, retention, and failure notification;
+- full workbook, concise email, and rich static dashboard;
+- Data Quality and Daily Research Focus;
+- research-only paper portfolio and audit records.
 
-### Deliverables
+The foundation is reopened only when implementation and documentation diverge.
 
-- project charter;
-- roadmap;
-- architecture;
-- operations runbook;
-- data dictionary;
-- KPI dictionary;
-- current README;
-- Issue-based execution backlog.
+## Phase 1 — Self-healing operations and research ledgers
 
-### Exit gate
+**State: active, highest priority**
 
-- documentation matches the current workflow;
-- ten-session production audit has started;
-- production-state allowlist is documented;
-- Forward Evidence chain has a tracked verification issue;
-- no unregistered production strategy change is in progress.
+### Objective
 
-## Phase 1 — Operational reliability and data-quality grades
+A successful Daily Momentum Report must not be lost between production and the
+three downstream evidence stores:
 
-Target: July–September 2026
-
-### Objectives
-
-- establish 99% daily workflow reliability;
-- measure universe and price retrieval coverage;
-- prevent stale or incomplete data from becoming top priorities;
-- prove state recovery and failure notification.
+- production audit;
+- live-session eligibility and Forward Evidence;
+- daily priority decisions and 5/10/20-session outcomes.
 
 ### Deliverables
 
-- ten-session audit table;
-- incident log and corrective actions;
-- exact same-day isolated recovery drill for every eligible daily source run;
-- recurring weekly/manual recovery drill;
-- per-stock data-quality grades A/B/C/D;
-- stale-price, missing-session, abnormal-price, and corporate-action warnings;
-- coverage and freshness history.
+- a scheduled and manually dispatchable reconciliation workflow;
+- exact source-run enumeration from 2026-07-13 onward;
+- exact artifact download by run ID;
+- idempotent audit, eligibility, decision, and outcome rebuild;
+- recovery-aware readiness before outcome ingestion;
+- outcome maturity even on days without a new daily artifact;
+- signed cross-ledger coverage diagnostics;
+- a narrow research-only persistence allowlist.
 
 ### Exit gate
 
 | Measure | Target |
 |---|---:|
-| Daily workflow success | >= 99% |
+| Eligible daily workflow success | >= 99% |
 | Report generation success | >= 99% |
 | Normal-stock universe coverage | >= 99% |
 | Price retrieval coverage | >= 98% |
 | Duplicate `code + date` rows | 0 |
 | Stale prices accepted as current | 0 |
+| Exact daily recovery | 100% PASS for eligible state-update sessions |
+| Successful daily runs missing from audit | 0 |
+| Successful daily runs missing from eligibility ledger | 0 |
+| Eligible daily decisions missing from outcome history | 0 |
 | Failure notification coverage | 100% |
-| Exact daily recovery | PASS for every eligible state-update session; valid SKIP only when no state update occurs |
-| Recurring recovery drill | Passed |
 
-## Phase 2 — Three-minute research-priority experience
+## Phase 2 — Five-to-ten-stock research experience
 
-Target: August–October 2026
+**State: implemented; prospective observation active**
 
-### Objective
+### Daily contract
 
-Move from a ranking viewer to a research-priority decision tool.
-
-### Classification
-
-- **A** — must research today; maximum five names;
+- **A** — must research today; maximum five;
 - **B** — research if time permits;
-- **C** — continue monitoring;
-- **Watch** — waiting for promotion conditions;
-- **Skip** — low priority or unreliable data.
+- **C** — established candidate to continue monitoring;
+- **Watch** — wait for score, continuity, or data conditions to improve;
+- **Skip** — low priority or unreliable;
+- **Daily Action List** — target five to ten names.
 
-### Required explanation for A/B
+A/B names are selected first. When fewer than five exist, the system may add
+quality-screened C/Watch names as clearly marked supplemental research candidates.
+It must not add Data Quality D, change Momentum score/rank, or affect paper execution.
+If fewer than five quality candidates exist, the shortfall is shown rather than
+filling the list with unreliable names.
+
+Every detailed candidate must show:
 
 - why today;
-- what changed from the previous run;
-- lifecycle state;
-- market and sector relative strength;
-- score and rank context;
+- what changed;
+- lifecycle and relative strength context;
 - data-quality grade;
 - overheating, liquidity, and other cautions;
-- next research questions outside the system.
-
-### Email order
-
-1. today's conclusion;
-2. market temperature;
-3. A candidates;
-4. important changes;
-5. risks and warnings;
-6. B/C candidates;
-7. research-evidence status;
-8. workbook and artifact guidance.
+- next questions requiring external research.
 
 ### Exit gate
 
-- email can be understood in three minutes;
-- A list contains no more than five names;
-- A/B explanations and warnings have 100% coverage;
-- promotions, demotions, new entries, and lost-priority names are visible;
-- grades C/D cannot become A priorities;
-- outcome-storage contract exists before classification activation.
+- five-to-ten target and any shortfall are visible;
+- A never exceeds five;
+- explanations and warnings have 100% coverage;
+- quality C/D safety boundaries are preserved;
+- email, workbook, and dashboard counts agree;
+- prospective outcomes exist before any priority-rule change.
 
-## Phase 3 — Outcome calibration
+## Phase 3 — Prospective outcome calibration
 
-Target: September 2026–January 2027
+**State: accumulating**
 
-### Objectives
+Execution model:
 
-Track whether the system's research priorities were useful rather than merely plausible.
-
-### Dimensions
-
-- priority class;
-- lifecycle state;
-- score and rank bucket;
-- market temperature;
-- sector;
-- data-quality grade;
-- 5/10/20-session raw return;
-- excess versus market and sector;
-- sample size and confidence interval.
-
-### Principles
-
+- exact eligible decisions from 2026-07-13 onward;
+- next available session adjusted open;
 - no same-day close entry;
-- exact decision date and strategy fingerprint preserved;
-- prospective data outranks historical backfill;
-- small samples are labeled;
-- no automatic activation from favorable results.
+- adjusted closes after 5, 10, and 20 sessions;
+- 20bp round-trip friction;
+- TOPIX and same-sector comparison where available;
+- pending, error, and invalid observations remain visible.
 
-### Exit gate
+Human review requires sufficient samples and dates for A and B, zero lookahead
+violations, and explicit small-sample warnings. Favorable calibration does not
+automatically change production rules.
 
-- no-lookahead outcome builder operational;
-- daily priority history retained;
-- monthly calibration report generated;
-- sample-size warnings shown;
-- major classifications have sufficient observations for review.
+## Phase 4 — Research insight application
 
-## Phase 4 — Prospective evidence and paper validation
+**State: active, research-only**
 
-Target: July–November 2026 and ongoing
+Confirmed findings are stored in the Research Insight Ledger with facts,
+interpretation, limitations, source runs, and artifacts separated.
 
-### Current registered gate
+Current application direction:
 
-For both 10- and 20-session horizons:
+- use Healthy v1 primarily as an overheating, liquidity, and structural-break filter;
+- evaluate Healthy v3 primarily as a Top10 ordering hypothesis;
+- keep Balanced v2 out of production unless independent evidence changes;
+- reject fixed 60-session holding as a default rule;
+- study price paths and state-dependent exits rather than one fixed holding period;
+- treat large MA20 extension as a long-horizon instability context;
+- use positive-volume stock sessions for long-horizon research data quality.
 
-- at least 100 outcomes for baseline;
-- at least 100 outcomes for `drop_volume_ratio`;
-- at least 20 paired signal dates;
-- mean difference below zero for support;
-- early and late differences below zero for robust support;
-- two-sided p-value <= 5%;
-- bootstrap confidence-interval upper bound below zero.
+Improvements from these findings first enter one of:
 
-### Status states
+1. a read-only report explanation;
+2. a shadow ranking;
+3. a research-only paper cohort;
+4. a pre-registered independent holdout.
 
-- `ACCUMULATING`;
-- `DIRECTIONALLY_SUPPORTED`;
-- `ROBUSTLY_SUPPORTED`;
-- `NOT_SUPPORTED`.
+Only mature prospective evidence may later enter governed strategy review.
 
-### Exit gate
+## Phase 5 — Paper validation across all market regimes
 
-- signed compact status finalized;
-- current strategy fingerprint matches evidence;
-- no lookahead or distribution-preservation violation;
-- manual review packet produced;
-- explicit human decision recorded.
+**State: active research workstream**
 
-Completion of the gate does not automatically change the 15-point production weight.
+The paper portfolio must be evaluated separately for:
 
-## Phase 5 — Governed strategy review
+- strong;
+- mildly strong;
+- neutral;
+- weak;
+- overheated-warning;
+- operational WARN;
+- operational FAIL/no-new-entry.
 
-Target: December 2026–March 2027
+Required dimensions:
 
-### Scope
+- target and actual exposure;
+- number of entries and exits;
+- position and sector concentration;
+- stop, target, trailing, time, and signal-exit frequencies;
+- gross/net return, win rate, drawdown, MAE, and MFE;
+- turnover and friction sensitivity;
+- Production, Healthy v1, and Healthy v3 research cohorts where supported;
+- early/late period and leave-one-sector-out robustness;
+- explicit sample-size and regime-coverage warnings.
 
-Only mature questions with prospective evidence may enter this phase, including score weights, filters, priority rules, and paper exits.
+Paper results remain research-only and cannot place live orders.
 
-### Mandatory process
+## Phase 6 — Prospective Forward Evidence and governed strategy review
 
-1. pre-register hypothesis and acceptance criteria;
-2. preserve discovery/holdout separation;
-3. evaluate costs and multiple time windows;
-4. create evidence review packet;
-5. run at least 20 market sessions of shadow comparison;
-6. record manual approval or rejection;
-7. use a separate production-change PR;
-8. retain rollback path and post-release audit.
+**State: accumulating / future review**
 
-The release governance on `main` additionally requires a pinned protected surface, append-only candidate and approval records, and trusted base-branch validation before a production-change PR can pass.
+For both 10- and 20-session horizons, the registered volume-component study
+requires at least:
 
-## Phase 6 — Web dashboard
+- 100 baseline outcomes;
+- 100 tested outcomes;
+- 20 paired signal dates;
+- registered direction, early/late consistency, p-value, and bootstrap-CI gates;
+- exact strategy fingerprint and distribution-preservation checks;
+- a manual review packet and explicit human decision.
 
-Target: April 2027 or later
+Completion of the evidence gate does not automatically change the current
+15-point volume-ratio weight.
 
-### Entry gate
+Any production change additionally requires:
 
-- at least three months of stable daily operation;
-- daily success >= 99%;
-- data-quality grades operational;
-- A/B/C experience stable;
-- Forward Evidence chain operating;
-- report definitions no longer changing frequently.
+1. a pre-registered hypothesis and acceptance criteria;
+2. discovery/holdout separation;
+3. costs and multiple horizons;
+4. at least 20 live market sessions of shadow comparison;
+5. explicit approval or rejection;
+6. a separate production-change PR;
+7. rollback and post-release audit.
 
-### Scope
+## Phase 7 — Dashboard operation and external readiness
 
-Mobile-first presentation of the established daily workflow: summary, ranking history, lifecycle, market temperature, sector heatmap, priority history, outcome calibration, evidence, and quality.
+The Web dashboard is already implemented; it is no longer a future engineering
+phase. Current work is to keep it synchronized with the exact daily workbook and
+make operational/evidence gaps visible.
 
-Web development is a presentation expansion, not a reason to redesign unproven strategy logic.
+External users or monetization remain gated until:
 
-## Phase 7 — External-user and monetization readiness
-
-Target: only after recurring value is proven
-
-### Entry gate
-
-- reliable recurring daily value;
-- measurable priority calibration;
-- completed prospective evidence cycle;
-- stable data and operations SLOs;
-- legal and data-license review.
-
-### Required decisions
-
-- target user and paid job-to-be-done;
-- defensible historical data and workflow;
-- free versus paid boundaries;
-- redistribution permissions;
-- disclaimers and user controls;
-- continued positioning as research-priority support, not investment advice.
+- at least three months of stable daily value;
+- operations SLOs are met;
+- five-to-ten research calibration is measurable;
+- at least one prospective evidence cycle completes;
+- legal and market-data redistribution boundaries are reviewed;
+- positioning remains research support rather than investment advice.
 
 ## Immediate execution order
 
-1. Run and inspect the first eligible 2026-07-13 full-production session.
-2. Confirm the exact same-day recovery drill is `PASS` and bound to the source run's snapshot date and manifest SHA-256.
-3. Verify the first non-initial Forward Evidence publisher chain under #69.
-4. Accumulate ten distinct full state-update market sessions and complete #68.
-5. Observe Data Quality and Daily Research Focus across the full production universe.
-6. Accumulate no-lookahead 5/10/20-session priority outcomes under #72.
-7. Use the monthly review from #74 for recurring operations and evidence governance.
-8. Keep #73 active: do not optimize scores or activate any strategy change while prospective evidence is `ACCUMULATING`.
+1. Merge and run research-ledger reconciliation.
+2. Backfill every completed Daily Momentum Report run from 2026-07-13 onward.
+3. Confirm audit, eligibility, and priority ledgers contain the same eligible source runs.
+4. Mature all available 5-session outcomes, then 10- and 20-session outcomes as time passes.
+5. Run Forward Evidence from the reconciled eligibility ledger.
+6. Complete the ten-session operational audit and signed SLO decision.
+7. Observe the five-to-ten Daily Action List and shortfall behavior in production.
+8. Continue Healthy v1/v3 shadow research and stock only reproducible insights.
+9. Validate the paper portfolio across every registered market and operational regime.
+10. Keep production score/weight optimization frozen until prospective evidence and explicit review mature.
 
 ## Backlog discipline
 
-A new feature enters active development only when it clearly improves one of:
+A feature enters active work only when it clearly improves at least one of:
 
 - daily research time;
-- research-candidate quality;
+- candidate quality;
 - data reliability;
 - operational recoverability;
-- outcome measurability.
+- outcome measurability;
+- regime coverage;
+- evidence transparency.
 
 Otherwise it remains in the backlog.
