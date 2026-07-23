@@ -137,13 +137,13 @@ def main() -> int:
         "workflow_dispatch:",
         "gh api --paginate --slurp",
         "actions/workflows/daily.yml/runs?status=completed&per_page=100",
+        "run.get('event') != 'schedule'",
         "momentum-operations-${run_id}",
         "operations_audit.py update",
         "live_session_eligibility_with_recovery.py update",
-        "live_session_readiness_with_recovery.py build",
         "eligible_for_priority_outcome_ingestion",
-        "priority_outcomes.py update",
-        "Mature all available 5, 10, and 20-session outcomes",
+        "priority_outcome_ingest_only.py",
+        "Mature all available 5, 10, and 20-session outcomes once",
         "missing_successful_eligibility_run_ids",
         "research/operations/daily_production_audit.csv",
         "research/evidence/live_session_eligibility.csv",
@@ -160,6 +160,7 @@ def main() -> int:
         "config.yaml \\",
         "main.py \\",
     ])
+    assert reconciliation.count("python priority_outcomes.py update") == 1
     assert reconciliation.count("git push origin HEAD:main") == 1
     assert "research/priority_outcomes/**" not in reconciliation.split("push:", 1)[1].split("permissions:", 1)[0]
 
