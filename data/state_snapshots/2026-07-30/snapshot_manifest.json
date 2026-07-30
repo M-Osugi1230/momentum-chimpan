@@ -1,0 +1,85 @@
+{
+  "recovery_version": "2026-07-11-state-recovery-v1",
+  "snapshot_schema_version": "2.0",
+  "sealed_at_utc": "2026-07-30T10:13:03+00:00",
+  "snapshot_date": "2026-07-30",
+  "app_version": "2026-07-11-dashboard-relative-strength-lifecycle-v19",
+  "execution_mode": "RESEARCH_AND_PAPER_ONLY",
+  "strategy_fingerprint": "c5397894cc4a67a1f5efe1131a990f0d3508f28dc15f23dc0e50671e6f5de05c",
+  "state_file_count": 6,
+  "valid_state_file_count": 6,
+  "ranking_rows_for_snapshot_date": 3454,
+  "ranking_fingerprint_verified": true,
+  "ranking_fingerprint_detail": "strategy fingerprint verified",
+  "complete": true,
+  "manual_restore_only": true,
+  "automatic_production_restore": false,
+  "files": [
+    {
+      "state_name": "ranking_history",
+      "production_path": "data/momentum_daily_ranking.csv",
+      "snapshot_path": "data/state_snapshots/2026-07-30/ranking_history.csv",
+      "exists": true,
+      "size_bytes": 56583612,
+      "row_count": 65856,
+      "column_count": 90,
+      "sha256": "b0ec7d527f1f600c2a68113b0d9b41a247d063696436700d6d1cf0e32cb2712c",
+      "status": "OK"
+    },
+    {
+      "state_name": "market_temperature",
+      "production_path": "data/market_temperature.csv",
+      "snapshot_path": "data/state_snapshots/2026-07-30/market_temperature.csv",
+      "exists": true,
+      "size_bytes": 3219,
+      "row_count": 20,
+      "column_count": 24,
+      "sha256": "23715d231c1cf8773d323b2d6261e16fda9165ba9e127d96bc6c2e29e2f393fb",
+      "status": "OK"
+    },
+    {
+      "state_name": "sector_leader_signals",
+      "production_path": "data/sector_leader_signal_history.csv",
+      "snapshot_path": "data/state_snapshots/2026-07-30/sector_leader_signals.csv",
+      "exists": true,
+      "size_bytes": 84756,
+      "row_count": 490,
+      "column_count": 21,
+      "sha256": "b7c62aaea82cc361daab9c6169b16723d87de511952803074a32e9a2453caab6",
+      "status": "OK"
+    },
+    {
+      "state_name": "paper_portfolio",
+      "production_path": "data/paper_portfolio.csv",
+      "snapshot_path": "data/state_snapshots/2026-07-30/paper_portfolio.csv",
+      "exists": true,
+      "size_bytes": 1964,
+      "row_count": 9,
+      "column_count": 21,
+      "sha256": "27da16f1353b7210a4837ac298fd50782e587ec3207eb4c39cc8632912e362df",
+      "status": "OK"
+    },
+    {
+      "state_name": "paper_trade_history",
+      "production_path": "data/paper_trade_history.csv",
+      "snapshot_path": "data/state_snapshots/2026-07-30/paper_trade_history.csv",
+      "exists": true,
+      "size_bytes": 5564,
+      "row_count": 21,
+      "column_count": 26,
+      "sha256": "3c97d66ef440b2421648b2872931c6d518d500aea2263275a79e248e54b5e8cd",
+      "status": "OK"
+    },
+    {
+      "state_name": "paper_equity_history",
+      "production_path": "data/paper_equity_history.csv",
+      "snapshot_path": "data/state_snapshots/2026-07-30/paper_equity_history.csv",
+      "exists": true,
+      "size_bytes": 2171,
+      "row_count": 13,
+      "column_count": 14,
+      "sha256": "aec36158304c1726cab7d5df2bc20a81939f52a690a9c508e7119f6a4d06e49d",
+      "status": "OK"
+    }
+  ]
+}
