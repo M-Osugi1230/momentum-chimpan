@@ -1,12 +1,12 @@
 # Daily Research Priority Calibration
 
-Generated: `2026-07-13T10:59:33+00:00`
+Generated: `2026-08-01T10:48:28+00:00`
 
 ## Status
 
 - Decisions: **16**
 - Complete outcomes: **0**
-- Pending outcomes: **48**
+- Pending outcomes: **16**
 - Distinct decision dates: **1**
 - Lookahead violations: **0**
 - Ready for human priority-rule review: **False**
