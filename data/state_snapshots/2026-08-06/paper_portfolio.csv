@@ -1,0 +1,2 @@
+position_id,status,code,name,sector33,entry_date,entry_price,quantity,cost_basis,current_price,market_value,highest_close,stop_price,target_price,trailing_stop_pct,holding_days,sector_research_priority,sector_leader_score,sector_rotation,unrealized_pnl,unrealized_return
+2026-07-31-8609,OPEN,8609,岡三証券グループ,証券、商品先物取引業,2026-07-31,1115.0,200,223000.0,1125.0,225000.0,1132.0,1036.95,1271.1,0.1,4,優先,73.1,改善,2000.0,0.008968609865470878
