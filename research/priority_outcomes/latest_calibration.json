@@ -13,7 +13,7 @@
   "decision_count": 16,
   "outcome_row_count": 48,
   "complete_outcome_count": 0,
-  "pending_outcome_count": 16,
+  "pending_outcome_count": 0,
   "error_outcome_count": 0,
   "lookahead_violation_count": 0,
   "distinct_decision_dates": 1,
@@ -83,7 +83,7 @@
   "automatic_strategy_change": false,
   "automatic_priority_rule_change": false,
   "research_only": true,
-  "generated_at_utc": "2026-08-01T10:48:28+00:00",
-  "calibration_fingerprint": "166917aa2b883ea326968bb2e578cfd54f30c453d7ef4b0299a939b1919b579f",
-  "status_sha256": "132a63fa8f740e29819e030f16a666394712779fae621e171ada6b4177bb32af"
+  "generated_at_utc": "2026-09-01T14:09:03+00:00",
+  "calibration_fingerprint": "15167a0e063865939d0f0a77775f640f0fb0760996b8a2a36662d7b9e1757ca1",
+  "status_sha256": "ef452554e88f1de8def4767f84e91c38800cb19da834df84bcbe282ee04d5e1f"
 }
