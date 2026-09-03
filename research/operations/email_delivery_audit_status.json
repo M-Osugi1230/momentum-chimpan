@@ -1,20 +1,20 @@
 {
   "audit_version": "2026-07-13-email-delivery-audit-v1",
-  "audited_run_count": 38,
-  "valid_receipt_count": 38,
-  "scheduled_receipt_count": 38,
-  "scheduled_smtp_accepted_count": 38,
+  "audited_run_count": 39,
+  "valid_receipt_count": 39,
+  "scheduled_receipt_count": 39,
+  "scheduled_smtp_accepted_count": 39,
   "scheduled_smtp_acceptance_rate": 1.0,
   "scheduled_skipped_count": 0,
   "scheduled_failed_count": 0,
-  "latest_workflow_run_id": "33629010224",
+  "latest_workflow_run_id": "33754086720",
   "latest_receipt_status": "SMTP_ACCEPTED",
   "delivery_claim": "SMTP_ACCEPTANCE_ONLY",
   "inbox_delivery_claimed": false,
   "automatic_retry": false,
   "automatic_strategy_change": false,
   "production_state_mutations": [],
-  "generated_at_utc": "2026-09-02T12:32:10+00:00",
-  "audit_fingerprint": "8d3635fbcf55b1ec696574e1c96f6ed1d92e200f4ff3d9a5a570b00f89b96879",
-  "status_sha256": "2398db98aefcf42a3b6f11a9e6f35b3614c320d681c4b1ff2446c3240669cfd9"
+  "generated_at_utc": "2026-09-03T12:36:21+00:00",
+  "audit_fingerprint": "695c98623dd1549e139b46bc9c290773f741c48cfa7f3c59c4fb9a8f2a103c35",
+  "status_sha256": "5eeb03e1b85f9f2733ee95ff51858f95757c3fd954c921ccaa45efd58233a992"
 }
